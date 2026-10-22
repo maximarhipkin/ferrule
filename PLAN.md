@@ -174,7 +174,10 @@ below it is append-only.
 - **Wave C** (2026-10-22) on `autopilot` (PR #58), after M64 and the
   0.14.0 merge, one commit and one Session Log entry per task: (1)
   M53.1's contrast gate fixed: a control run without the change, a
-  blind seeded A/B judge, weak evidence kept only with the owner's 👍.
+  blind seeded A/B judge, weak evidence kept only with the owner's 👍;
+  (2) OAuth clients in the MCP spec's order: the owner's own app, a Client
+  ID Metadata Document (the relay's `/client.json`), then DCR; Home
+  Assistant by its address, Slack, Asana and Dropbox in the catalog.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -195,9 +198,9 @@ below it is append-only.
   4. **M53.1's evidence**: fixed in wave C (control run, blind A/B);
      never run against a real model. Offering learning in owner mode
      with a small $ cap is the next step.
-  5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
-     (`server/discover`, stateless): Home Assistant's official MCP,
-     Slack, Asana and Dropbox wait on them.
+  5. **CIMD and pre-registered OAuth clients**: built in wave C, task 2
+     (Home Assistant, Slack, Asana, Dropbox), never signed in live. **MCP
+     2026-07-28** (`server/discover`, stateless): wave C, task 3.
   6. **Small polish**: M56.1's queue and interrupt, steered voice notes;
      M56.3's Undo and M56.5's pending offers lost on restart; Slack
      inbound files; `/bg`; keys without a prefix (Brave's, Tavily's)
@@ -9953,3 +9956,57 @@ contrast removes the "against a failure" bias, not run-to-run noise.
 The 👍 corroboration is coarse: it says the chat ended well, not that
 the lesson did. A big first re-run leaves later episodes in the pass on
 weak evidence, so they keep nothing; the caps are the dial.
+
+### 2026-10-22 — Wave C, task 2: OAuth clients for more MCP servers (Claude, Opus 5.5)
+
+Wave C's second task, in the `autopilot` worktree (re-audit Part 3 #11).
+
+**Why.** ferrule could only register itself (DCR) or use Google's owner
+client. Home Assistant's MCP server takes a Client ID Metadata Document
+and no DCR; Slack's and Asana's take only an app the owner registers;
+Dropbox registers only clients it lists. The MCP authorization spec
+(2025-11-25 and 2026-07-28) orders the three ways: pre-registered, then
+metadata documents where the server advertises them, then DCR.
+
+**What changed.**
+- `ferrule-connections/src/oauth.rs`: `client` follows that order and
+  says which it used (`ClientVia`); `owner_client` (id required, secret
+  optional); `check_cimd` (https with a path, `client_id` equal to the
+  URL, a `client_name`, the callback in `redirect_uris`); `Endpoints`
+  gains `cimd` and `issuer`; DCR sends `application_type` (SEP-837);
+  Slack's `200 {"ok": false}` is a refusal.
+- `service.rs`: `cimd_for` (the owner's `[connections]
+  client_metadata_url`, else the relay's `/client.json` when the
+  callback is the relay's); `has_client` needs only the id; a present
+  `iss` must match the metadata's `issuer` (SEP-2468; tunnel and
+  paste-back now keep `iss`); `blocked` explains an owner app for any
+  service, and its fixed-callback text and buttons are no longer
+  Google's or Atlassian's for everyone; `resource` from the entry.
+- `catalog.rs`: `client_env_name` (default `<NAME>_OAUTH_CLIENT`), a
+  `resource` override, and `client = "owner"` no longer needs pinned
+  endpoints. `catalog.toml`: `slack`, `asana`, `dropbox` (owner app,
+  fixed callback), checked against each vendor's docs and live OAuth
+  metadata on 2026-10-22.
+- `relay/worker.js`: `GET /client.json`, the document, built from the
+  Worker's own origin.
+- `ferrule-cli`: `ferrule connections setup <service>` asks for an owner
+  app's id and secret; `ferrule_admin` `mcp_add` takes `client_id` and
+  `client_secret` with `catalog` or an OAuth `url` (the id saved, the
+  secret asked for with `secret_request` bound to the token and
+  revocation hosts, then the Sign in button); the tool's description
+  and schema say so.
+- Docs: `m20-connections.md` §3.6 and the relay's contract,
+  `m63-connections-wave-b.md` (the left-out list), `roadmap.md` (M20).
+
+**Tests changed, none added** (the owner's standing rule): the catalog's
+names list gains the three entries.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Nothing signed in live: not Home Assistant through the relay's
+document, not Slack's `scope` on its `v2_user` endpoint, not Asana's
+`resource`. A relay deployed before today serves no `/client.json` until
+redeployed. The owner's app isn't keyed by the authorization server's
+`issuer` (SEP-2352). The dashboard has no form for a non-Google owner
+app. `node --test relay/` wasn't run here (CI runs it).

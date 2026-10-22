@@ -8,6 +8,12 @@
 //! server is added the moment it's saved. A sign-in entry sends the owner
 //! its Sign in button; a bundled skill is turned on.
 //!
+//! Wave C: a sign-in entry, or an OAuth server by its https address, can
+//! take the owner's own OAuth app: `client_id` is saved as
+//! `<client_env>_ID`, and its secret (`client_secret`) is asked for with
+//! `secret_request`, bound to the hosts of the server's token and
+//! revocation endpoints; the Sign in button follows once it's saved.
+//!
 //! What it adds is marked `catalog` in `[[mcp.servers]]`, so the trust gate
 //! treats it as a connected service: its reads are outside content, its
 //! changes ask the owner. A stdio server runs in the sandbox with its state
@@ -29,8 +35,21 @@ fn catalog(ctx: &Ctx) -> Catalog {
         .unwrap_or_else(Catalog::built_in)
 }
 
+/// Wave C: the owner's own OAuth app for a sign-in, from `mcp_add`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OwnerApp {
+    /// The app's client id (public, not a key).
+    pub id: Option<String>,
+    /// It has a secret, asked for with `secret_request`.
+    pub secret: bool,
+}
+
 pub(crate) fn entry(ctx: &Ctx, id: &str) -> Result<Service, String> {
     let cat = catalog(ctx);
+    // Wave C: an OAuth server by its address (only with `client_id`).
+    if id.starts_with("https://") {
+        return cat.resolve(id).map_err(|e| format!("{e:#}"));
+    }
     cat.get(id).cloned().ok_or_else(|| {
         format!(
             "`{id}` isn't in the catalog. It has: {}",
@@ -130,8 +149,14 @@ fn refusal(ctx: &Ctx, cfg: &crate::config::Config, s: &Service) -> Option<String
 }
 
 /// What the owner's card says (and what the page's confirm asks).
-pub(crate) fn card(ctx: &Ctx, id: &str, write: bool) -> Result<String, String> {
+pub(crate) fn card(ctx: &Ctx, id: &str, write: bool, app: &OwnerApp) -> Result<String, String> {
     let s = entry(ctx, id)?;
+    if app.id.is_some() && !(s.kind == Kind::Remote && s.auth == AuthKind::Oauth) {
+        return Err(format!(
+            "{} doesn't sign in with OAuth, so it takes no client_id",
+            s.title()
+        ));
+    }
     let (_, cfg) = config(ctx)?;
     if let Some(why) = refusal(ctx, &cfg, &s) {
         return Err(why);
@@ -147,10 +172,24 @@ pub(crate) fn card(ctx: &Ctx, id: &str, write: bool) -> Result<String, String> {
             "Turn on the bundled skill {} ({covers}).",
             s.skill.as_deref().unwrap_or(&s.name)
         ),
-        (Kind::Remote, AuthKind::Oauth) => format!(
-            "Connect {} from the catalog, {mode}: you get its Sign in button next. {covers}",
-            s.title()
-        ),
+        (Kind::Remote, AuthKind::Oauth) => match &app.id {
+            Some(id) => format!(
+                "Connect {} ({}), {mode}, with your own OAuth app, client id {id}, saved as \
+                 {}_ID{}: you get its Sign in button next. {covers}",
+                s.title(),
+                s.url(write),
+                s.client_env_name(),
+                if app.secret {
+                    "; its secret is asked for first with a one-time link, never in a chat"
+                } else {
+                    ""
+                }
+            ),
+            None => format!(
+                "Connect {} from the catalog, {mode}: you get its Sign in button next. {covers}",
+                s.title()
+            ),
+        },
         (Kind::Stdio, _) => format!(
             "Add {} from the catalog, {mode}: it runs {} in the sandbox, its sign-in kept in a \
              hidden folder, and its tools are scanned first. {covers}{}",
@@ -187,6 +226,7 @@ fn key_line(cfg: &crate::config::Config, sec: Option<&SecretSpec>) -> String {
 
 /// `mcp_add` with `catalog`, after the owner's yes (or at once in owner
 /// mode).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn add(
     admin: &Admin,
     ctx: &Ctx,
@@ -194,12 +234,19 @@ pub(super) async fn add(
     session: &str,
     id: &str,
     write: bool,
+    app: &OwnerApp,
     by: &str,
 ) -> Result<String, String> {
     let s = entry(ctx, id)?;
     let (path, cfg) = config(ctx)?;
     if let Some(why) = refusal(ctx, &cfg, &s) {
         return Err(why);
+    }
+    if app.id.is_some() && !(s.kind == Kind::Remote && s.auth == AuthKind::Oauth) {
+        return Err(format!(
+            "{} doesn't sign in with OAuth, so it takes no client_id",
+            s.title()
+        ));
     }
     match (s.kind, s.auth) {
         (Kind::Skill, _) => skill_on(ctx, &s, by),
@@ -212,8 +259,20 @@ pub(super) async fn add(
                 channel: here.channel.clone(),
                 id: here.chat.clone(),
             };
+            // A built-in entry by name; an address as given (wave C).
+            let what = if id.starts_with("https://") {
+                s.url.clone()
+            } else {
+                s.name.clone()
+            };
+            if let Some(client_id) = &app.id {
+                return with_owner_app(
+                    admin, ctx, here, session, conns, chat, &s, &what, write, client_id, app.secret,
+                )
+                .await;
+            }
             conns
-                .request(&chat, &s.name, write, "added from the catalog")
+                .request(&chat, &what, write, "added from the catalog")
                 .await
                 .map_err(|e| format!("{e:#}"))
         }
@@ -249,6 +308,98 @@ pub(super) async fn add(
             }
         }
     }
+}
+
+/// Wave C: saves the owner's app's client id, asks for its secret when it
+/// has one and none is saved, and sends the Sign in button (now, or once
+/// the secret is saved).
+#[allow(clippy::too_many_arguments)]
+async fn with_owner_app(
+    admin: &Admin,
+    ctx: &Ctx,
+    here: &ChatRef,
+    session: &str,
+    conns: &std::sync::Arc<ferrule_connections::Connections>,
+    chat: ferrule_connections::Chat,
+    s: &Service,
+    what: &str,
+    write: bool,
+    client_id: &str,
+    secret: bool,
+) -> Result<String, String> {
+    let env = s.client_env_name();
+    let secrets = match &ctx.data {
+        Some(d) => d.join("private").join("secrets.env"),
+        None => crate::secrets::path().map_err(|e| format!("{e:#}"))?,
+    };
+    let saved = crate::secrets::read(&secrets).unwrap_or_default();
+    let has = |n: &str| saved.iter().any(|(k, v)| k == n && !v.is_empty());
+    let id_name = format!("{env}_ID");
+    match saved.iter().find(|(k, _)| *k == id_name) {
+        Some((_, v)) if !v.is_empty() && v != client_id => {
+            return Err(format!(
+                "a different client id is saved for {} already ({id_name}); change it in the \
+                 Safe first",
+                s.title()
+            ))
+        }
+        Some((_, v)) if !v.is_empty() => {}
+        _ => crate::secrets::set(&secrets, &id_name, client_id).map_err(|e| format!("{e:#}"))?,
+    }
+    let secret_name = format!("{env}_SECRET");
+    if secret && !has(&secret_name) {
+        // The secret goes to the token (and revocation) endpoint only.
+        let http = ferrule_connections::oauth::http_client();
+        let endpoints = ferrule_connections::oauth::discover(&http, s)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let mut hosts: Vec<String> = Vec::new();
+        for u in std::iter::once(&endpoints.token).chain(endpoints.revocation.as_ref()) {
+            if let Some(h) = url::Url::parse(u)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from))
+            {
+                if !hosts.contains(&h) {
+                    hosts.push(h);
+                }
+            }
+        }
+        if hosts.is_empty() {
+            return Err(format!("{}'s token endpoint has no host", s.title()));
+        }
+        let why = format!(
+            "the client secret of your own OAuth app for {}, client id {client_id}",
+            s.title()
+        );
+        keys::request(admin, ctx, here, session, &secret_name, &hosts, &why).await?;
+        let conns = conns.clone();
+        let (what, title) = (what.to_string(), s.title().to_string());
+        keys::when_saved(
+            &secret_name,
+            Box::new(move |_hosts: Vec<String>| {
+                Box::pin(async move {
+                    match conns
+                        .request(&chat, &what, write, "signing in with the owner's own app")
+                        .await
+                    {
+                        Ok(said) => said,
+                        Err(e) => format!("{title} can't be connected yet: {e:#}"),
+                    }
+                })
+            }),
+        );
+        return Ok(format!(
+            "Saved the client id as {id_name}. The owner was sent a link to paste its secret \
+             ({secret_name}, sent only to {}); the Sign in button follows once it's saved, and \
+             you're woken with the result.",
+            hosts.join(", ")
+        ));
+    }
+    let said = conns
+        .request(&chat, what, write, "signing in with the owner's own app")
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(format!("Saved the client id as {id_name}. {said}"))
 }
 
 /// The add, once `name` is saved, if it was saved for the catalog's
@@ -447,7 +598,7 @@ pub(crate) async fn from_page(ctx: &Ctx, body: &Value, by: &str) -> Answer {
         Err(answer) => return answer,
     };
     let write = body.get("write").and_then(Value::as_bool) == Some(true);
-    let question = match card(ctx, &id, write) {
+    let question = match card(ctx, &id, write, &OwnerApp::default()) {
         Ok(q) => q,
         Err(why) => return api::bad(400, why),
     };

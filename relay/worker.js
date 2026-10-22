@@ -18,6 +18,13 @@
 // base64url(SHA-256("wa:" + RELAY_KEY)), so only the key's holder knows it.
 // ferrule gives the mailbox its verify token and app secret through
 // /wa/<box>/config, so turning WhatsApp on needs no redeploy.
+//
+// Wave C: GET /client.json is ferrule's OAuth Client ID Metadata Document
+// (MCP authorization, "Client ID Metadata Documents";
+// draft-ietf-oauth-client-id-metadata-document): its client_id is its own
+// URL and its one redirect URI is this relay's /cb, so an authorization
+// server that takes such documents (Home Assistant's) needs no
+// registration. Nothing in it is secret.
 
 const OPEN_TTL_MS = 15 * 60 * 1000;
 const VALUE_TTL_MS = 5 * 60 * 1000;
@@ -41,6 +48,7 @@ export default {
       if (path.startsWith("/wa/")) return await whatsapp(path.slice("/wa/".length), url, request, env);
       if (request.method === "POST" && path === "/poll") return await poll(request, env);
       if (request.method === "GET" && path === "/cb") return await callback(url, env);
+      if (request.method === "GET" && path === "/client.json") return clientMetadata(url);
       if (request.method === "GET" && path === "/key") return page(KEY_PAGE, "text/html");
       if (request.method === "GET" && path === "/key.js") return page(keyScript(), "text/javascript");
       if (request.method === "POST" && path.startsWith("/drop/")) {
@@ -52,6 +60,25 @@ export default {
     }
   },
 };
+
+// GET /client.json: the document's client_id must be the URL it is served
+// at, exactly, so both come from the request's own origin.
+function clientMetadata(url) {
+  const origin = url.origin;
+  return new Response(
+    JSON.stringify({
+      client_id: `${origin}/client.json`,
+      client_name: "Ferrule",
+      client_uri: "https://github.com/maximarhipkin/ferrule",
+      redirect_uris: [`${origin}/cb`],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      application_type: "web",
+    }),
+    { headers: { ...SECURITY, "content-type": "application/json", "cache-control": "public, max-age=3600" } },
+  );
+}
 
 // POST /poll, `Authorization: Bearer <relay key>`, {"secret": "<b64url>"}:
 // opens the slot if new; its value, deleted as it's read (200), 204 while

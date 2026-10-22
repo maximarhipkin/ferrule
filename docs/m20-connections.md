@@ -248,6 +248,119 @@ header values sensitive; it also scrubs the current token out of any
 server error text before it becomes an `McpError` — the only path from a
 response to the model.
 
+### 3.6 The client: pre-registered, a metadata document, or DCR (wave C)
+
+Built 2026-10-22 on `autopilot` (wave C, re-audit Part 3 #11). Some
+servers take no dynamic registration: Home Assistant's asks for an OAuth
+Client ID Metadata Document instead, and Slack's, Asana's and Dropbox's
+want an app the owner registers. The MCP authorization spec lists three
+ways to get a client, and the order a client that has all three follows
+([2025-11-25, "Client Registration Approaches"](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches);
+the same text in [2026-07-28, "Client Registration"](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration),
+which also deprecates DCR in favour of metadata documents):
+"1. Use pre-registered client information … 2. Use Client ID Metadata
+Documents if the Authorization Server indicates … support … 3. Use
+Dynamic Client Registration as a fallback". `oauth::client` follows it:
+
+1. **The owner's own app** (pre-registration). Its id is
+   `<client_env>_ID` in the secrets file and its secret, when it has one,
+   `<client_env>_SECRET` (`Service::client_env_name`: the entry's
+   `client_env`, else the service's name in capitals with
+   `_OAUTH_CLIENT`, e.g. `SLACK_OAUTH_CLIENT`). Used for any service when
+   saved; a `client = "owner"` entry takes nothing else. Such an entry no
+   longer needs pinned endpoints: discovery finds them. The secret is now
+   optional (a public client with PKCE).
+2. **ferrule's Client ID Metadata Document**, when the authorization
+   server's metadata has `client_id_metadata_document_supported: true`
+   (`Endpoints::cimd`). The `client_id` is the document's https URL:
+   - the owner's own copy, `[connections] client_metadata_url`, or
+   - the relay's `GET /client.json` (`relay/worker.js`), when the
+     callback is the relay's `/cb`. The Worker builds it from its own
+     origin: `client_id` `<relay>/client.json`, `client_name` "Ferrule",
+     `redirect_uris` `[<relay>/cb]`, `grant_types` authorization_code
+     and refresh_token, `token_endpoint_auth_method` "none". A relay
+     deployed before wave C answers 404; `ferrule connections relay
+     deploy` updates it.
+
+   Before using one, ferrule fetches it and checks what the spec asks of
+   a client (`oauth::check_cimd`): https with a path, `client_id` equal
+   to the URL "exactly", a `client_name`, and `redirect_uris` listing the
+   callback in use. A document that fails is skipped with a log line.
+3. **DCR** (RFC 7591), as before, when the metadata has a
+   `registration_endpoint`. It now sends `application_type`: "native"
+   for the loopback paste-back redirect, "web" for the relay's or a
+   tunnel's, as 2026-07-28 requires (SEP-837).
+
+With none of these the error says which to set up. The flow's audit line
+names the kind (`"client": "owner" | "cimd" | "dcr"`).
+
+**Giving ferrule the owner's app.**
+- At the terminal: `ferrule connections setup <service>` asks for the
+  client id and, optionally, the secret, after the relay when the entry
+  needs a fixed callback.
+- From a chat: `ferrule_admin` `mcp_add` with `catalog` (or an OAuth
+  server's https `url`), `client_id` and `client_secret: true`. The id
+  (public, not a key) is saved as `<client_env>_ID`; a different id
+  already saved is refused. The secret is asked for with
+  `secret_request`, bound to the hosts of the server's token and
+  revocation endpoints (found by discovery), so it never passes through
+  the chat. The Sign in button follows once it's saved.
+
+**`iss` (RFC 9207).** 2026-07-28 makes clients check a callback's `iss`
+against the authorization server the flow began with (SEP-2468). The
+relay already kept `iss`; the quick tunnel and paste-back now keep it
+too, and a present `iss` that isn't the metadata's `issuer` refuses the
+code before it is exchanged.
+
+**`resource`.** An entry can name the RFC 8707 resource its vendor
+documents when it isn't the MCP URL (`resource`): Asana's docs give
+`https://mcp.asana.com/v2`, and Slack's protected-resource metadata says
+`https://mcp.slack.com`.
+
+**Slack's token errors.** Slack answers a refused exchange with HTTP 200
+and `"ok": false`; that is now a refusal with Slack's error code, not
+"the token reply had no access_token".
+
+**What it unlocks** (checked 2026-10-22):
+- **Home Assistant**, by its address (`/connect https://<your
+  HA>/api/mcp`): its MCP server "supports OAuth Client ID Metadata
+  Documents" and not DCR
+  ([integration page](https://www.home-assistant.io/integrations/mcp_server/)),
+  and its `/.well-known/oauth-authorization-server` says
+  `client_id_metadata_document_supported: true` with
+  `token_endpoint_auth_methods_supported: ["none"]`
+  ([`login_flow.py` at 372e426](https://github.com/home-assistant/core/blob/372e426489b1/homeassistant/components/auth/login_flow.py)).
+  The relay's document fits its IndieAuth check too: the redirect shares
+  the client id's scheme and host. ferrule needs it at an https address
+  (Nabu Casa, or the owner's own proxy); a plain-http LAN address is
+  refused, as for any MCP URL.
+- **Slack** (`slack`): "Dynamic Client Registration" is not supported,
+  only internal and Marketplace apps may use MCP, and it uses the app's
+  `client_id` and `client_secret`
+  ([docs](https://docs.slack.dev/ai/slack-mcp-server/)); its metadata
+  lists the user scopes the entry asks for.
+- **Asana** (`asana`): "Dynamic client registration is not supported
+  with Asana's V2 MCP Server", clients "must still pre-register to get a
+  client id and client secret", and no scopes are needed
+  ([docs](https://developers.asana.com/docs/integrating-with-asanas-mcp-server)).
+- **Dropbox** (`dropbox`): DCR "for a trusted set of MCP Clients" only;
+  others need a Dropbox app with the permissions the entry lists
+  ([help](https://help.dropbox.com/integrations/connect-dropbox-mcp-server)).
+  `token_access_type=offline` asks for a refresh token.
+
+None of Slack's, Asana's or Dropbox's authorization servers advertised
+metadata documents when checked, so their entries are `client =
+"owner"` with `fixed_callback` (the app lists the relay's `/cb`).
+
+**Not done.** Nothing here has signed in live. 2026-07-28's issuer
+binding (SEP-2352) is not built: the owner's saved app isn't keyed by
+the authorization server's `issuer`, so a server that moves its
+authorization server would get the old id (DCR clients are registered
+afresh for each sign-in, so they aren't reused). The dashboard's
+Connections page has no form for these apps (only Google's); it shows
+the steps and points to the terminal or the chat. `private_key_jwt` for
+a metadata-document client is not built.
+
 ## 4. The relay (callback path 3, the default)
 
 A small Cloudflare Worker, source in `relay/` (one ES module, no
@@ -262,6 +375,7 @@ account with `ferrule connections relay deploy`.
 | `POST /poll` + `Authorization: Bearer <relay key>`, body `{"secret":"<b64url 32 bytes>"}` | ferrule | opens the slot `id = b64url(SHA-256(secret))` if new (open 15 min); returns its value **and deletes it** (200), 204 while empty, 410 once read (a value-free "used" mark stays until the slot's window ends, so a replayed callback gets 409). An expired slot is gone; polling it opens a fresh, empty one |
 | `GET /cb?state=<id>&code=…` (or `error=…`) | the vendor's redirect, in the owner's browser | writes `{code, error, error_description, iss}` into an **open** slot `id = state`: first write wins, ≤ 4 KiB; answers a static page ("done, go back to Telegram"), never echoing the code |
 | `GET /key` | the owner's browser | the static API-key form (§6) |
+| `GET /client.json` | an authorization server (wave C, §3.6) | ferrule's OAuth Client ID Metadata Document, built from the relay's own origin; nothing secret |
 | `POST /drop/<id>` | the key form | writes the encrypted key into an open slot: first write wins, ≤ 8 KiB |
 
 - **Keys:** ferrule makes a random 32-byte `secret` per flow. The slot id

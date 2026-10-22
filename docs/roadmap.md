@@ -501,6 +501,14 @@ to the fallback with one message.
 and a login, and its tools appear. No token ever reaches the model, a
 tool result, the audit log, `/status` or an error.
 
+**Wave C** (2026-10-22, `docs/m20-connections.md` §3.6): the client
+comes in the MCP authorization spec's order, the owner's pre-registered
+app, then ferrule's Client ID Metadata Document (served by the relay at
+`/client.json`, or the owner's own copy), then DCR (now with
+`application_type`); a callback's `iss` is checked. Unlocks Home
+Assistant's MCP server by its address, and catalog entries for Slack,
+Asana and Dropbox with the owner's own app. Not signed in live.
+
 ### M19c — live-bot fixes
 
 **Status.** Built and merged (`docs/m19c-live-fixes.md`; PR #15; ships as 0.2.1).
