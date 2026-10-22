@@ -30,10 +30,11 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - The latest release is **v0.13.1** (tagged 2026-10-20): everything
-    through M49 plus the 2026-10-19 review-pass fixes. Every crate is at
-    0.13.1 except `ferrule-plugin-sdk`, which keeps 0.1.0. Nothing since
-    is released.
+  - The latest release is **v0.14.0** (2026-10-22, from `main` at
+    `ea88e4a` plus the version bump): everything through M64, PRs
+    #43–#56. Every crate is at 0.14.0 except `ferrule-plugin-sdk`, which
+    keeps 0.1.0. The one before it was v0.13.1 (2026-10-20, through
+    M49).
   - **`main` is `ebc9e26`** (PR #54). PRs **#44–#54 are all merged**:
     #44 "Allow for this run", #45 the Claude plan engine's bridged tools,
     #46 Telegram follow-ups (all 2026-10-20); #48 Kimi's M51–M53; #47,
@@ -9868,3 +9869,25 @@ in a browser, `/proactive` in a chat, the back-off over real days.
 reaches the pass at its next run, but its task only at the next start.
 The page's words for outcomes and modes are the page's; the summaries,
 kinds' words and item texts are the server's, in English.
+
+### 2026-10-22 — Release 0.14.0 (Claude, Opus 5.5)
+
+No milestone claimed. Branch `release-0.14.0`, from `main` at `ea88e4a`.
+
+**What changed.** Every crate's version goes from 0.13.1 to 0.14.0
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+Current State's release line says so. A minor bump, not a patch: since
+v0.13.1 `main` gained M50–M64 (media, the Safe, owner mode, channels,
+images in tool results, screen viewing, wave A and B, the proactive
+agent).
+
+**Checks.** Not run locally (the owner's standing rule); the PR's CI
+(Linux, macOS, Windows) is the gate, and the tag goes on `main` only
+after it is green. `main`'s CI on `08e516a` (PR #55) was red on one
+Windows test, `http::bad_requests_are_said_plainly`, green on Linux and
+macOS and on the same tree on `autopilot`: a flake, not fixed here.
+
+**Open.** The release build (`release.yml`, five targets) runs on the
+tag; nothing here runs the binaries.
