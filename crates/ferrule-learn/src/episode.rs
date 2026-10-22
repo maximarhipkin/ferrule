@@ -180,8 +180,22 @@ fn session_episode(id: &str, path: &Path, at: i64) -> Option<Episode> {
 /// one block per message, tool results clipped to [`TOOL_RESULT_CHARS`].
 /// Every cut is marked as the renderer's (M53.2).
 pub fn render_tail(path: &Path) -> String {
+    render(path, false)
+}
+
+/// M53.1: [`render_tail`] without the system prompt, for the judge. The
+/// prompt holds the playbook and the skill catalog, which would tell the
+/// judge which run had the change.
+pub fn render_run(path: &Path) -> String {
+    render(path, true)
+}
+
+fn render(path: &Path, skip_system: bool) -> String {
     let mut blocks: Vec<String> = Vec::new();
     for m in messages(path) {
+        if skip_system && role(&m) == "system" {
+            continue;
+        }
         let mut b = format!("[{}]", role(&m));
         let c = content(&m);
         if !c.is_empty() {

@@ -274,9 +274,10 @@ fn is_consolidation(req: &Value) -> bool {
     system(req).starts_with("You tidy an AI agent's long-term memory")
 }
 
-/// The gate agent works in a scratch copy under the temp dir.
+/// The gate agent works in a scratch copy under the temp dir; so does
+/// M53.1's control run, without the lesson.
 fn is_gate(req: &Value) -> bool {
-    system(req).contains("scratch-")
+    system(req).contains("scratch-") || system(req).contains("control-")
 }
 
 /// The scheduled task: while `fixed` is false it lists the directory until
@@ -299,7 +300,8 @@ fn task_turn(req: &Value, fixed: bool) -> Value {
 }
 
 /// A server for the fail → fix → learn story. `gate_helps`: whether the
-/// gate agent (which sees the candidate lesson) writes the result.
+/// gate agent (which sees the candidate lesson) writes the result. The
+/// control run (M53.1), without the lesson, never does.
 fn story_server(fixed: Arc<AtomicBool>, gate_helps: bool) -> (String, Arc<Mutex<Vec<Value>>>) {
     model_server(Arc::new(move |req: &Value| {
         if is_reflector(req) {
@@ -312,7 +314,7 @@ fn story_server(fixed: Arc<AtomicBool>, gate_helps: bool) -> (String, Arc<Mutex<
         }
         if is_gate(req) {
             let last = last(req);
-            if last["role"] == "tool" || !gate_helps {
+            if last["role"] == "tool" || !gate_helps || !system(req).contains(LESSON) {
                 return answer("done");
             }
             return call(

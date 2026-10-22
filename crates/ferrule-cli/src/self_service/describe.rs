@@ -274,7 +274,18 @@ pub async fn describe(op: &Op, ctx: &Ctx, here: &ChatRef) -> Result<String, Stri
             }
             text
         }
-        Op::McpAddCatalog { catalog, write } => super::catalog::card(ctx, catalog, *write)?,
+        Op::McpAddCatalog {
+            catalog,
+            write,
+            client_id,
+            client_secret,
+        } => {
+            let client = super::catalog::OwnerApp {
+                id: client_id.clone(),
+                secret: *client_secret,
+            };
+            super::catalog::card(ctx, catalog, *write, &client)?
+        }
         Op::PackageInstall { packages } => {
             super::packages::check(packages)?;
             format!(

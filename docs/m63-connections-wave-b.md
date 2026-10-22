@@ -533,6 +533,12 @@ Asana and Dropbox (no DCR for an untrusted client), Home Assistant's own
 MCP server (Client ID Metadata Documents, which ferrule doesn't do yet),
 finance and password managers (re-audit Part 2 §2c #12, #16).
 
+**Since wave C** (2026-10-22, `docs/m20-connections.md` §3.6): Slack,
+Asana and Dropbox are in, signing in with an OAuth app the owner
+registers, and Home Assistant's server connects by its address through
+ferrule's Client ID Metadata Document (no catalog entry: every Home
+Assistant has its own address).
+
 ### The trust model: why a curated list, and no public hub
 
 - **Curated by hand, compiled in.** Each entry names an official,

@@ -5,12 +5,13 @@
 use crate::budget::{row, Caps, LearnSink, Meter, PriceFn, Spent};
 use crate::consolidate::{self, CLUSTER_JACCARD, CLUSTER_ROWS};
 use crate::diff::unified;
-use crate::episode::{render_tail, scan_sessions, Episode};
+use crate::episode::{render_run, render_tail, scan_sessions, Episode};
 use crate::files::{
     Change, ChangeRevert, EpisodeNote, LearnDir, PassRecord, Rejected, RevertNote, State, DONE,
     REVERTED, RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
 };
-use crate::gate::{Gate, GateRun, GateVerdict};
+use crate::gate::{Gate, GateRun, GateVerdict, ProbeOut};
+use crate::judge::{Contrast, Side, Slate};
 use crate::playbook::{prompt_block_for, Delta, Playbook, TEMPLATE};
 use crate::reflect::{self, Proposal};
 use crate::screen;
@@ -221,52 +222,182 @@ async fn ask(
     }
 }
 
-/// M53: no verifier, so one probe re-run with the change, then the judge
-/// contrasts the two transcripts. Fail-closed: anything but a clear
-/// "better" rejects.
-async fn judged(
+/// Why weak evidence is weak: no control run fitted.
+const NO_CONTROL: &str =
+    "the caps left room for one re-run only, so there was no control run without the change";
+
+/// M53.1 (wave C): the evidence a change needs. The episode re-runs with
+/// the change (`with`): through the check when there is one, else as a
+/// probe. When the caps leave room for another run of what that one cost,
+/// it re-runs without the change (`control`), and:
+/// - with a check, the change is kept only when the control fails it;
+/// - without one, the judge compares the two runs blind (seeded A/B) and
+///   the change is kept only when it picks the run with the change.
+///
+/// Without a control the evidence is weak (the check alone, or the judge
+/// against the episode's own run, as before M53.1's fix): the change is
+/// then kept only when the owner's 👍 corroborates it ([`weak`]).
+async fn contrast_gate(
     env: &Env,
     meter: &Arc<Meter>,
     pass: &str,
     ep: &Episode,
-    tail: &str,
-    change: &str,
-    run: GateRun<'_>,
+    with: GateRun<'_>,
+    control: GateRun<'_>,
 ) -> GateVerdict {
-    match env.gate.probe(run).await {
-        None => GateVerdict::fail("no check to gate on"),
-        Some(p) if !p.finished => GateVerdict::fail(format!(
-            "the probe run stopped before finishing: {}",
-            p.incomplete.as_deref().unwrap_or("unknown")
-        )),
-        Some(p) => {
-            let original = if ep.outcome == crate::thumbs::OUTCOME {
-                "the owner reacted 👎 to its last reply"
-            } else {
-                "failed or retried"
-            };
-            let answer = ask(
-                env,
-                meter,
-                pass,
-                "judge",
-                crate::judge::SYSTEM,
-                crate::judge::user_message(&ep.goal, change, original, tail, &p.tail),
-            )
-            .await;
-            match answer {
-                Err(e) => GateVerdict::fail(format!("the judge call failed: {e}")),
-                Ok(t) => match crate::judge::parse(&t) {
-                    Err(e) => GateVerdict::fail(format!("the judge's answer was unusable: {e}")),
-                    Ok(v) if v.better => GateVerdict {
-                        passed: true,
-                        reason: format!("kept by the judge: {}", v.why),
-                    },
-                    Ok(v) => GateVerdict::fail(format!("the judge said no: {}", v.why)),
-                },
-            }
+    let slate = Slate::new(pass, with.n);
+    let before = meter.spent();
+    if env.gate.check().is_some() {
+        let v = env.gate.run(with).await;
+        if !v.passed {
+            return v;
         }
+        if !meter.room_for(meter.spent().since(before)) {
+            return weak(ep, &v.reason, NO_CONTROL);
+        }
+        let c = env.gate.run(control).await;
+        if meter.exceeded().is_some() {
+            return GateVerdict::fail(format!(
+                "{}; the control run without it was cut by the budget",
+                v.reason
+            ));
+        }
+        if c.passed {
+            return GateVerdict::fail(format!(
+                "{}; but {}: nothing shows the lesson helped",
+                v.reason, c.reason
+            ));
+        }
+        return GateVerdict {
+            passed: true,
+            reason: format!("{}; without it, {}", v.reason, c.reason),
+        };
     }
+    let Some(w) = env.gate.probe(with).await else {
+        return GateVerdict::fail("no check to gate on");
+    };
+    if !w.finished {
+        return GateVerdict::fail(format!(
+            "the probe run with the change stopped before finishing: {}",
+            w.incomplete.as_deref().unwrap_or("unknown")
+        ));
+    }
+    if meter.room_for(meter.spent().since(before)) {
+        let Some(c) = env.gate.probe(control).await else {
+            return GateVerdict::fail("the gate could not run the control");
+        };
+        if meter.exceeded().is_some() {
+            return GateVerdict::fail("budget reached during the control run");
+        }
+        if !c.finished && c.tail.trim().is_empty() {
+            return GateVerdict::fail(format!(
+                "the control run without the change could not run: {}",
+                c.incomplete.as_deref().unwrap_or("unknown")
+            ));
+        }
+        let other = Side {
+            tail: &c.tail,
+            stopped: c.incomplete.as_deref(),
+        };
+        let blind = slate.describe();
+        return match judge(env, meter, pass, ep, &slate, &w, other, "control").await {
+            Err(why) => GateVerdict::fail(why),
+            Ok((Contrast::Better, why)) => GateVerdict {
+                passed: true,
+                reason: format!(
+                    "kept by the judge: the run with the change beat a control run without it ({blind}): {why}"
+                ),
+            },
+            Ok((Contrast::Worse, why)) => GateVerdict::fail(format!(
+                "the judge found the control run without the change better ({blind}): {why}"
+            )),
+            Ok((Contrast::Confounded, why)) => GateVerdict::fail(format!(
+                "the judge saw no clear difference with and without the change ({blind}): {why}"
+            )),
+        };
+    }
+    let original = ep.transcript.as_deref().map(render_run).unwrap_or_default();
+    let other = Side {
+        tail: &original,
+        stopped: None,
+    };
+    let blind = slate.describe();
+    match judge(env, meter, pass, ep, &slate, &w, other, "original").await {
+        Err(why) => GateVerdict::fail(format!("weak evidence ({NO_CONTROL}): {why}")),
+        Ok((Contrast::Better, why)) => weak(
+            ep,
+            &format!(
+                "the judge preferred the run with the change to the episode's own run ({blind}): {why}"
+            ),
+            NO_CONTROL,
+        ),
+        Ok((_, why)) => GateVerdict::fail(format!(
+            "weak evidence ({NO_CONTROL}), and the judge did not prefer the run with the change to the episode's own run ({blind}): {why}"
+        )),
+    }
+}
+
+/// Weak evidence is kept only when the owner's 👍 corroborates it: the
+/// episode is a 👎 on a chat reply (M53.5) and the owner reacted 👍 to a
+/// later reply in the same chat. That says the chat ended well, not that
+/// the change did; it is the only owner's word the pass has.
+fn weak(ep: &Episode, found: &str, why: &str) -> GateVerdict {
+    if ep.outcome == crate::thumbs::OUTCOME && ep.fixed {
+        GateVerdict {
+            passed: true,
+            reason: format!(
+                "kept on weak evidence ({why}), corroborated by the owner's 👍 on a later reply in this chat: {found}"
+            ),
+        }
+    } else {
+        GateVerdict::fail(format!(
+            "weak evidence, not kept without the owner's 👍 ({why}): {found}"
+        ))
+    }
+}
+
+/// One blind judge call: the run with the change against `other`, in the
+/// slate's order. An unreadable answer is confounded; a failed call is an
+/// error.
+#[allow(clippy::too_many_arguments)]
+async fn judge(
+    env: &Env,
+    meter: &Arc<Meter>,
+    pass: &str,
+    ep: &Episode,
+    slate: &Slate,
+    with: &ProbeOut,
+    other: Side<'_>,
+    against: &str,
+) -> Result<(Contrast, String), String> {
+    let w = Side {
+        tail: &with.tail,
+        stopped: None,
+    };
+    let (a, b) = slate.order(w, other);
+    env.dir.log(
+        pass,
+        "judge",
+        json!({ "episode": ep.key, "seed": format!("{:016x}", slate.seed),
+                "change_as": slate.with_label().to_string(), "against": against }),
+    );
+    let answer = ask(
+        env,
+        meter,
+        pass,
+        "judge",
+        crate::judge::SYSTEM,
+        crate::judge::user_message(&ep.goal, a, b),
+    )
+    .await
+    .map_err(|e| format!("the judge call failed: {e}"))?;
+    Ok(match crate::judge::parse(&answer) {
+        Err(e) => (
+            Contrast::Confounded,
+            format!("its answer was unusable, so it counts as confounded: {e}"),
+        ),
+        Ok(v) => (slate.contrast(&v), v.why),
+    })
 }
 
 /// Runs one pass. Takes the lock, so a second concurrent pass is refused.
@@ -311,7 +442,7 @@ pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
     }
     if rec.check.is_none() {
         rec.notes.push(
-            "no check to gate on ([learning] check or [agent] verify_command): adds and edits are probed and judged (M53); retires are not gated"
+            "no check to gate on ([learning] check or [agent] verify_command): adds and edits are probed with and without the change and judged blind (M53, M53.1); retires are not gated"
                 .into(),
         );
     }
@@ -535,7 +666,6 @@ async fn body(
                     pass_dir: &pass_dir,
                     gate_n: &mut gate_n,
                     episode: ep,
-                    tail: &tail,
                     playbook_block: block.text.as_deref(),
                     scope,
                 },
@@ -670,13 +800,18 @@ async fn body(
                 opts.max_bullets,
                 opts.max_prompt_chars,
             );
+            // M53.1: the control run sees the playbook as it stands.
+            let current =
+                prompt_block_for(&pb.render(), scope, opts.max_bullets, opts.max_prompt_chars);
             gate_n += 1;
-            let sink = LearnSink::new(
-                env.ledger.clone(),
-                meter.clone(),
-                env.price.clone(),
-                format!("gate:{gate_n}"),
-            );
+            let sink = |origin: &str| {
+                LearnSink::new(
+                    env.ledger.clone(),
+                    meter.clone(),
+                    env.price.clone(),
+                    format!("{origin}:{gate_n}"),
+                )
+            };
             dir.log(
                 &id,
                 if probed { "probe" } else { "gate" },
@@ -687,19 +822,18 @@ async fn body(
                 episode: ep,
                 playbook_block: block.text.as_deref(),
                 skill: None,
-                sink,
+                sink: sink("gate"),
                 meter: meter.clone(),
                 pass_dir: &pass_dir,
+                control: false,
             };
-            let verdict = if !probed {
-                env.gate.run(run).await
-            } else {
-                let lesson = match &delta {
-                    Delta::Promote { id } => pb.get(*id).unwrap_or("").to_string(),
-                    _ => dtext.clone().unwrap_or_default(),
-                };
-                judged(env, meter, &id, ep, &tail, &lesson, run).await
+            let control = GateRun {
+                playbook_block: current.text.as_deref(),
+                sink: sink("control"),
+                control: true,
+                ..run.clone()
             };
+            let verdict = contrast_gate(env, meter, &id, ep, run, control).await;
             if !verdict.passed {
                 let budget = meter.exceeded();
                 reject(rec, dir, &ep.key, op, did, dtext, verdict.reason);

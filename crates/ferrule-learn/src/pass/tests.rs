@@ -5,15 +5,29 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 /// Answers from a queue; `None` is a provider error. 100 tokens a call.
+/// `@pick:<needle>` answers as a judge picking the run (A or B) whose
+/// transcript holds the needle.
 struct Queue(Mutex<VecDeque<Option<String>>>);
+
+fn pick(req: &CompletionRequest, needle: &str) -> String {
+    let user = req.messages[1].content.clone().unwrap_or_default();
+    let b = user.find("Run B").unwrap();
+    let at = user.find(needle).unwrap();
+    let label = if at < b { "A" } else { "B" };
+    format!(r#"{{"better":"{label}","why":"it finished without retries"}}"#)
+}
 
 #[async_trait::async_trait]
 impl Provider for Queue {
     fn name(&self) -> &str {
         "queue"
     }
-    async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let next = self.0.lock().unwrap().pop_front().flatten();
+        let next = match next.as_deref().and_then(|n| n.strip_prefix("@pick:")) {
+            Some(needle) => Some(pick(&req, needle)),
+            None => next,
+        };
         match next {
             Some(text) => Ok(CompletionResponse {
                 message: Message::assistant(Some(text), vec![], None),
@@ -33,6 +47,7 @@ impl Provider for Queue {
 }
 
 /// A gate with a fixed verdict that remembers the playbook it was shown.
+/// M53.1: its control run (without the lesson) always fails the check.
 struct FakeGate {
     passes: bool,
     seen: Mutex<Vec<Option<String>>>,
@@ -44,6 +59,9 @@ impl Gate for FakeGate {
         Some("true".into())
     }
     async fn run(&self, r: GateRun<'_>) -> GateVerdict {
+        if r.control {
+            return GateVerdict::fail("`true` fails without the lesson: exit 1");
+        }
         self.seen
             .lock()
             .unwrap()
@@ -329,7 +347,8 @@ async fn the_plan_spends_and_writes_nothing() {
     assert!(!s.env.dir.root().exists());
 }
 
-/// M53: a gate with no check that probes — fixed probe outcome.
+/// M53: a gate with no check that probes — fixed probe outcome. The tail
+/// says which run it is (M53.1: with the lesson, or the control).
 struct ProbeGate {
     finished: bool,
     tail: String,
@@ -349,10 +368,15 @@ impl Gate for ProbeGate {
             .lock()
             .unwrap()
             .push(r.playbook_block.map(str::to_string));
+        let run = if r.control {
+            "CONTROL-RUN"
+        } else {
+            "LESSON-RUN"
+        };
         Some(ProbeOut {
             finished: self.finished,
             incomplete: (!self.finished).then(|| "step limit".to_string()),
-            tail: self.tail.clone(),
+            tail: format!("{run} {}", self.tail),
         })
     }
 }
@@ -407,10 +431,7 @@ async fn a_check_lesson_is_kept_when_the_probe_wins_the_judge() {
         tail: "probe: finished, no errors".into(),
         seen: Mutex::default(),
     });
-    let answers = [
-        Some(ADD),
-        Some(r#"{"better":true,"why":"it finished without retries"}"#),
-    ];
+    let answers = [Some(ADD), Some("@pick:LESSON-RUN")];
     let (env, rows) = setup_with_gate(gate.clone(), &answers, vec![ep(1)]);
     let p = run_pass(&opts(), &env).await.unwrap();
     assert_eq!(p.status, DONE, "{:?}", p.notes);
@@ -424,8 +445,11 @@ async fn a_check_lesson_is_kept_when_the_probe_wins_the_judge() {
         .read_playbook()
         .unwrap()
         .contains("Run cargo fmt before the tests."));
-    let seen = gate.seen.lock().unwrap()[0].clone().unwrap();
-    assert!(seen.contains("Run cargo fmt"));
+    let seen = gate.seen.lock().unwrap().clone();
+    assert!(seen[0].as_deref().unwrap().contains("Run cargo fmt"));
+    // M53.1: the control ran without it.
+    assert_eq!(seen.len(), 2);
+    assert!(!seen[1].as_deref().unwrap_or("").contains("Run cargo fmt"));
     let rows = rows.0.lock().unwrap().clone();
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(rows[1].origin.as_deref(), Some("judge"));
@@ -434,7 +458,10 @@ async fn a_check_lesson_is_kept_when_the_probe_wins_the_judge() {
 
 #[tokio::test]
 async fn the_judges_no_rejects_and_a_broken_probe_rejects() {
-    let answers = [Some(ADD), Some(r#"{"better":false,"why":"same failure"}"#)];
+    let answers = [
+        Some(ADD),
+        Some(r#"{"better":"neither","why":"same failure"}"#),
+    ];
     let (env, _) = setup_with_gate(
         Arc::new(ProbeGate {
             finished: true,
@@ -447,7 +474,7 @@ async fn the_judges_no_rejects_and_a_broken_probe_rejects() {
     let p = run_pass(&opts(), &env).await.unwrap();
     assert!(p.changes.is_empty());
     assert!(
-        p.rejected[0].reason.contains("the judge said no"),
+        p.rejected[0].reason.contains("no clear difference"),
         "{:?}",
         p.rejected
     );

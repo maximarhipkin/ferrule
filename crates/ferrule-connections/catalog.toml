@@ -6,9 +6,14 @@
 # any remote MCP server that does OAuth discovery + DCR by its URL.
 #
 #   auth       "oauth" | "api_key"
-#   client     oauth: "dcr" (ferrule registers itself) | "owner" (a client
-#              the owner made; its id and secret are <client_env>_ID and
-#              <client_env>_SECRET in the secrets file)
+#   client     oauth: "dcr" (no client of the owner's needed: one saved
+#              anyway, else ferrule's client metadata document where the
+#              server takes one, else ferrule registers itself) | "owner"
+#              (only a client the owner made: its id is <client_env>_ID and
+#              its secret, if it has one, <client_env>_SECRET in the secrets
+#              file; client_env defaults to <NAME>_OAUTH_CLIENT)
+#   resource   wave C: RFC 8707's resource when the vendor documents one
+#              other than the url
 #   scopes     asked for by default; write_scopes by `/connect <name> write`
 #   read_only  how read-only is enforced: "scope" | "header" | "endpoint" |
 #              "tools" (a native connection lists write tools only when
@@ -883,3 +888,73 @@ kind = "skill"
 skill = "home-assistant"
 auth = "none"
 covers = "Your Home Assistant's states and actions over its REST API; the skill asks you for its token (HA_TOKEN, bound to your Home Assistant's host)."
+
+# ── Wave C: sign in with an OAuth app the owner registers, checked on
+# 2026-10-22 against the vendor's docs and its live OAuth metadata
+# (/.well-known/oauth-protected-resource and the authorization server's).
+# None of the three takes ferrule's client metadata document, and Slack and
+# Asana offer no registration; Dropbox registers only clients it lists.
+
+[[service]]
+name = "slack"
+title = "Slack"
+url = "https://mcp.slack.com/mcp"
+auth = "oauth"
+client = "owner"
+client_env = "SLACK_OAUTH_CLIENT"
+resource = "https://mcp.slack.com"
+scopes = ["search:read.public", "search:read.private", "search:read.mpim", "search:read.im", "search:read.files", "search:read.users", "files:read", "emoji:read", "channels:history", "groups:history", "mpim:history", "im:history", "channels:read", "groups:read", "im:read", "mpim:read", "users:read", "users:read.email", "reactions:read", "canvases:read", "lists:read"]
+write_scopes = ["search:read.public", "search:read.private", "search:read.mpim", "search:read.im", "search:read.files", "search:read.users", "files:read", "emoji:read", "channels:history", "groups:history", "mpim:history", "im:history", "channels:read", "groups:read", "im:read", "mpim:read", "users:read", "users:read.email", "reactions:read", "canvases:read", "lists:read", "chat:write", "channels:write", "groups:write", "im:write", "mpim:write", "reactions:write", "canvases:write", "lists:write", "files:write"]
+read_only = "scope"
+fixed_callback = true
+tile = "slack"
+option = "Sign in with your own Slack app"
+covers = "Slack's own hosted MCP server, as you: search messages, files, channels and people, read channels and threads, and (with write) send messages, react, and make canvases and lists. Needs an internal Slack app of yours: Slack lets only internal and Marketplace apps use MCP."
+docs = "https://docs.slack.dev/ai/slack-mcp-server/"
+guide = [
+  "Create an app for your workspace at https://api.slack.com/apps, or reuse one: only internal (and Marketplace) apps may use Slack's MCP server.",
+  "Under OAuth & Permissions, add your relay's /cb address as a redirect URL, and the user token scopes you want (search:read.public, channels:history, … and chat:write to send).",
+  "Give ferrule the app's client id and client secret (Basic Information → App Credentials).",
+]
+
+[[service]]
+name = "asana"
+title = "Asana"
+url = "https://mcp.asana.com/v2/mcp"
+auth = "oauth"
+client = "owner"
+client_env = "ASANA_OAUTH_CLIENT"
+resource = "https://mcp.asana.com/v2"
+read_only = "none"
+fixed_callback = true
+tile = "asana"
+option = "Sign in with your own Asana app"
+covers = "Asana's own hosted MCP server (V2): search, read and update tasks, projects, goals and portfolios, as you. Every change asks you first. Needs an Asana app of yours: Asana's V2 server takes no registration."
+docs = "https://developers.asana.com/docs/integrating-with-asanas-mcp-server"
+guide = [
+  "Create an MCP app in Asana's developer console (https://app.asana.com/0/my-apps).",
+  "Add your relay's /cb address as its redirect URL; it needs no scopes.",
+  "Give ferrule the app's client id and client secret.",
+]
+
+[[service]]
+name = "dropbox"
+title = "Dropbox"
+url = "https://mcp.dropbox.com/mcp"
+auth = "oauth"
+client = "owner"
+client_env = "DROPBOX_OAUTH_CLIENT"
+scopes = ["account_info.read", "files.metadata.read", "files.content.read", "sharing.read", "file_requests.read"]
+write_scopes = ["account_info.read", "files.metadata.read", "files.content.read", "sharing.read", "file_requests.read", "files.content.write", "sharing.write", "file_requests.write"]
+read_only = "scope"
+extra_params = { token_access_type = "offline" }
+fixed_callback = true
+tile = "dropbox"
+option = "Sign in with your own Dropbox app"
+covers = "Dropbox's own hosted MCP server: find, read and (with write) save files, share them and handle file requests. Needs a Dropbox app of yours: Dropbox registers only the MCP clients it lists."
+docs = "https://help.dropbox.com/integrations/connect-dropbox-mcp-server"
+guide = [
+  "In the Dropbox App Console (https://www.dropbox.com/developers/apps), create an app with Scoped access and Full Dropbox.",
+  "Under Permissions, turn on files.metadata.read, files.content.read, files.content.write, sharing.read, sharing.write, account_info.read, file_requests.read and file_requests.write.",
+  "Under Settings, add your relay's /cb address as a redirect URI, and give ferrule the App key (its client id) and App secret.",
+]

@@ -137,7 +137,7 @@ in three groups. From 900 px wide there is a sidebar with the same groups:
 
 | Group | Pages |
 |---|---|
-| Everyday | Home, Chat, Tasks, Memory, Usage |
+| Everyday | Home, Chat, Tasks, Proactive, Memory, Usage |
 | Setup | Connect, Channels, Connections, Models |
 | Advanced | Logs, Agents, Extensions, Routing, Console, Config, Settings |
 
@@ -173,6 +173,17 @@ that stays on the command line.
 
 **Memory.** Lists and searches what the bot remembers and lets you forget
 one. It's a keyword search over the memory database, opened read-only.
+
+**Proactive** (M64.5, [m64-proactive.md](m64-proactive.md) §8). The
+proactive pass's switch and settings (level, how often, quiet hours, the
+daily message cap, the gap between messages, its own dollar cap), the
+last pass and the next, today's messages and spend against its caps, and
+**Run a pass now**. Below: your commitments (open, snoozed, done lately;
+mark done, snooze a day, drop), what it noticed, asked and did in the
+last 30 days with your answer and 👍/👎, and the Never list (clear one,
+or all) with the kinds holding off after Not now or 👎. A settings change
+is written like a Config field (the file's hash, the loader's check, a
+version kept) and the pass's task follows at once, without a restart.
 
 **Backup.** Settings → Backup makes one file of your memory, chats, tasks
 and settings, **without keys or passwords**, and offers it for download.

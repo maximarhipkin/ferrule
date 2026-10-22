@@ -262,3 +262,87 @@ same `mcp_add` guided flow, so the same probe, scan and writer) and "Remove"
   scripted mock provider. Message 1, then `ferrule mcp add` from a second
   process, then message 2: the model is offered `mcp__<name>__echo` and its
   call succeeds, with no restart.
+
+## 8. MCP 2026-07-28 (wave C)
+
+Built 2026-10-22 on `autopilot` (wave C, re-audit Part 3 #14). The
+2026-07-28 revision of MCP drops the `initialize` handshake and HTTP
+sessions: "Every request now carries its protocol version and client
+capabilities in `_meta`", and servers "MUST implement" a new
+`server/discover`
+([changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog),
+"Major changes" 1–3). Servers move to it over time, so `ferrule-mcp` now
+speaks both: 2025-06-18 through `initialize`, as before, and 2026-07-28.
+The spec calls the two "legacy" and "modern", and a client that speaks
+both "dual-era"
+([Versioning and Compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning#backward-compatibility-with-initialization-based-versions)).
+
+**Finding out which a server speaks** (`ferrule-mcp/src/era.rs`), once
+per server, as the spec asks ("Clients SHOULD cache the result for the
+lifetime of the server process (stdio) or origin (HTTP)"):
+- **stdio** ([stdio, "Backward Compatibility"](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio#backward-compatibility)):
+  the first message to a fresh process is `server/discover` with
+  `2026-07-28` in `_meta`. A `DiscoverResult` (a `supportedVersions`
+  list) or a modern error means a modern server; "any other error, or
+  does not respond within a reasonable timeout" a legacy one, which then
+  gets `initialize`. The fallback isn't keyed to one error code, as the
+  spec says it "MUST NOT" be. ferrule waits 10 s (or the startup timeout
+  if shorter); a modern server slower than that refuses `initialize`, and
+  its late `DiscoverResult` still counts. A server that exits on the
+  probe is taken for a legacy one and started again, once. The era is
+  kept across respawns of the same config, which the spec allows ("MAY
+  persist it across restarts of the same server configuration").
+- **HTTP** ([Streamable HTTP, "Backward Compatibility"](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility)):
+  the first request to an address is `server/discover` in the modern
+  shape. A `DiscoverResult`, or a modern JSON-RPC error in the body,
+  means modern; a `4xx` whose body "is empty or is not a recognized modern
+  JSON-RPC error" means legacy, so `initialize` and a session follow, as
+  before. A refused credential, an egress denial, a `5xx` or a timeout
+  is an error, not a guess.
+- **The modern errors** are `HeaderMismatch` (-32020),
+  `MissingRequiredClientCapability` (-32021) and
+  `UnsupportedProtocolVersion` (-32022) (changelog, "Minor changes" 12).
+  A -32022 lists the versions the server takes: 2026-07-28 among them
+  means modern, only older ones means legacy, neither an error that names
+  them. A modern server that later answers -32022 is asked again, once.
+
+**Speaking to a modern server:**
+- Every request's `params._meta` carries
+  `io.modelcontextprotocol/protocolVersion` (`2026-07-28`),
+  `io.modelcontextprotocol/clientInfo` (`ferrule` and its version) and
+  `io.modelcontextprotocol/clientCapabilities` (`{}`: ferrule offers no
+  sampling, elicitation or roots, as before).
+- Over HTTP each POST has `MCP-Protocol-Version`, `Mcp-Method` and, for
+  `tools/call`, `prompts/get` and `resources/read`, `Mcp-Name`, base64'd
+  as `=?base64?…?=` when the name isn't plain printable ASCII
+  ([Streamable HTTP, "Request Metadata"](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#request-metadata));
+  no session id.
+- `x-mcp-header`: a tool parameter the server marks is mirrored into an
+  `Mcp-Param-{name}` header on its calls, encoded the same way, and a tool
+  whose marks break the spec's rules (not a header token, used twice, on
+  a non-primitive, or not reached through `properties` alone) is left out
+  of the list with a warning, which the spec requires of a client
+  ("Clients using the Streamable HTTP transport MUST reject tool
+  definitions where any `x-mcp-header` value violates these
+  constraints"). stdio ignores them, as it may.
+- A failed status whose body is a JSON-RPC error comes back as that
+  error (`404` with -32601 for an unknown method, for one).
+- `resultType`: a missing one is `"complete"`, as the spec says;
+  `"input_required"` (a Multi Round-Trip Request for sampling,
+  elicitation or roots) fails the call with a plain error, since ferrule
+  never answered those requests before either.
+- `ttlMs` on a tool list schedules one re-list after it runs out, at
+  least five minutes on, through the same signal as `list_changed`, so
+  M13 re-scans a changed list.
+
+**Kept working:** legacy stdio and HTTP servers, sessions, a forgotten
+session's restart, SSE responses, credentials and their refresh, egress
+denials. Every existing test of them passes unchanged.
+
+**Not done.** No modern server was tried live, and no test drives one
+(the owner's standing rule: no new tests). `subscriptions/listen` isn't
+opened, so a modern server's change notifications don't arrive; the
+`ttlMs` re-list stands in. Progress, logging per request
+(`io.modelcontextprotocol/logLevel`), the tasks extension, MRTR answers
+and `notifications/cancelled` aren't sent. The legacy handshake still
+asks for 2025-06-18, not 2025-11-25.

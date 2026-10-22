@@ -367,6 +367,14 @@ pub async fn run(
                 relay_wizard(conns, place, api).await?;
                 google_client_wizard(conns, place)?;
             }
+        } else if !conns.has_client(&service) {
+            // Wave C: any other service that signs in only with the
+            // owner's own app (Slack, Asana, Dropbox).
+            if service.fixed_callback && !relay_live {
+                println!("Its sign-in needs the fixed callback address first.");
+                relay_wizard(conns, place, api).await?;
+            }
+            owner_client_wizard(conns, place, &service)?;
         } else if let Some(blocked) = conns.blocked(&service, relay_live) {
             println!("{}", blocked.text);
             if service.fixed_callback && !relay_live {
@@ -534,6 +542,40 @@ fn google_client_wizard(conns: &Connections, place: &Place) -> Result<()> {
         .without_confirmation()
         .prompt()?;
     println!("{}", save_google_client(conns, place, &id, &s)?);
+    Ok(())
+}
+
+/// Wave C: the owner's own OAuth app for `service`, saved as
+/// `<client_env>_ID` and, when it has one, `<client_env>_SECRET`.
+fn owner_client_wizard(conns: &Connections, place: &Place, service: &Service) -> Result<()> {
+    if let Some(url) = conns.relay_url() {
+        println!("The app's redirect URL is {}/cb", url.trim_end_matches('/'));
+    }
+    let env = service.client_env_name();
+    let id = inquire::Text::new(&format!("{} app's client id:", service.title())).prompt()?;
+    let id = id.trim();
+    if id.is_empty() || id.contains(char::is_whitespace) {
+        bail!("the client id is one word, as the app's settings show it");
+    }
+    let secret = inquire::Password::new("Its client secret (empty if it has none):")
+        .without_confirmation()
+        .prompt()?;
+    let secret = secret.trim();
+    if secret.contains(char::is_whitespace) {
+        bail!("the client secret has no spaces");
+    }
+    place.put(&format!("{env}_ID"), id)?;
+    if !secret.is_empty() {
+        place.put(&format!("{env}_SECRET"), secret)?;
+    }
+    println!(
+        "Saved as {env}_ID{}.",
+        if secret.is_empty() {
+            ""
+        } else {
+            " and _SECRET"
+        }
+    );
     Ok(())
 }
 

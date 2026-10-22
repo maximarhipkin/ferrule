@@ -271,12 +271,13 @@ An add or an edit is kept only if it demonstrably helps (ACE's
 
 1. **Check.** The check is `[learning] check` if set, else
    `[agent] verify_command`. With neither, the delta goes to the **probe
-   gate** instead (M53, `docs/m53-contrastive-probing.md`): one re-run of
-   the episode in the same scratch-copy machinery, then a fixed-rubric
-   judge call contrasts the failing run's transcript tail with the
-   probe's (finished? fewer retries? truthful status? no new damage?).
-   Kept only if the judge prefers the probe; a tie, an unreadable answer
-   or a failed call rejects. If the gate can't probe either, the delta is
+   gate** instead (M53, `docs/m53-contrastive-probing.md`): the episode
+   re-runs in the same scratch-copy machinery with the delta and (M53.1)
+   again without it, then a fixed-rubric judge call compares the two
+   transcript tails blind, under seeded A/B labels (finished? fewer
+   retries? truthful status? no new damage?). Kept only if the judge
+   picks the run with the delta; neither, an unreadable answer or a
+   failed call rejects. If the gate can't probe either, the delta is
    **rejected** ("no check to gate on"). The proposed text still goes
    into the pass changelog either way, so the owner can add it by hand.
    An ungated lesson is exactly what ACE shows goes wrong.
@@ -307,7 +308,9 @@ An add or an edit is kept only if it demonstrably helps (ACE's
 4. **Verdict.** The delta passes when the run finished (not `incomplete`,
    no error) **and** the check exits 0 in the scratch copy, run **twice**
    by the pass itself after the agent is done. Running it twice costs no
-   tokens and catches the most common flaky check. If it passes, the
+   tokens and catches the most common flaky check. M53.1: a control run
+   without the delta then runs the check once, and the delta is kept
+   only if that fails (below). If it is kept, the
    delta is applied to the real playbook. If not, it is rejected with the
    reason (the run's stop reason, or the check's exit code and output
    tail) and the file is unchanged.
@@ -315,11 +318,15 @@ An add or an edit is kept only if it demonstrably helps (ACE's
 **Retire** is not gated. Removing a lesson can't make a prompt
 prompt-inject anything, it is logged, and a revert brings it back.
 
-**What the gate doesn't prove.** It doesn't prove causality: the task might
-have passed without the lesson (the failure was flaky, or the fix landed
-in the repo). A baseline run without the lesson would double the cost of
-every gate. It is left as an open edge. Because of this, the reflector
-prompt asks for "nothing" when the episode's detail reads as an outage.
+**What the gate doesn't prove.** Passing with the lesson doesn't show the
+lesson did it: the task might pass without it (the failure was flaky, or
+the fix landed in the repo). Since M53.1's fix
+(`docs/m53-contrastive-probing.md`, "M53.1 — the contrast gate, fixed")
+a control run without the lesson must then fail the check, and the
+change is kept only if it does. When the caps leave room for one re-run
+only, the gate's pass alone is weak evidence, kept only with the owner's
+👍. One run per arm is still one draw, so the reflector prompt still asks
+for "nothing" when the episode's detail reads as an outage.
 
 ## 6. The budget
 

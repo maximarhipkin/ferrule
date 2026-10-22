@@ -30,12 +30,17 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - The latest release is **v0.14.0** (2026-10-22, from `main` at
-    `ea88e4a` plus the version bump): everything through M64, PRs
-    #43–#56. Every crate is at 0.14.0 except `ferrule-plugin-sdk`, which
-    keeps 0.1.0. The one before it was v0.13.1 (2026-10-20, through
-    M49).
-  - **`main` is `ebc9e26`** (PR #54). PRs **#44–#54 are all merged**:
+  - The latest release is **v0.14.1** (2026-10-22, tagged on `main`
+    after PR #58): M64.4–M64.5 (the proactive heartbeat, feedback,
+    `/proactive` and its page), wave C (M53.1's contrast gate, OAuth
+    clients for more MCP servers, MCP 2026-07-28) and PR #59's Windows
+    fix, on top of v0.14.0. Every crate is at 0.14.1 except
+    `ferrule-plugin-sdk`, which keeps 0.1.0. Before it: **v0.14.0**
+    (2026-10-22, from `main` at `ea88e4a`: everything through M64.3,
+    PRs #43–#56) and v0.13.1 (2026-10-20, through M49).
+  - **`main` is `0714a42`** (PR #59, the Windows sandbox fix, 2026-10-22;
+    before it #55 wave A, #56 wave B and M64.0–M64.3, #57 the 0.14.0
+    release). PRs **#44–#54 are all merged** too:
     #44 "Allow for this run", #45 the Claude plan engine's bridged tools,
     #46 Telegram follow-ups (all 2026-10-20); #48 Kimi's M51–M53; #47,
     #49, #51, #52 and #53 the `autopilot` stacks (the gap analysis's
@@ -44,9 +49,9 @@ below it is append-only.
     owner's Telegram groups; #54 M62, compaction's summary input (a
     Cursor session on `cursor/compaction-summary-m62-a6a4`). CI was
     green on all three OSes for #53's and #54's merges.
-  - **`autopilot`** carries **improvement wave A** (below), one commit
-    per task on top of `main` (`ebc9e26` merged in as `544c608`). It has
-    no open PR yet; the coordinator pushes and opens it.
+  - **`autopilot`** (open as PR #58) carries M64.4, M64.5 and wave C
+    (below), one commit per task, with `main` merged in through
+    `0714a42`; the coordinator pushes.
 - **What landed on 2026-10-21:** M51–M53's follow-ups (media's poller,
   the media role and voice; the Safe's inventory, rotate, edit-hosts and
   config editing; learning's evidence clipping, learned skills, scopes,
@@ -65,8 +70,8 @@ below it is append-only.
   live; each Session Log entry's **Open** says what wasn't.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot`
-  (wave A, task 7): 1891 passed, 0 failed, 28 ignored across 73 test
-  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and
+  (M64.5): 1891 passed, 0 failed, 28 ignored across 73 test binaries
+  (macOS, 2026-10-22). CI runs on Linux, macOS and
   Windows; `release.yml` builds and signs five targets on a `v*` tag.
   Rust stable through rustup, edition 2021. **Branch protection is
   off:** `gh api repos/maximarhipkin/ferrule/branches/main/protection`
@@ -161,13 +166,26 @@ below it is append-only.
   one-step add (`mcp_add` with `catalog`, the Extensions page's Add).
   Built, `make check` green, nothing run live. Design and status:
   `docs/m63-connections-wave-b.md`.
-- **M64, a proactive agent** (2026-10-21, night) on `autopilot`, after
-  wave B, one commit and one Session Log entry per task: M64.0 the HTTP
-  write gate (a POST to a bound host asks after outside content); the
-  design (`docs/m64-proactive.md`); commitments and open loops; pattern
-  suggestions; the heartbeat; feedback, the suppression list and the
-  Proactive page. Owner-only, off by default, every action through the
-  existing gates and caps.
+- **M64, a proactive agent** (2026-10-21, night, to 2026-10-22) on
+  `autopilot`, after wave B, one commit and one Session Log entry per
+  task: M64.0 the HTTP write gate (a POST to a bound host asks after
+  outside content); the design (`docs/m64-proactive.md`); commitments
+  and open loops; pattern suggestions; the heartbeat; feedback (Not now
+  and 👎 back a kind off, 👍 and Useful end it, Never), `/proactive` and
+  the Proactive page. All six built, `make check` green, nothing run
+  live. PR #56 merged M64.0–M64.3 (`main` is its merge, `ea88e4a`);
+  M64.4 and M64.5 wait for the next PR. Owner-only, off by default,
+  every action through the existing gates and caps.
+- **Wave C** (2026-10-22) on `autopilot` (PR #58), after M64 and the
+  0.14.0 merge, one commit and one Session Log entry per task: (1)
+  M53.1's contrast gate fixed: a control run without the change, a
+  blind seeded A/B judge, weak evidence kept only with the owner's 👍;
+  (2) OAuth clients in the MCP spec's order: the owner's own app, a Client
+  ID Metadata Document (the relay's `/client.json`), then DCR; Home
+  Assistant by its address, Slack, Asana and Dropbox in the catalog; (3)
+  `ferrule-mcp` speaks MCP 2026-07-28 next to 2025-06-18, finding a
+  server's era once (`server/discover` probe on stdio, a first modern
+  request over HTTP).
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -175,7 +193,8 @@ below it is append-only.
   1. **Nothing has run live**: above all M54 owner mode on Linux and
      M54.4's binding (CI-compiled only), M56.1 steering, M56.5 resume,
      M56.6 buttons, M56.7 Telegram media, M51.4 voice, M53.5 reactions,
-     and all of wave A. The owner's go-ahead is needed (the global "don't
+     all of wave A, and M64 (the proactive pass has never met a model, a
+     bot, a calendar or a mailbox). The owner's go-ahead is needed (the global "don't
      run" rule).
   2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
      M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
@@ -184,11 +203,13 @@ below it is append-only.
      Todoist's DCR, the Microsoft 365 server's sign-in in the sandbox,
      iCloud's CalDAV discovery and the mail presets; CardDAV contacts and
      Outlook.com mail (OAuth only) are still missing.
-  4. **M53.1's evidence**: no control run without the lesson, unblinded
-     labels; fix before offering learning in owner mode.
-  5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
-     (`server/discover`, stateless): Home Assistant's official MCP,
-     Slack, Asana and Dropbox wait on them.
+  4. **M53.1's evidence**: fixed in wave C (control run, blind A/B);
+     never run against a real model. Offering learning in owner mode
+     with a small $ cap is the next step.
+  5. **CIMD and pre-registered OAuth clients**: built in wave C, task 2
+     (Home Assistant, Slack, Asana, Dropbox), never signed in live. **MCP
+     2026-07-28**: built in wave C, task 3; no modern server tried live,
+     and `subscriptions/listen` isn't opened.
   6. **Small polish**: M56.1's queue and interrupt, steered voice notes;
      M56.3's Undo and M56.5's pending offers lost on restart; Slack
      inbound files; `/bg`; keys without a prefix (Brave's, Tavily's)
@@ -9748,6 +9769,126 @@ binaries (macOS), clippy clean.
 thresholds (0.5, 3 on 3 days, 90 minutes) are guesses to tune. English
 stop words only.
 
+### 2026-10-21 — M64.4: the heartbeat pass (Claude, Opus 5.5)
+
+M64's task 4, in the `autopilot` worktree.
+
+**What changed.**
+- `proactive/heartbeat.rs` (new): the built-in `ferrule-proactive` task
+  and its job (registered always; the task made to match `[proactive]`
+  at the start), `hold` (off, quiet hours, kill switch and `[trust]`
+  caps, the day's proactive dollars from the ledger, the message cap and
+  gap), `gather` (the inputs of §3 with a status each), the digest skip,
+  `decide` (the one model call: `[proactive] model`, else routing's first
+  tier, else the default; a ledger row `proactive`; the JSON decision),
+  `note` (new and closed commitments, checked against the new messages
+  and the open list), `ideas` (what each idea may do, fixed by what it
+  refers to), and delivery of at most one message.
+- `proactive/outside.rs` (new): the next 24 h of native calendars
+  (`events_list`, `calendar_list`) and unread mail headers
+  (`gmail_search`, `mail_search`), in-process, 20 s and 2,000 characters
+  a connection, scrubbed with `health::redactor`.
+- The store keeps state again (`last_pass`, `digest`, `last_request`,
+  the day's sent count) and lists the Never list.
+- `main.rs` registers the pass after the reminders.
+- Docs: `m64-proactive.md` ("Built: M64.4"), the roadmap.
+
+**Choices made while building.** A due commitment's reminder is offered
+by ferrule itself, with no model call, so a quiet day still sends it.
+The digest leaves out the pass's own items and the Never list, so a
+message it sent doesn't cost a call next time. Leftover candidates clear
+the digest so they go out at later passes, one at a time.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Never run: not against a model (the prompt and the JSON shape
+are untested), a calendar, a mailbox or a bot. Remote (OAuth MCP)
+calendars and mailboxes aren't read. The model's language follows the
+owner's messages only as the prompt asks.
+
+### 2026-10-22 — M64.5: feedback, `/proactive` and the Proactive page (Claude, Opus 5.5)
+
+M64's last task, in the `autopilot` worktree. `git fetch origin main`
+found one commit `autopilot` lacked, PR #56's merge (`ea88e4a`, whose
+tree is `863613c`'s: PR #56 took M64.0–M64.3); merged signed as
+`a2a22fc`, no file changes, `make check` green (1891 passed, 0 failed,
+28 ignored). PR #56 is merged, so M64.4 and this task need a new PR.
+Touches M53.5's reaction wiring (one combined sink), M52's config page
+(four helpers made `pub(super)`, no behaviour change) and the menu,
+said here.
+
+**What changed.**
+- `proactive/store.rs`: a `feedback` table (item, kind, time, verdict:
+  `not_now`, `down`, `useful`, `up`); `back_off` (the n-th Not now or 👎
+  since the last 👍 or Useful, in 30 days, waits 2^(n-1) days, at most
+  16); `resting`, `resting_kinds`; `item_by_message`; `unsuppress`,
+  `clear_suppressed`; each item reads its last thumb.
+- `proactive/feedback.rs` (new): the channels' one reaction sink. A
+  reaction on a message a proactive item went out in is the proactive
+  store's (the owner's single 👍 or 👎 only; audited
+  `proactive_feedback`); any other goes on to M53.5's learning sink.
+  `main.rs` makes it when `[proactive] enabled` at the start, so
+  Telegram is asked for reactions when learning or proactive is on.
+- `proactive/status.rs` (new): the settings, today's messages and
+  spend against the pass's caps, the last pass, the task and its next
+  run, the Never list and what's resting; `words` for the chat.
+- `heartbeat.rs`: `apply` (this process's switch, `ensure_builtin` at
+  once); pending reminders wait while `reminder` rests; every candidate
+  of a resting kind is held back (counted in the summary); `resting` is
+  an input (left out of the digest) and the prompt asks the model to
+  respect it.
+- `door.rs`: `/proactive` `status` (the default), `on`, `off`, `level`
+  (through the page's handler with `api::act`, "the owner
+  (/proactive)"), `never` (the list, an item's id, or a kind), `clear
+  [kind|all]`, `patterns`, and the buttons. Not now and Useful write
+  feedback; Not now says how long the kind waits; a thumb or Useful
+  isn't "answered already". `proactive` is in the owner menu.
+- `dashboard/proactive_page.rs` (new): `GET /api/proactive`; `POST
+  proactive/settings` (the Config page's `fresh`, `commit`: base hash,
+  loader check, guard, `.prev`, a version; `act` asks first; then
+  `heartbeat::apply`; audited `proactive_settings` with each `from →
+  to`), `proactive/clear` (all after a yes) and
+  `proactive/commitment` (done, dropped, snoozed). No chat op maps to
+  them.
+- `app.js`: the Proactive page (Everyday, after Tasks; a lightbulb from
+  Lucide): the switch and level, the last and next pass, today's
+  messages and spend, Run a pass now (`tasks/run`), the settings form,
+  the commitments, the last 30 days of items with outcome and thumb, the
+  Never list with Clear and Clear all, what's holding off. Its 67 new
+  words are in `lang-he.js`.
+- Docs: `m64-proactive.md` ("Built: M64.5", §3's audit names, §7, §8,
+  §11), `dashboard.md` (the group table, a Proactive paragraph), the
+  roadmap; `learn/thumbs.rs`' comment.
+
+**Choices made while building.** The back-off is read from an
+append-only feedback table, not a counter: a 👍 or Useful resets it
+without losing the history, and a store M64.2–M64.4 made needs no
+migration (a new table, made if missing). A thumb never overwrites an answer
+(Do it, Not now, Never, Undo). The back-off holds back what the pass
+sends by itself, not `/proactive patterns` or a reminder offered in the
+chat the owner is typing in. `/proactive on|off|level` goes through the
+page's handler rather than `edit_config`, so the chat and the page share
+one write path with its version history. Telegram is asked for
+reactions only when proactive (or learning) is on at the start, as
+M53.5 decided for learning; turned on later, 👍/👎 count from the next
+restart, and `status` and the page say so.
+
+**Tests changed, none added** (the owner's standing rule): the menu
+test's count (24); `ProactiveDoor::HANDLES` gains `proactive`.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** Not run live: the sink on a real Telegram reaction, the page
+in a browser, `/proactive` in a chat, the back-off over real days.
+`[proactive]` changed in the Config page's raw editor or the file
+reaches the pass at its next run, but its task only at the next start.
+The page's words for outcomes and modes are the page's; the summaries,
+kinds' words and item texts are the server's, in English.
+
 ### 2026-10-22 — Release 0.14.0 (Claude, Opus 5.5)
 
 No milestone claimed. Branch `release-0.14.0`, from `main` at `ea88e4a`.
@@ -9843,3 +9984,186 @@ branch `claude/sandbox-flake-probe` is deleted.
 **Open.** Whether the failing VMs' `D:` really lacked the `Users` ACEs.
 A `ferrule sandbox` run in a `C:\` folder would guard the fix in CI on
 every run; not added (the no-new-tests rule).
+
+### 2026-10-22 — Wave C, task 1: M53.1's contrast gate, fixed (Claude, Opus 5.5)
+
+Wave C's first task, in the `autopilot` worktree, after merging `main`
+(PR #57, 0.14.0) into it (`3ad69e8`; `make check` green on the merge:
+1891 passed, 0 failed, 28 ignored, 73 binaries).
+
+**Why.** The re-audit (Part 1 "M53.1", Part 3 #12) found the probe gate
+"done differently, not fine": one re-run with the lesson was judged
+against the original failed run, labelled "Original" and "Second run
+(with the lesson)". A fresh draw beats a stochastic failure often on its
+own, so lessons got credit for noise, and the labels told the judge
+which run to prefer. Checked episodes kept a lesson that passed twice
+with no sign it failed without.
+
+**What changed** (`ferrule-learn`).
+- `pass.rs`: `judged` is replaced by `contrast_gate`. The episode
+  re-runs with the change, then (when `Meter::room_for` says the caps
+  hold another run of what that one cost) a control without it: the
+  playbook as it stands, no draft skill. Without a check, `judge` asks
+  one blind call; with a check, the control must fail it. Without room
+  for the control the evidence is weak (`weak`): kept only when the
+  episode is an owner's 👎 with a later 👍 in the same chat.
+- `judge.rs`: a new prompt (no lesson shown, labels A/B, "neither" is
+  the default), `Slate` (FNV-1a seed from pass id and gate number,
+  splitmix64, low bit), `Contrast` (better, worse, confounded), and a
+  parser for `{"better":"A"|"B"|"neither","why":…}`; anything unreadable
+  is confounded.
+- `gate.rs`: `GateRun::control` (derive `Clone`); a control's transcript
+  is `control-<n>`, its scratch dir `control-<pass>-<n>`, its check runs
+  once, and its reasons say "without the lesson". Probe tails are
+  rendered without the system prompt (`episode::render_run`), which
+  holds the playbook.
+- `budget.rs`: `Spent::since`, `Meter::room_for`.
+- `pass/skill.rs`: skills take the same path; the control is the same
+  playbook without the draft.
+- Ledger origins gain `control:<n>`; the pass log gains `"judge"` lines
+  with the seed, the change's label and what it was compared with.
+- Docs: `m53-contrastive-probing.md` ("M53.1 — the contrast gate,
+  fixed", and a pointer at the top), `m16-learning-loop.md` §5 (step 1,
+  step 4, "What the gate doesn't prove"), `roadmap.md` (M53's list).
+
+**Tests changed, none added** (the owner's standing rule): the judge's
+parse test takes the new answer; `pass/tests.rs`'s fake gate fails its
+control, the probe fake marks which run it is, and the queue provider
+can answer as a judge picking the run holding a word
+(`@pick:<needle>`); `ferrule-cli`'s learn story counts the control's
+scratch dir as a gate run and doesn't write the result there.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Never run against a real model. One draw per arm: the
+contrast removes the "against a failure" bias, not run-to-run noise.
+The 👍 corroboration is coarse: it says the chat ended well, not that
+the lesson did. A big first re-run leaves later episodes in the pass on
+weak evidence, so they keep nothing; the caps are the dial.
+
+### 2026-10-22 — Wave C, task 2: OAuth clients for more MCP servers (Claude, Opus 5.5)
+
+Wave C's second task, in the `autopilot` worktree (re-audit Part 3 #11).
+
+**Why.** ferrule could only register itself (DCR) or use Google's owner
+client. Home Assistant's MCP server takes a Client ID Metadata Document
+and no DCR; Slack's and Asana's take only an app the owner registers;
+Dropbox registers only clients it lists. The MCP authorization spec
+(2025-11-25 and 2026-07-28) orders the three ways: pre-registered, then
+metadata documents where the server advertises them, then DCR.
+
+**What changed.**
+- `ferrule-connections/src/oauth.rs`: `client` follows that order and
+  says which it used (`ClientVia`); `owner_client` (id required, secret
+  optional); `check_cimd` (https with a path, `client_id` equal to the
+  URL, a `client_name`, the callback in `redirect_uris`); `Endpoints`
+  gains `cimd` and `issuer`; DCR sends `application_type` (SEP-837);
+  Slack's `200 {"ok": false}` is a refusal.
+- `service.rs`: `cimd_for` (the owner's `[connections]
+  client_metadata_url`, else the relay's `/client.json` when the
+  callback is the relay's); `has_client` needs only the id; a present
+  `iss` must match the metadata's `issuer` (SEP-2468; tunnel and
+  paste-back now keep `iss`); `blocked` explains an owner app for any
+  service, and its fixed-callback text and buttons are no longer
+  Google's or Atlassian's for everyone; `resource` from the entry.
+- `catalog.rs`: `client_env_name` (default `<NAME>_OAUTH_CLIENT`), a
+  `resource` override, and `client = "owner"` no longer needs pinned
+  endpoints. `catalog.toml`: `slack`, `asana`, `dropbox` (owner app,
+  fixed callback), checked against each vendor's docs and live OAuth
+  metadata on 2026-10-22.
+- `relay/worker.js`: `GET /client.json`, the document, built from the
+  Worker's own origin.
+- `ferrule-cli`: `ferrule connections setup <service>` asks for an owner
+  app's id and secret; `ferrule_admin` `mcp_add` takes `client_id` and
+  `client_secret` with `catalog` or an OAuth `url` (the id saved, the
+  secret asked for with `secret_request` bound to the token and
+  revocation hosts, then the Sign in button); the tool's description
+  and schema say so.
+- Docs: `m20-connections.md` §3.6 and the relay's contract,
+  `m63-connections-wave-b.md` (the left-out list), `roadmap.md` (M20).
+
+**Tests changed, none added** (the owner's standing rule): the catalog's
+names list gains the three entries.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Nothing signed in live: not Home Assistant through the relay's
+document, not Slack's `scope` on its `v2_user` endpoint, not Asana's
+`resource`. A relay deployed before today serves no `/client.json` until
+redeployed. The owner's app isn't keyed by the authorization server's
+`issuer` (SEP-2352). The dashboard has no form for a non-Google owner
+app. `node --test relay/` wasn't run here (CI runs it).
+
+### 2026-10-22 — Wave C, task 3: MCP 2026-07-28 next to 2025-06-18 (Claude, Opus 5.5)
+
+Wave C's third task, in the `autopilot` worktree (re-audit Part 3 #14).
+
+**Why.** MCP 2026-07-28 drops `initialize` and HTTP sessions, puts the
+version and the client's identity in every request's `_meta`, adds
+`server/discover` and standard request headers. Vendor servers will move
+to it; a client that only does the handshake fails against a modern-only
+server ("Legacy client, modern server: fails", the spec's matrix).
+
+**What changed** (`ferrule-mcp`).
+- `era.rs` (new): `Era` (modern or legacy), `with_meta`, `era_of` (a
+  probe's answer: a `DiscoverResult` or a modern error is modern, anything
+  else legacy, never keyed to one code), the modern error codes,
+  `complete` (`resultType: "input_required"` fails plainly),
+  `header_value` (the `=?base64?…?=` encoding), and `x-mcp-header`
+  parsing and checking.
+- `client.rs`: a fresh stdio process is probed with `server/discover`
+  (10 s, or a late answer after a refused `initialize`); a legacy one gets
+  `initialize`, a modern one `_meta` on every request; the era is kept
+  across respawns; a server that exits on the probe is restarted once as
+  legacy. Over HTTP, tools with bad `x-mcp-header` marks are left out and
+  the rest's marked parameters become `Mcp-Param-*` headers. A list's
+  `ttlMs` schedules one re-list (at least five minutes on).
+- `http.rs`: the first request to an address is a modern
+  `server/discover`; a `4xx` without a modern error body means legacy,
+  and the old session path runs. Modern requests carry
+  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, no session; a failed
+  status with a JSON-RPC error body comes back as that error; a later
+  -32022 re-asks once.
+- Docs: `m17-mcp-add.md` §8 (every rule cited to the spec's pages),
+  `roadmap.md` (M17).
+
+**Tests changed, none added** (the owner's standing rule). Every
+existing MCP test (stdio and HTTP mocks, all legacy) passes unchanged.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** No modern server tried live and no test drives one.
+`subscriptions/listen`, per-request log levels, the tasks extension,
+MRTR answers and `notifications/cancelled` aren't built. The handshake
+still asks for 2025-06-18. A legacy stdio server that ignores unknown
+requests costs its first spawn 10 s.
+
+### 2026-10-22 — Release 0.14.1 (Claude, Opus 5.5)
+
+No milestone claimed. On `autopilot` (PR #58), as its last commit, so
+CI checks the features and the bump together and the tag goes on the
+merge commit.
+
+**What changed.** Every crate's version goes from 0.14.0 to 0.14.1
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+Current State's release line says so. A patch bump: since v0.14.0 the
+branch adds the rest of M64 (the heartbeat, feedback, `/proactive` and
+its dashboard page), wave C (M53.1's contrast gate with a control run,
+OAuth clients via the owner's app or a Client ID Metadata Document, MCP
+2026-07-28 next to 2025-06-18) and PR #59's Windows sandbox fix, with no
+breaking config change.
+
+**Checks.** Not run locally for the bump itself (mechanical; the PR's CI
+on Linux, macOS and Windows is the gate, and the tag goes on `main` only
+after it is green). Every feature commit before it passed `make check`.
+
+**Open.** The release build (`release.yml`, five targets) runs on the
+tag; nothing here runs the binaries. The owner's server should get
+`ferrule doctor` and a short live check after the update (owner mode's
+Linux code, the proxy binding and the proactive heartbeat have never run
+live).

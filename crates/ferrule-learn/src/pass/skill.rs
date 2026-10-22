@@ -2,7 +2,7 @@
 //! the validators, the gate (or the probe and the judge), then kept in
 //! `<data>/learned-skills/` and journaled like a lesson.
 
-use super::{judged, note, reject, Env};
+use super::{contrast_gate, note, reject, Env};
 use crate::budget::{LearnSink, Meter};
 use crate::episode::Episode;
 use crate::files::{Change, PassRecord};
@@ -31,7 +31,6 @@ pub(super) struct Ctx<'a> {
     pub pass_dir: &'a Path,
     pub gate_n: &'a mut usize,
     pub episode: &'a Episode,
-    pub tail: &'a str,
     /// The playbook as it stands, for the gate run's prompt.
     pub playbook_block: Option<&'a str>,
     /// M53.4: the episode's scope, where the skill applies.
@@ -91,12 +90,14 @@ async fn drafted(
     let probed = env.gate.check().is_none();
     *cx.gate_n += 1;
     let n = *cx.gate_n;
-    let sink = LearnSink::new(
-        env.ledger.clone(),
-        meter.clone(),
-        env.price.clone(),
-        format!("gate:{n}"),
-    );
+    let sink = |origin: &str| {
+        LearnSink::new(
+            env.ledger.clone(),
+            meter.clone(),
+            env.price.clone(),
+            format!("{origin}:{n}"),
+        )
+    };
     env.dir.log(
         &rec.id,
         if probed { "probe" } else { "gate" },
@@ -107,15 +108,19 @@ async fn drafted(
         episode: ep,
         playbook_block: cx.playbook_block,
         skill: Some(&dir),
-        sink,
+        sink: sink("gate"),
         meter: meter.clone(),
         pass_dir: cx.pass_dir,
+        control: false,
     };
-    let verdict: GateVerdict = if probed {
-        judged(env, meter, &rec.id, ep, cx.tail, &draft.summary(), run).await
-    } else {
-        env.gate.run(run).await
+    // M53.1: the control run is the same playbook without the draft.
+    let control = GateRun {
+        skill: None,
+        sink: sink("control"),
+        control: true,
+        ..run.clone()
     };
+    let verdict: GateVerdict = contrast_gate(env, meter, &rec.id, ep, run, control).await;
     if !verdict.passed {
         let budget = meter.exceeded();
         reject(

@@ -349,7 +349,7 @@ fn check_text(text: &str) -> Result<(), (Option<usize>, String)> {
 const KEEP: usize = 20;
 
 /// A file's text as the page's `base_hash`: SHA-256, base64.
-fn hash_of(text: &str) -> String {
+pub(super) fn hash_of(text: &str) -> String {
     ferrule_connections::seal::sha256_b64(text.as_bytes())
 }
 
@@ -484,7 +484,7 @@ pub(super) fn remember(ctx: &Ctx, before: &str, after: &str, how: &str) {
     keep_version(ctx, &new, how, &sections);
 }
 
-fn place(ctx: &Ctx) -> Result<PathBuf, Answer> {
+pub(super) fn place(ctx: &Ctx) -> Result<PathBuf, Answer> {
     ctx.config_path
         .clone()
         .ok_or_else(|| missing("the config file"))
@@ -528,7 +528,7 @@ fn audit(ctx: &Ctx, event: &str, detail: Value) {
 
 /// Checks `new` (with its secrets already put back) against the file, and
 /// writes it. `guard`: refuse a command-bearing change.
-fn commit(
+pub(super) fn commit(
     ctx: &Ctx,
     path: &Path,
     old: Option<&DocumentMut>,
@@ -574,7 +574,7 @@ fn commit(
     ok(json!({ "ok": true, "sections": sections, "restart": restart && !sections.is_empty() }))
 }
 
-fn read_doc(path: &Path) -> Result<(String, Option<DocumentMut>), Answer> {
+pub(super) fn read_doc(path: &Path) -> Result<(String, Option<DocumentMut>), Answer> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let doc = text.parse::<DocumentMut>().ok();
