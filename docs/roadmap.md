@@ -1594,6 +1594,18 @@ Current State; numbers are claimed there before anything is built.
     Never list or was offered in 30 days. `proactive::offer`, the one way
     an item reaches the owner; Do it adds the owner's task (Undo deletes
     it); `/proactive patterns` offers the candidates now. Not run live.
+  - **M64.4, the heartbeat**: the built-in `ferrule-proactive` task (every
+    3 h at minute 7, the owner's zone). Skipped, with the reason logged,
+    when off, in quiet hours, under the kill switch or a `[trust]` cap,
+    past its own day's dollars (from the ledger, fail closed), or past the
+    day's message cap or gap. Reads profile facts, the new owner messages,
+    open commitments and loops, patterns, the owner's tasks, its own
+    recent items, the Never list, and the next 24 h of native calendars
+    and unread mail headers (in-process, scrubbed, fenced as outside
+    content). No model call when nothing changed (a due reminder still
+    goes out); one call to the cheap model otherwise, a JSON decision
+    that ferrule checks; one message a pass; `proactive_pass` audited.
+    Not run live.
 
 **Still open from earlier tracks.**
 

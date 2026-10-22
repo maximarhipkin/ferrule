@@ -3329,6 +3329,7 @@ async fn run_gateway(
     // M64: reminders run whether proactive is on or not; the owner's
     // messages are kept and the tool offered only while it is.
     let scheduler = proactive::reminder::register(scheduler, hub.clone());
+    let scheduler = proactive::heartbeat::register(&cfg, scheduler, hub.clone(), true);
     proactive::set_on(cfg.proactive.enabled);
     let scheduler = Arc::new(learn::register(
         &cfg,

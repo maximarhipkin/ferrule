@@ -423,3 +423,55 @@ the door, from the owner, never by the model.
   (`Pattern::question`). The pass (M64.4) offers them by itself, its
   model phrasing the question.
 
+## Built: M64.4, the heartbeat
+
+- `proactive/heartbeat.rs`: the built-in task `ferrule-proactive`
+  (`7 */N * * *` in the owner's zone; made to match `[proactive]` at each
+  gateway start, its job registered whether it's on or not) and `pass`.
+- **Before the model** (`hold`), in order: off; quiet hours (a range that
+  wraps midnight works); the kill switch and the `[trust]` caps
+  (`Hub::check("proactive")`); today's proactive dollars, summed from the
+  ledger's `proactive` rows since the owner's midnight (an unreadable
+  ledger fails the run: fail closed); and, unless the level is `off`,
+  the day's message cap and the gap since the pass's last message. A
+  reminder offered in a chat turn (M64.2) doesn't count here.
+- **Inputs** (`gather`), each with a status in the run log: up to 10
+  profile and preference facts; up to 40 of the owner's messages kept
+  since the last pass; up to 30 open commitments and loops (after
+  `loops::sync`); up to 5 pattern candidates; the owner's tasks with
+  their last run; the pass's last 10 items from 14 days with their
+  outcomes; the Never list; the calendar and the mail (`outside.rs`:
+  every connected native connection with `events_list`, `calendar_list`,
+  `gmail_search` or `mail_search`, called in-process with 20 seconds
+  each; 2,000 characters a connection; every known secret scrubbed;
+  fenced in `<outside source="…">`, a closing tag inside broken).
+- **No call without a change.** The digest (FNV-1a over the inputs but
+  the clock, the pass's own recent items and the Never list) equal to the
+  last call's, or no inputs at all: no model call. A commitment's
+  reminder still goes out then, without the model: open commitments with
+  a due time and no reminder, never offered one, are offered by ferrule
+  itself, first, whatever the model says.
+- **The call**: `[proactive] model`, else `[routing]`'s first tier when
+  routing is on, else the default model; a fixed system prompt (in the
+  code, `SYSTEM`), the inputs as JSON, 1,500 output tokens at most,
+  temperature 0.2. One ledger row (`call_kind`, `task_shape` and `tree`
+  `proactive`), priced by the model's prices, so it counts in every cap.
+  An answer that isn't the JSON asked for fails the run with that reason;
+  nothing is sent.
+- **What ferrule takes from the answer**: a new commitment only when it
+  names one of the new messages (and isn't already open); "done" only
+  for an open commitment; an idea only when it refers to something in the
+  input: a pattern (its task, ferrule's), a commitment or loop (a nudge
+  with no action), or the calendar or the mail (at most a plain-text
+  reminder within 7 days, basis `outside`, so never done unasked). A note
+  goes out with Useful / Never. Kinds on the Never list are dropped.
+- **One message a pass**: the first candidate (pending reminders, then
+  the new commitments' reminders, then the ideas in the model's order,
+  then the note). When more are left, the digest is cleared so the next
+  pass calls again; at `off` every candidate is noticed and nothing sent.
+- **Audit**: `proactive_pass` for every pass (skipped and why, what it
+  read, the model, the cost, what it sent), plus the item events of §3.
+  The last pass is kept in the store (`last_pass`) for the page.
+- Not yet (M64.5): Not now's back-off, 👍/👎, the page, and `/proactive`'s
+  settings.
+

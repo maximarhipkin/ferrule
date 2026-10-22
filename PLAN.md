@@ -9745,3 +9745,43 @@ binaries (macOS), clippy clean.
 thresholds (0.5, 3 on 3 days, 90 minutes) are guesses to tune. English
 stop words only.
 
+### 2026-10-21 — M64.4: the heartbeat pass (Claude, Opus 5.5)
+
+M64's task 4, in the `autopilot` worktree.
+
+**What changed.**
+- `proactive/heartbeat.rs` (new): the built-in `ferrule-proactive` task
+  and its job (registered always; the task made to match `[proactive]`
+  at the start), `hold` (off, quiet hours, kill switch and `[trust]`
+  caps, the day's proactive dollars from the ledger, the message cap and
+  gap), `gather` (the inputs of §3 with a status each), the digest skip,
+  `decide` (the one model call: `[proactive] model`, else routing's first
+  tier, else the default; a ledger row `proactive`; the JSON decision),
+  `note` (new and closed commitments, checked against the new messages
+  and the open list), `ideas` (what each idea may do, fixed by what it
+  refers to), and delivery of at most one message.
+- `proactive/outside.rs` (new): the next 24 h of native calendars
+  (`events_list`, `calendar_list`) and unread mail headers
+  (`gmail_search`, `mail_search`), in-process, 20 s and 2,000 characters
+  a connection, scrubbed with `health::redactor`.
+- The store keeps state again (`last_pass`, `digest`, `last_request`,
+  the day's sent count) and lists the Never list.
+- `main.rs` registers the pass after the reminders.
+- Docs: `m64-proactive.md` ("Built: M64.4"), the roadmap.
+
+**Choices made while building.** A due commitment's reminder is offered
+by ferrule itself, with no model call, so a quiet day still sends it.
+The digest leaves out the pass's own items and the Never list, so a
+message it sent doesn't cost a call next time. Leftover candidates clear
+the digest so they go out at later passes, one at a time.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Never run: not against a model (the prompt and the JSON shape
+are untested), a calendar, a mailbox or a bot. Remote (OAuth MCP)
+calendars and mailboxes aren't read. The model's language follows the
+owner's messages only as the prompt asks.
+

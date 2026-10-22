@@ -383,6 +383,14 @@ impl Store {
         Ok(())
     }
 
+    /// The list, oldest first: each kind and when.
+    pub fn suppressed(&self) -> Result<Vec<(String, i64)>> {
+        let db = self.db();
+        let mut st = db.prepare("SELECT kind, at FROM suppressed ORDER BY at")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn is_suppressed(&self, kind: &str) -> Result<bool> {
         Ok(self
             .db()
@@ -396,6 +404,28 @@ impl Store {
     }
 
     // ---- state ----------------------------------------------------------------
+
+    // ---- state --------------------------------------------------------------
+
+    pub fn state(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT value FROM state WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
+        self.db().execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
 }
 
 const COMMITMENT: &str =

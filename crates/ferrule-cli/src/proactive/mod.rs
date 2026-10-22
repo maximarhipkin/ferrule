@@ -5,7 +5,9 @@
 //! receipt and Undo.
 
 pub mod door;
+pub mod heartbeat;
 pub mod loops;
+pub mod outside;
 pub mod patterns;
 pub mod reminder;
 pub mod store;
