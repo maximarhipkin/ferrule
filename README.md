@@ -478,8 +478,11 @@ slack_allowed_users = ["U0123ABCD"]
 
 Anyone can find a bot and message it, so only the chats in
 `telegram_allowed_chats` reach the agent. While the list is empty, the bot
-answers each new chat once with its chat id and forwards nothing.
-Discord and Slack follow the same rule with their own user lists, and in
+answers each new chat once with its chat id and forwards nothing. Once
+you're on it, adding the bot to a group or someone new writing to it
+sends you **Allow / Ignore** buttons in your private chat with the bot.
+Allow lets that chat in at once and saves it to the list; a group in
+owner mode still answers only you. Discord and Slack follow the same rule with their own user lists, and in
 a shared channel they answer only when mentioned. Setup can pair you
 with a six-digit code.
 

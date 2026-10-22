@@ -10762,3 +10762,41 @@ run after it updates, so the update itself is what unlocks its config.
 merge.
 
 **Open.** Nothing ran on a real system service yet.
+
+### 2026-10-22 — Telegram: the owner allows new groups and people from the chat (Claude, Opus 5.5)
+
+No milestone claimed. On `telegram-owner-allows-chats`.
+
+**Why.** Max's bot runs as a system service. Once it was live, the only
+way to let in another group or person was editing `telegram_allowed_chats`
+on the server: the Config page refuses `*allowed*` fields by design
+(`guarded_key`), and the dashboard's Telegram "allow a chat" step returns
+409 while the bot polls.
+
+**What changed.**
+- `ferrule-gateway` `channels/telegram.rs`: `allowed_chats` is a
+  `Mutex<Vec<i64>>` the owner can add to while the bot runs.
+  `with_allow_saver` sets an `AllowSaver`. With an owner chat and a saver,
+  a group the bot joins (`my_chat_member` is now in `allowed_updates`) or
+  an unknown chat that writes to it is put to the owner once per run, with
+  **Allow / Ignore** buttons (`ferrule:allow:<id>` / `ferrule:ignore:<id>`).
+  The new chat itself still hears nothing (a stranger gets silence, as
+  before). Only the owner's own tap in
+  their private chat decides, and the tap never reaches the agent. Allow
+  admits the chat live, saves it, says hello there, and tells the owner if
+  the save failed.
+- `ferrule-cli`: `main.rs` `telegram_allow_saver` writes through
+  `setup::allow_chat` (re-reads the file, appends, `save_allowed`) and
+  audits `channel.chat_allowed`. The Config page's refusal
+  (`config_page::refusal`) now names where a refused field can be changed,
+  and for `telegram_allowed_chats` it points to the Telegram flow.
+- README: a short paragraph under the allow-list rule.
+
+**Not done.** Owner mode still admits only the owner in a group, so
+allowing a group lets others in only when owner mode is off (the question
+says so). Ignore isn't remembered across restarts. No new tests (Max's
+rule); the existing `allowed_updates` assertion and two `admits` calls
+in `telegram.rs`'s tests follow the new code.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored
+across 73 test binaries (macOS). Not tried against real Telegram.
