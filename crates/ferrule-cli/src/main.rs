@@ -2843,6 +2843,7 @@ fn build_channels(
                 .with_allow_saver(telegram_allow_saver())
                 // M54: owner mode treats a group as the owner's chat.
                 .with_only_owner_in_groups(owner_mode::wanted(cfg))
+                .with_mention_only_in_groups(cfg.gateway.telegram_group_mention_only)
                 .with_menu(self_service::menu::all(cfg.dashboard.enabled))
                 .with_conflict_after(Duration::from_secs(
                     cfg.health.telegram_conflict_secs.max(1),

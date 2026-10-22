@@ -531,6 +531,10 @@ pub struct GatewayConfig {
     /// M27: whether Telegram replies stream; unset follows `[agent] stream`.
     #[serde(default)]
     pub telegram_stream: Option<bool>,
+    /// In an allowed Telegram group, only messages that @mention the bot or
+    /// reply to it reach the agent; the rest there are ignored.
+    #[serde(default)]
+    pub telegram_group_mention_only: bool,
     /// M31: env var holding the Discord bot token. Unset = Discord off.
     pub discord_token_env: Option<String>,
     /// Discord's REST API, for tests; the Gateway URL comes from it.
@@ -1733,6 +1737,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                                           # nobody (it replies with the chat id)
 # telegram_base_url = "https://api.telegram.org"
 # telegram_stream = true                    # unset = follow [agent] stream
+# telegram_group_mention_only = false       # groups: answer only an @mention or a reply
 # discord_token_env = "DISCORD_BOT_TOKEN"    # unset = Discord disabled (docs/discord.md)
 # discord_allowed_users = []                # user ids whose DMs it answers
 # discord_allowed_channels = []             # channels where an @mention reaches it

@@ -30,9 +30,12 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.5** (2026-10-22): releases build with thin LTO and the
-    default codegen units (faster builds, nothing else changes). Every
-    crate is at 0.14.5 except `ferrule-plugin-sdk`.
+  - **v0.14.6** (2026-10-22, PRs #66 and #67): `watch_video` finds
+    ffmpeg and ffprobe in `<data>/bin` too, and `[gateway]
+    telegram_group_mention_only` lets only an @mention or a reply in from a
+    Telegram group. Every crate is at 0.14.6 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.5** (2026-10-22): releases build with thin LTO and the
+    default codegen units (faster builds, nothing else changes).
   - Before it, **v0.14.4** (2026-10-22, PR #64): the owner allows new
     Telegram groups and people from the chat, with Allow / Ignore
     buttons.
@@ -10843,3 +10846,26 @@ workflow has no dependency cache.
 
 **Checks.** `make check` green before the merge (it doesn't build the
 release profile). Merged without waiting for CI, as Max asked.
+
+### 2026-10-22 — Release 0.14.6: ffmpeg in <data>/bin, Telegram groups by mention (Claude, Opus 5.5)
+
+No milestone claimed. On `telegram-group-mention-only` (PR #67), after #66.
+
+**Why.** On a server where apt is blocked, ffmpeg lives in `<data>/bin`
+and `watch_video` didn't look there (#66). And in a Telegram group shared
+with people and other bots, every message reached the agent, which then
+posted a reply or a note on why it wouldn't; a memory rule didn't stop it.
+
+**What changed.** `[gateway] telegram_group_mention_only` (default off,
+also on the Config page): a group message gets in only when it @mentions
+the bot (text or caption, any case, `/cmd@bot`), has a `text_mention` of
+it, or replies to one of its messages (`addressed_to`, with a unit test).
+The bot's id and username come from `getMe` once; if that fails, groups
+stay unfiltered. Every crate goes to 0.14.6 (`ferrule-plugin-sdk` keeps
+0.1.0); `Cargo.lock`, the README badge and `FERRULE_VERSION` examples follow.
+
+**Not done.** Not built locally (no Rust toolchain on the server); CI is
+the first build. No end-to-end test against a mock Telegram with `getMe`.
+
+**Checks.** CI on the PR (Ubuntu green before the merge); merged on Max's
+go.

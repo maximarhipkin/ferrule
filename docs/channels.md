@@ -18,7 +18,12 @@ channel that has credentials. Every channel keeps the same rules:
   button and a guide. `ferrule doctor` has a line per channel.
 
 Telegram is set up by `ferrule setup` or the dashboard's Telegram panel
-and described in the README; Discord and Slack in [discord.md](discord.md)
+and described in the README. In a Telegram group every message reaches
+the agent, so a bot that shares a group with people and other bots
+answers (or explains why it won't) after each one; `[gateway]
+telegram_group_mention_only = true` (also on the Config page) lets in only
+the messages that `@mention` the bot, mention it by name, or reply to one
+of its messages. Private chats aren't affected. Discord and Slack in [discord.md](discord.md)
 and [slack.md](slack.md), and since M50 they have dashboard cards too. This page covers the
 channels added in M39, and the two bridge channels added in M59
 ([personal WhatsApp](#personal-whatsapp) and [iMessage](#imessage)). The design, and the reasons behind it, are in
