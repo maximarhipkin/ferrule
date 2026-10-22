@@ -89,7 +89,12 @@ jobs:
           cargo build --locked -p ferrule-cli
           mkdir -p "$RUNNER_TEMP/ws"
           cd "$RUNNER_TEMP/ws"
-          "$GITHUB_WORKSPACE/target/debug/ferrule" sandbox
+          # A refused write on Windows: the workspace's ACL says which half
+          # of the check refused it.
+          "$GITHUB_WORKSPACE/target/debug/ferrule" sandbox || {
+            [ "$RUNNER_OS" != Windows ] || icacls .
+            exit 1
+          }
 
       # The control room in a real browser: dismiss a notice, pick a
       # fallback, connect with a key, run a console command, chat once.
