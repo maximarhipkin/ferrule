@@ -54,6 +54,9 @@ pub struct MediaLimits {
     /// The most one video may cost by its estimate, in dollars; 0 = no
     /// per-video cap.
     pub max_usd_per_video: f64,
+    /// M65 §3: the video models that take reference images
+    /// (`input_references`); a reference for any other is refused.
+    pub reference_models: Vec<String>,
 }
 
 /// The media backend, the jobs table, and the way back to the chat — one
@@ -396,7 +399,7 @@ impl Tool for GenerateImageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "generate_image".into(),
-            description: "Create an image with an image model and save it in the workspace under media/ (and send it to this chat when there is one). With `reference` paths it edits those images instead. Each call spends money — say so before a big batch.".into(),
+            description: "Create an image with an image model and save it in the workspace under media/ (and send it to this chat when there is one). With `reference` paths it edits those images instead. To keep a person's face and look (from a photo sent in the chat), pass that photo in `reference` and say in the prompt what must stay the same: the face, hair, build, skin tone, clothes. Each call spends money — say so before a big batch.".into(),
             parameters: {
                 let mut p = json!({
                     "type": "object",
@@ -547,6 +550,9 @@ pub struct GenerateVideoTool {
     /// The run tree its spend is charged to; the session's own by default.
     tree: String,
     hidden: Vec<PathBuf>,
+    /// M65 §3: `reference` (a person's photo) is offered: the owner's own
+    /// chats and sub-agents only.
+    references: bool,
 }
 
 impl GenerateVideoTool {
@@ -561,6 +567,7 @@ impl GenerateVideoTool {
             tree: session_id.clone(),
             session_id,
             hidden,
+            references: false,
         }
     }
 
@@ -568,6 +575,24 @@ impl GenerateVideoTool {
     pub fn in_tree(mut self, tree: impl Into<String>) -> Self {
         self.tree = tree.into();
         self
+    }
+
+    /// M65 §3: offer `reference`, a person's photo carried into the clip.
+    /// Only for the owner's own chats and sub-agents: a real person's face
+    /// isn't recreated for anyone else.
+    pub fn with_references(mut self, on: bool) -> Self {
+        self.references = on;
+        self
+    }
+
+    /// The models a reference may go to: the allowed ones that take them.
+    fn reference_capable(&self) -> Vec<String> {
+        let takes = self.shared.limits().reference_models;
+        self.shared
+            .allowed(JobKind::Video)
+            .into_iter()
+            .filter(|m| takes.contains(m))
+            .collect()
     }
 
     /// What a video will cost, from the list price, before it's submitted;
@@ -581,6 +606,7 @@ impl GenerateVideoTool {
                     usd: price.usd_per_second * f64::from(seconds),
                     per_second: price.usd_per_second,
                     seconds,
+                    resolution: price.resolution,
                 })
             }
             Ok(None) => Err(format!(
@@ -596,6 +622,8 @@ struct Estimate {
     usd: f64,
     per_second: f64,
     seconds: u32,
+    /// The resolution the price is for, asked for in the request (M65 §3).
+    resolution: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -617,6 +645,18 @@ impl Tool for GenerateVideoTool {
                 });
                 if let Some(model) = self.shared.model_param(JobKind::Video) {
                     p["properties"]["model"] = model;
+                }
+                // M65 §3: the same person, in the owner's chats.
+                let capable = self.reference_capable();
+                if self.references && !capable.is_empty() {
+                    p["properties"]["reference"] = json!({
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": format!(
+                            "Workspace images of a person or thing that must look the same in the clip (a photo sent in the chat). From a video, take a clear, front-facing still at full size first (the video-editing skill says how). Only these models take references: {}",
+                            capable.join(", ")
+                        ),
+                    });
                 }
                 p
             },
@@ -653,6 +693,50 @@ impl Tool for GenerateVideoTool {
             .shared
             .pick(JobKind::Video, args["model"].as_str())
             .map_err(|e| failed("generate_video", e))?;
+        // M65 §3: references, checked before anything is spent.
+        let mut references = Vec::new();
+        for r in args["reference"]
+            .as_array()
+            .map(|l| l.iter().filter_map(|r| r.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
+            if !self.references {
+                return Err(failed(
+                    "generate_video",
+                    "nothing was submitted: a reference (a person's photo) is only taken in the owner's own chats",
+                ));
+            }
+            let path = ferrule_tools::fs_tools::resolve(&ctx.workspace, &self.hidden, r)?;
+            match ferrule_core::vision::image_file(&path) {
+                Some(Ok(_)) => references.push(path),
+                Some(Err(why)) => {
+                    return Err(failed(
+                        "generate_video",
+                        format!("nothing was submitted: the reference {r} is {why}"),
+                    ))
+                }
+                None => {
+                    return Err(failed(
+                        "generate_video",
+                        format!("nothing was submitted: the reference {r} isn't a PNG, JPEG, GIF or WebP image (from a video, take a still frame first)"),
+                    ))
+                }
+            }
+        }
+        if !references.is_empty() && !self.shared.limits().reference_models.contains(&model) {
+            let capable = self.reference_capable();
+            return Err(failed(
+                "generate_video",
+                if capable.is_empty() {
+                    format!("nothing was submitted: {model} doesn't take reference images, and no allowed model does; the owner adds one to [media] video_models and reference_models")
+                } else {
+                    format!(
+                        "nothing was submitted: {model} doesn't take reference images (it would make the clip without the face and still bill it). Models that do: {}",
+                        capable.join(", ")
+                    )
+                },
+            ));
+        }
         self.shared
             .check_cap()
             .map_err(|e| failed("generate_video", e.to_string()))?;
@@ -716,6 +800,11 @@ impl Tool for GenerateVideoTool {
                 seconds,
                 aspect: args["aspect"].as_str().map(str::to_string),
                 first_frame,
+                references,
+                resolution: estimate
+                    .as_ref()
+                    .and_then(|e| e.resolution)
+                    .map(str::to_string),
             })
             .await;
         let job = match submitted {

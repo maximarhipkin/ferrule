@@ -1683,6 +1683,18 @@ Current State; numbers are claimed there before anything is built.
     Telegram's 50 MB), PowerShell's differences; watch, then send, at
     most two retries. `speak` gains `send: false` (save the MP3 only,
     for a voice-over). Not run live.
+  - **§3, the same person**: `generate_video` gains `reference`
+    (workspace images sent as `input_references` beside `first_frame`),
+    offered and taken only in the owner's chats and the owner's
+    sub-agents, refused for a model not in `[media] reference_models`
+    (OpenRouter's listing doesn't say which take them; default Seedance
+    2.5, 2.0 and 2.0 Fast, Wan 3.0, HeyGen Video 1) with the models that
+    do named. `generate_image`'s description says how to keep a person.
+    The owner's caps: `video_models` default Seedance 2.5 and Veo 3.1
+    Fast, `max_videos_per_day` 3 → 10, `max_usd_per_video` $1 → $3. A
+    model billed per video token is priced at 720p, 24 fps, and asked
+    for 720p (`resolution`). HeyGen's Avatar IV is left out: the listing
+    doesn't say where its script goes. Not run live.
 
 **Still open from earlier tracks.**
 

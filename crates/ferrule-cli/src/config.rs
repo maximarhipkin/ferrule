@@ -1291,6 +1291,11 @@ pub struct MediaConfig {
     pub image_models: Vec<String>,
     /// Other video models a call may name. Empty: only `video_model`.
     pub video_models: Vec<String>,
+    /// M65 §3: the video models that take reference images (a person's
+    /// photo, sent as `input_references`). OpenRouter's model list doesn't
+    /// say which do, so this list does; a reference for any other model is
+    /// refused rather than billed without the face.
+    pub reference_models: Vec<String>,
     /// M51.4: `speak`'s model; empty turns `speak` off.
     pub speech_model: String,
     /// `speak`'s voice (the model's own names); unset, the model's default.
@@ -1321,7 +1326,24 @@ impl Default for MediaConfig {
             // with audio ($0.64 for 8 s), Veo 3.1 $0.40/s ($3.20).
             video_model: "google/veo-3.1-lite".into(),
             image_models: Vec::new(),
-            video_models: Vec::new(),
+            // M65, the owner's decision (2026-10-22): the strong models are
+            // allowed. Seedance 2.5 takes references (about $0.23/s at
+            // 720p, by its per-token price); Veo 3.1 Fast is $0.12/s with
+            // audio. HeyGen's Avatar IV is left out: OpenRouter's listing
+            // doesn't say where its script goes (docs/m65-video.md).
+            video_models: vec![
+                "bytedance/seedance-2.5".into(),
+                "google/veo-3.1-fast".into(),
+            ],
+            // M65 §3: the models OpenRouter's page names as taking
+            // reference images (2026-10-22).
+            reference_models: vec![
+                "bytedance/seedance-2.5".into(),
+                "bytedance/seedance-2.0".into(),
+                "bytedance/seedance-2.0-fast".into(),
+                "alibaba/wan-3.0".into(),
+                "heygen/heygen-video-1".into(),
+            ],
             // OpenRouter's speech list, 2026-10-21: cheap, multilingual.
             speech_model: "google/gemini-3.8-flash-tts".into(),
             voice: None,
@@ -1329,8 +1351,9 @@ impl Default for MediaConfig {
             // $0.825 per million input tokens (an image is about 1,300).
             vision_model: "google/gemini-3.8-flash".into(),
             max_per_day: 20,
-            max_videos_per_day: 3,
-            max_usd_per_video: 1.0,
+            // M65, the owner's decision: 3 → 10 a day, $1 → $3 a video.
+            max_videos_per_day: 10,
+            max_usd_per_video: 3.0,
         }
     }
 }
@@ -1801,13 +1824,16 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # image_model = "google/gemini-2.5-flash-image"
 # video_model = "google/veo-3.1-lite"   # $0.08/s with audio on 2026-10-21
 # image_models = []         # other models a call may name; only these, never
-# video_models = []         # free text (e.g. ["google/veo-3.1-fast"])
+# video_models = ["bytedance/seedance-2.5", "google/veo-3.1-fast"]  # free text
+# reference_models = ["bytedance/seedance-2.5", "bytedance/seedance-2.0",
+#   "bytedance/seedance-2.0-fast", "alibaba/wan-3.0", "heygen/heygen-video-1"]
+#                            # the ones that take a person's photo (M65)
 # speech_model = "google/gemini-3.8-flash-tts"  # `speak`, voice replies; "" = off
 # voice = "Kore"            # the speech model's own voice names; unset = its default
 # max_per_day = 20          # images, video submits and voice replies; 0 = no cap.
 #                            # Refuses fail-closed; every call is a ledger row.
-# max_videos_per_day = 3     # video submits, within max_per_day; 0 = no own cap
-# max_usd_per_video = 1.0    # estimated from the price list before a submit;
+# max_videos_per_day = 10    # video submits, within max_per_day; 0 = no own cap
+# max_usd_per_video = 3.0    # estimated from the price list before a submit;
 #                            # 0 = no cap. Media dollars count toward [trust]'s caps.
 
 # [housekeeping]            # The daily pass that prunes what grows (docs/housekeeping.md):

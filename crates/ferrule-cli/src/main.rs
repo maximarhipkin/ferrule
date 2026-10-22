@@ -1336,6 +1336,10 @@ pub(crate) fn child_builder(
             agent.set_looker(looker);
         }
         if let Some(media) = media {
+            // M65 §3: a person's photo goes into a clip only for a child of
+            // the owner's own tree.
+            let (cfg, _) = config::Config::load()?;
+            let owners = owner_mode::owner_tree(&cfg, &*trust::hub(&cfg)?, &spec.tree);
             // No chat: the tools save into the parent's workspace and say
             // so; the parent sends the files. References resolve with every
             // hidden path a guest's would (the strictest list).
@@ -1354,7 +1358,8 @@ pub(crate) fn child_builder(
                     &spec.id,
                     session_hidden(false, false, &spec.workspace),
                 )
-                .in_tree(&spec.tree),
+                .in_tree(&spec.tree)
+                .with_references(owners),
             ));
             if media.speaks() {
                 agent.register_tool(Arc::new(
@@ -3055,11 +3060,16 @@ async fn gateway_factory(
                     session_id,
                     session_hidden(owner, owners, &workspace),
                 )));
-                agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
-                    media.clone(),
-                    session_id,
-                    session_hidden(owner, owners, &workspace),
-                )));
+                // M65 §3: a person's photo goes into a clip only for the
+                // owner's own chats.
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::GenerateVideoTool::new(
+                        media.clone(),
+                        session_id,
+                        session_hidden(owner, owners, &workspace),
+                    )
+                    .with_references(owners),
+                ));
                 // M51.4: a voice reply.
                 if media.speaks() {
                     agent.append_system_prompt(ferrule_agents::prompts::CHAT_VOICE);

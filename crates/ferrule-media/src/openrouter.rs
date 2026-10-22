@@ -252,6 +252,19 @@ impl MediaBackend for OpenRouterMedia {
                 "frame_type": "first_frame",
             }]);
         }
+        // M65 §3: the person or thing to keep, beside the first frame.
+        if !req.references.is_empty() {
+            let mut refs = Vec::new();
+            for r in &req.references {
+                refs.push(
+                    json!({ "type": "image_url", "image_url": { "url": Self::data_url(r)? } }),
+                );
+            }
+            body["input_references"] = json!(refs);
+        }
+        if let Some(resolution) = &req.resolution {
+            body["resolution"] = json!(resolution);
+        }
         let answer = self.checked(self.post(self.url("/videos"), &body)).await?;
         let id = answer["id"]
             .as_str()

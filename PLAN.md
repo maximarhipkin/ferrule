@@ -10368,3 +10368,71 @@ catalog (`catalog.toml` lists services; this needs no connecting).
 **Open.** No recipe has been run here (the owner's "don't run" rule);
 they follow ffmpeg's documented options. `amix`'s `normalize` needs
 ffmpeg 4.4 or later, and the skill says what to do without it.
+
+### 2026-10-22 — M65 §3: the same person (Claude, Opus 5.5)
+
+"The same person" was a text description: `VideoReq` carried one first
+frame and nothing else (`docs/m65-video.md` §3).
+
+**Built.**
+- `ferrule-media`: `VideoReq` gains `references` (sent as
+  `input_references`, each a data URL `image_url`, beside `frame_images`)
+  and `resolution`. `VideoPrice::of` prices a model billed per video
+  token when it has no per-second price: the dearest token price that
+  names no resolution × 1280×720×24/1024 = 21,600 tokens a second
+  (ByteDance's formula, a 16:9 frame at 24 fps), at 720p when the model
+  lists it, else 480p; the price then carries that `resolution`, which
+  the request asks for. Seedance 2.5 comes to $0.231/s, 2.0 to $0.151/s,
+  2.0 Fast to $0.091/s.
+- `ferrule-gateway`: `generate_video`'s `reference` parameter, listed only
+  when the tool was built `with_references(true)` and an allowed model
+  takes references, naming those models. A call checks each reference
+  (inside the workspace, a real image under the cap) and the model
+  against `[media] reference_models` before anything is counted or
+  spent; a reference to another model is refused with the models that
+  can, so OpenRouter can't drop the field and bill a clip without the
+  face. `generate_image`'s description says how to keep a person (the
+  photo in `reference`, and what must stay the same in the prompt); its
+  `reference` stays open to everyone it's offered to (M51's edit path).
+  `MediaLimits` gains `reference_models`.
+- `ferrule-cli`: `[media] reference_models` (default
+  `bytedance/seedance-2.5`, `bytedance/seedance-2.0`,
+  `bytedance/seedance-2.0-fast`, `alibaba/wan-3.0`,
+  `heygen/heygen-video-1`); the owner's decision 2: `video_models`
+  defaults to Seedance 2.5 and Veo 3.1 Fast, `max_videos_per_day` 3 → 10,
+  `max_usd_per_video` $1 → $3 (the example config and
+  `docs/models.md` follow; setup and doctor say nothing about these caps,
+  so nothing there changed). References are on for the owner's chats
+  (`owner_tree`, as the screen tools) and for media sub-agents of the
+  owner's tree.
+
+**Decided here.**
+- OpenRouter's `/videos/models` listing (read 2026-10-22, free) has no
+  field saying a model takes `input_references`, so the list is config
+  (the design's fallback), defaulting to the design's models.
+- **The talking avatar is left out.** The listing gives `heygen/avatar-iv`
+  a per-second price ($0.05) and passthrough parameters (`voice_id`,
+  `motion_prompt`, …), and its page says the speech comes from "a text
+  script … or a supplied audio track", but neither names the request
+  field the script or the audio goes in, and `supported_frame_images` is
+  null. The design says to leave it out unless that's confirmed, so it
+  isn't in `video_models` or `reference_models`; the owner can add it to
+  both to try it with the prompt as the script, once a paid test or
+  OpenRouter's docs say so.
+- Seedance is priced per video token, which the old estimate couldn't
+  read, so it was refused under any dollar cap. Asking for `resolution`
+  is inferred from the listing's `supported_resolutions`, the same naming
+  as `aspect_ratio` and `duration` that ferrule already sends; it isn't
+  confirmed live. If OpenRouter ignored it and rendered larger, the
+  delivery row would settle to the real bill.
+- The owner-only check is per agent at construction; a guest's call with
+  a reference (the parameter isn't even offered) is refused in words.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests.
+
+**Open.** Nothing sent live: references, the token estimate and the
+`resolution` field wait for the owner's go-ahead (a Seedance clip costs
+about $1–2). A request with no `seconds` is priced at the model's longest
+(30 s for Seedance 2.5, about $6.93), over the $3 cap, so the agent has
+to name a length.
