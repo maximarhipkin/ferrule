@@ -8,7 +8,9 @@
 //! They make no network call of their own: each tells the model which
 //! request to make with the sandboxed shell, through the proxy and its
 //! egress rules. Only `home-assistant` uses a key, one the owner saves
-//! through `secret_request` (docs/skills.md, "Bundled skills").
+//! through `secret_request` (docs/skills.md, "Bundled skills"). M65's
+//! `video-editing` makes no request at all: it is ffmpeg recipes for the
+//! same shell.
 
 use std::io;
 use std::path::{Component, Path};
@@ -39,6 +41,11 @@ const FILES: &[(&str, &str)] = &[
     (
         "weather/references/weather-codes.md",
         include_str!("../bundled/weather/references/weather-codes.md"),
+    ),
+    // M65 §2: ffmpeg recipes for the sandboxed shell.
+    (
+        "video-editing/SKILL.md",
+        include_str!("../bundled/video-editing/SKILL.md"),
     ),
 ];
 

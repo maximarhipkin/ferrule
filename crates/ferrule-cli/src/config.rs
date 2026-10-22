@@ -1764,7 +1764,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # trigger_budget_tokens = 4000   # their combined size
 # project_triggers = false   # let the workspace's skills trigger too
 # bundled = true             # ferrule's own (weather, news, hacker-news, maps,
-#                            # exchange-rates, home-assistant); `disabled` drops one
+#                            # exchange-rates, home-assistant, video-editing);
+#                            # `disabled` drops one
 
 # [web_search]              # The web_search tool (docs/web-search.md). With no
 # provider = "brave"         # provider: keyless DuckDuckGo (light use, rate-limited).

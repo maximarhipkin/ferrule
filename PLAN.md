@@ -10322,3 +10322,49 @@ isn't used (`Heard` has no segments). Times are taken as seconds or
 and the 500 MB case waits for §5. In `read-only` sandbox mode ffmpeg
 can't write the sheet, and the tool says ffmpeg's error. Sub-agents don't
 get the tool (their parent watches before it sends, §4).
+
+### 2026-10-22 — M65 §2: editing as a bundled skill (Claude, Opus 5.5)
+
+The owner wants the agent "skilled with video editing" (`docs/m65-video.md`
+§2). The design's call, kept: a skill on top of the sandboxed shell, not
+an `edit_video` tool.
+
+**Built.**
+- `crates/ferrule-skills/bundled/video-editing/SKILL.md`, in the pack
+  (`bundled.rs`), so `<data>/bundled-skills` gets it at the next start and
+  the model finds it in the skill catalog. General rules first (watch the
+  input; never overwrite it; results under `media/`; quiet ffmpeg; one
+  set of H.264/AAC options that plays in Telegram and on an iPhone, with
+  the fallbacks for a build without libx264; long encodes in the shell's
+  background; text files through `write_file`), then the recipes: trim
+  by stream copy or re-encode and when each is right, cutting a part out,
+  joining by the concat demuxer or the concat filter (with sizes, rates
+  and sample rates brought together, and silence for a silent clip), crop
+  to fill or fit on a blurred pad for 9:16, 1:1 and 16:9, speed
+  (`setpts` with `atempo`, chained on an old ffmpeg), subtitles (an
+  `.srt` burned in with libass, else a `mov_text` track, and that the
+  transcript has no timings), a voice-over, music ducked under it with
+  `sidechaincompress` and looped with `-stream_loop`, fades, mute, the
+  sound alone, a GIF with a palette, a full-size still frame (how §3's
+  references are taken from a video), compressing to a size with the
+  arithmetic and two passes (Telegram bots upload at most 50 MB), and
+  PowerShell's differences. Its last rule: `watch_video` the result,
+  compare, then `send_file`; after two attempts that don't come out
+  right, say what's wrong instead of sending.
+- `speak` gains `send: false` (M51's surface, the smallest change): the
+  MP3 is saved and not sent, so a voice-over for an edit doesn't land in
+  the chat as a voice message.
+- `docs/skills.md` lists seven bundled skills; the example config's
+  comment names it.
+
+**Decided here.** The placeholder for the encoder options is `<h264>`, not
+a shell variable, so a model that types it literally fails loudly rather
+than encoding with ffmpeg's defaults. Not added to the connections
+catalog (`catalog.toml` lists services; this needs no connecting).
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests.
+
+**Open.** No recipe has been run here (the owner's "don't run" rule);
+they follow ffmpeg's documented options. `amix`'s `normalize` needs
+ffmpeg 4.4 or later, and the skill says what to do without it.

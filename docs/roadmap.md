@@ -1671,6 +1671,18 @@ Current State; numbers are claimed there before anything is built.
     where both programs are found (on `PATH` or in Homebrew's dirs), with
     a `CHAT_VIDEO` prompt line; an inbound video's line points at it;
     `ferrule doctor` says when it isn't offered. Not run live.
+  - **§2, editing as a bundled skill**: `video-editing` in
+    `crates/ferrule-skills/bundled/` (M63.1's format), ffmpeg recipes for
+    the sandboxed shell: probe, trim (stream copy vs re-encode), cut,
+    join (the concat demuxer, the concat filter for clips that differ,
+    silence for a silent clip), crop and resize to 9:16, 1:1 and 16:9
+    (filled, or on a blurred pad), speed, subtitles (burned with libass,
+    else a soft track), a voice-over, music ducked under it
+    (`sidechaincompress`), fades, mute, the sound alone, a GIF, a
+    full-size still for a reference, compressing to a size (two passes,
+    Telegram's 50 MB), PowerShell's differences; watch, then send, at
+    most two retries. `speak` gains `send: false` (save the MP3 only,
+    for a voice-over). Not run live.
 
 **Still open from earlier tracks.**
 

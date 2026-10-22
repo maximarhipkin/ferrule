@@ -46,7 +46,7 @@ adds one in a capability sandbox.
 
 ## Bundled skills
 
-Six skills come with ferrule and are on unless you turn them off:
+Seven skills come with ferrule and are on unless you turn them off:
 
 | Skill | For | Key |
 |---|---|---|
@@ -56,6 +56,7 @@ Six skills come with ferrule and are on unless you turn them off:
 | `exchange-rates` | rates and conversions (Frankfurter) | none |
 | `maps` | places, addresses, distances and travel times (Nominatim, OSRM) | none |
 | `home-assistant` | your Home Assistant's states and actions (its REST API) | `HA_TOKEN`, which the skill asks you for with `secret_request` |
+| `video-editing` | trimming, joining, cropping to 9:16, 1:1 or 16:9, speed, subtitles, music and voice-overs, fades, GIFs, stills, and compressing to a size, with ffmpeg in the sandboxed shell (M65, [m65-video.md](m65-video.md)) | none; needs ffmpeg |
 
 - **Turning them off.** One: `ferrule skills disable weather`, `/skills
   off weather`, the dashboard's switch, or `[skills] disabled`. All:
@@ -66,7 +67,8 @@ Six skills come with ferrule and are on unless you turn them off:
   name wins over the bundled one.
 - **The network.** They make no call themselves: each gives the model a
   `curl` command for the sandboxed shell, which goes through the proxy and
-  your `[egress]` rules. Their services' limits (one request a second to
+  your `[egress]` rules (`video-editing` gives ffmpeg commands and needs
+  no network). Their services' limits (one request a second to
   Nominatim and OSRM, non-commercial use, attribution) are in the skills.
 - **No triggers.** They load when the model activates them from the
   catalog, never by a word in your message.

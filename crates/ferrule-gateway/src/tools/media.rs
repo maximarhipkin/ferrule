@@ -831,7 +831,8 @@ impl Tool for SpeakTool {
                 "type": "object",
                 "properties": {
                     "text": { "type": "string", "description": "What to say, as it should be spoken (at most 4,000 characters)" },
-                    "voice": { "type": "string", "description": "A voice the speech model knows; the configured one when omitted" }
+                    "voice": { "type": "string", "description": "A voice the speech model knows; the configured one when omitted" },
+                    "send": { "type": "boolean", "description": "false: only save the MP3, don't send it (a voice-over for a video you're editing); true when omitted" }
                 },
                 "required": ["text"]
             }),
@@ -946,6 +947,12 @@ impl Tool for SpeakTool {
             .store
             .record(&job)
             .map_err(|e| failed("speak", e.to_string()))?;
+        // M65 §2: a voice-over for an edit is saved, not sent.
+        if args["send"].as_bool() == Some(false) {
+            return Ok(ToolOutput::ok(format!(
+                "Saved {rel}, not sent (send: false)."
+            )));
+        }
         if let Some((channel_name, chat_id)) = chat {
             if let Err(e) = send_out(&self.shared, &channel_name, &chat_id, &path, "", true).await {
                 return Ok(ToolOutput::ok(format!(
