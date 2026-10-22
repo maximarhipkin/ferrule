@@ -62,7 +62,8 @@ debug = false
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+# Thin LTO and the default codegen units: the release workflow builds five
+# targets from scratch, and fat LTO on one unit made each one single-core.
+lto = "thin"
 strip = true
 panic = "abort"
