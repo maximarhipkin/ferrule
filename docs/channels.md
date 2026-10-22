@@ -1192,7 +1192,9 @@ Each transcription is a ledger row (`call_kind = "transcription"`), costed
 at `price_per_minute` when the length is known (or at the cost the service
 reported, on OpenRouter). `ferrule doctor` has a `voice` line: which
 backend is active and why, or how to turn it on, and a `media` line:
-whether ffmpeg is on the PATH and was built with libass (M51.4). Ferrule
+whether ffmpeg is on the PATH (or in ferrule's data dir under `bin/`,
+where a service that can't see the system's copy finds static ffmpeg and
+ffprobe builds) and was built with libass (M51.4). Ferrule
 needs neither; the agent can use them through the shell to trim or
 convert audio and video, and to burn subtitles.
 

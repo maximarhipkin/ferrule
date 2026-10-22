@@ -211,7 +211,13 @@ endpoint speaks OpenRouter's media API (`/images/generations`,
   within 30 minutes gets a note in the chat saying where it is.
 - **`watch_video`** (M65) watches a video in the workspace: its length,
   size and format, one contact sheet of frames, and what is said (through
-  `[transcription]`). It needs ffmpeg and ffprobe on the machine.
+  `[transcription]`). It needs ffmpeg and ffprobe on the machine: on
+  `PATH`, in Homebrew's dirs, or in ferrule's data dir under `bin/`
+  (`<data>/bin`, where a fetched cloudflared lives too). A service that
+  can't install packages or see the system's copies (systemd's
+  `ProtectSystem=strict`) gets it by putting static `ffmpeg` and
+  `ffprobe` builds there and restarting. `ferrule doctor`'s `media` line
+  says whether they're found.
 - **`speak`** (M51.4) turns text into speech (MP3), saves it under
   `media/` and sends it to the chat; Telegram shows it as a voice
   message. `[media] speech_model = ""` turns it off.
