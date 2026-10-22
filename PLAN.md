@@ -209,8 +209,9 @@ below it is append-only.
   parent's number; so do wave A's tasks, which are follow-ups, not
   milestones. **M63 is claimed by wave B** (connections, skills and
   the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
-  proactive agent** (`autopilot`, 2026-10-21). **The next free number
-  is M65.** The first claim wins,
+  proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
+  understanding, editing and checking** (`m65-video`, 2026-10-22,
+  `docs/m65-video.md`). **The next free number is M66.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9767,3 +9768,25 @@ macOS and on the same tree on `autopilot`: a flake, not fixed here.
 
 **Open.** The release build (`release.yml`, five targets) runs on the
 tag; nothing here runs the binaries.
+
+### 2026-10-22 — M65 claimed: video it understands, edits and checks (Claude, Opus 5.5)
+
+Claims **M65** (Current State updated: the next free number is M66), on
+branch `m65-video` from `main` at `08d53ed` (v0.14.0). Design only so far:
+`docs/m65-video.md`, written with the owner and read by a fresh builder
+check. Nothing is built.
+
+**Why.** The owner: asked for an image or a video "with the same person"
+from a photo or video sent in the chat, the agent makes bad ones and sends
+them without checking. In the code, `generate_image` sends before the
+model sees its result, the video poller sends finished clips with no model
+call, `generate_video` carries no reference images, a sent video reaches
+the agent as a path, and the owner's chat model (the Claude plan through
+Claude Code) can't see images at all.
+
+**Decided by the owner.** The chat model is the Claude plan, so a cheap
+vision helper looks for it. Strong video models are allowed and the caps
+raised (3 → 10 videos a day, $1 → $3 a video); plain videos keep
+`veo-3.1-lite`.
+
+**Open.** The owner's approval of the design, then a plan, then the build.
