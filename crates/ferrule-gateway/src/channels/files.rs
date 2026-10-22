@@ -89,10 +89,12 @@ pub fn note(saved: &Saved) -> String {
     // A photo is handed to the model as pixels when it can see (M47); when
     // it can't, the provider layer adds that to its own note. So this line
     // doesn't claim either.
-    let then = if kind == "photo" {
-        ""
-    } else {
-        " Open it with your tools if you need it; you can't see images."
+    let then = match kind {
+        "photo" => "",
+        // M65 §1: a video is watched, frames and sound, when the tool is
+        // there.
+        "video" => " Watch it with watch_video (when you have it) before you answer about it.",
+        _ => " Open it with your tools if you need it; you can't see images.",
     };
     format!(
         "[The sender attached {} {kind}: {} ({}, {}).{then}]",

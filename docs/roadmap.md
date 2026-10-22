@@ -1656,6 +1656,21 @@ Current State; numbers are claimed there before anything is built.
     chat's "can't see photos" notice is skipped when there's a helper,
     and the Claude engine's bridged tool results carry the lines. Not run
     live.
+  - **§1, `watch_video {path, start?, end?, frames?}`**: ffprobe's facts
+    (length, size, container, picture size with a phone's rotation, fps,
+    codecs, sound or not); one contact sheet, 12 frames by default (1–16)
+    spread evenly over the window, each seeked with `-ss` before its
+    input and tiled with `concat` and `tile` into one JPEG at most 2048 px
+    a side, the timestamps listed in reading order; the sound (at most 10
+    minutes a call) as AAC to the gateway's `Transcriber`, or a sentence
+    that transcription is off. ffmpeg and ffprobe run through the
+    session's sandbox (a guest's narrowed) with `-protocol_whitelist
+    file`, a timeout and stderr's last line as the error; files under
+    `.ferrule/watch/`, pruned after a day. For a model that can't see,
+    the sheet carries a check task for the §0 helper. Offered in chats
+    where both programs are found (on `PATH` or in Homebrew's dirs), with
+    a `CHAT_VIDEO` prompt line; an inbound video's line points at it;
+    `ferrule doctor` says when it isn't offered. Not run live.
 
 **Still open from earlier tracks.**
 

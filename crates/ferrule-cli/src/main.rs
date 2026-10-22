@@ -2978,9 +2978,17 @@ async fn gateway_factory(
     // M61: the owner's own screen, view only, when `[screen]` is on and
     // there's a desktop to see.
     let screen = screen::Screen::offered(&cfg.screen, trust::hub(cfg)?, sandbox.clone());
+    // M65 §1: `watch_video` where ffmpeg and ffprobe are, in the sandbox
+    // the session's commands get, with the gateway's transcription.
+    let video = ferrule_gateway::tools::Ffmpeg::find();
+    let video_sandbox = sandbox.clone();
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
+    let transcriber = match transcription::build(cfg, ledger_sink.clone()) {
+        Ok(ferrule_gateway::Transcription::On(t)) => Some(t),
+        _ => None,
+    };
     // M21: a scheduled task's own model, read per call from tasks.db so
     // `ferrule tasks model` reaches a lane that's already running.
     let tasks = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
@@ -3060,6 +3068,22 @@ async fn gateway_factory(
                         session_id,
                     )));
                 }
+            }
+            // M65 §1: watching a video, frames and sound.
+            if let Some(ffmpeg) = &video {
+                agent.append_system_prompt(ferrule_agents::prompts::CHAT_VIDEO);
+                let sandbox = if owners {
+                    video_sandbox.clone()
+                } else {
+                    Arc::new(video_sandbox.narrowed(&owner_mode::guest_hidden(&workspace)))
+                };
+                agent.register_tool(Arc::new(ferrule_gateway::tools::WatchVideoTool::new(
+                    sandbox,
+                    ffmpeg.clone(),
+                    transcriber.clone(),
+                    session_id,
+                    session_hidden(owner, owners, &workspace),
+                )));
             }
             // M61: screenshots and recordings of the owner's screen, in the
             // owner's own chats only. The card goes to this chat (from an

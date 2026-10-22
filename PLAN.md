@@ -10265,3 +10265,60 @@ note, so the model knows why.
 description is decided per agent at construction and per call through
 `sees_images()`; a fallback to a seeing model mid-chat sends pixels as
 before.
+
+### 2026-10-22 — M65 §1: `watch_video` (Claude, Opus 5.5)
+
+A video sent in the chat reached the agent as a path, and nothing could
+look at a finished render (`docs/m65-video.md` §1). Now the agent can
+watch one.
+
+**Built.**
+- `ferrule-gateway/src/tools/watch.rs`: `watch_video {path, start?, end?,
+  frames?}`. ffprobe's JSON gives the facts (length, size, container,
+  picture size with a phone's rotation applied, fps, video codec, the
+  sound's codec, rate and channels). The contact sheet is one ffmpeg run:
+  each frame's input is seeked with `-ss` (fast on a long file), then
+  `trim`, `scale`+`pad` to one tile size, `concat`, and `tile` with
+  `nb_frames`, into one JPEG (`-q:v 4`). Frames sit at the middles of `n`
+  equal slices of the window; the grid is ⌈√n⌉ across; a tile is at most
+  512 px wide and the sheet at most 2048 px a side, so it stays far under
+  the 3.5 MB image cap. The text lists each tile's time in reading order.
+  The sound: `-ss`/`-to` input options, mono 16 kHz AAC 48 kb/s in an
+  `.m4a` (`audio/mp4`, which the OpenAI-style endpoint takes and every
+  ffmpeg can write), sent to the gateway's `Transcriber`, at most 10
+  minutes a call (the text says where to start the next call), deleted
+  after. No sound, transcription off, or a failed step: a sentence says
+  so and the rest still comes back. Files under `.ferrule/watch/`,
+  refused if that leads outside the workspace, older than a day removed
+  on each call. For a model that can't see, the sheet's `ImageRef::check`
+  asks the §0 helper to go tile by tile and name what looks wrong.
+- ffmpeg and ffprobe run through `Sandbox::command` in the session's
+  sandbox (a guest's narrowed with `guest_hidden`, as its shell's is),
+  with `-protocol_whitelist file` before every input (a crafted playlist
+  in the workspace can't make ffmpeg fetch anything), a timeout (30 s
+  probe, 120 s sheet, 180 s sound) and stderr's last line as the error.
+- `ferrule-cli`: `Ffmpeg::find()` (both on `PATH` or in Homebrew's dirs)
+  once per gateway; chats get the tool and the `CHAT_VIDEO` prompt line
+  (constant per process, so the prefix stays byte-stable); the gateway's
+  `Transcriber` is built once more for it. `ferrule doctor` notes when
+  either program is missing.
+- An inbound video's line now says to watch it with `watch_video` (when
+  the agent has it). M61's surface, the smallest change: `CHAT_SCREEN`
+  and `record_screen`'s texts no longer say a recording can't be
+  watched.
+
+**Decided here (left to the builder).** 12 frames by default (the design's
+default), at most 16; the grid and tile sizes above; no timestamps drawn
+on the tiles (`drawtext` needs fonts an ffmpeg build may lack), listed in
+the text instead; the window's frames at slice middles, so none falls on
+the last frame; `.ferrule/watch/` kept a day; the transcript's timing
+isn't used (`Heard` has no segments). Times are taken as seconds or
+`m:ss`.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests.
+
+**Open.** Not run live: no real video has gone through the filter graph,
+and the 500 MB case waits for §5. In `read-only` sandbox mode ffmpeg
+can't write the sheet, and the tool says ffmpeg's error. Sub-agents don't
+get the tool (their parent watches before it sends, §4).

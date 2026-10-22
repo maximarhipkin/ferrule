@@ -2923,8 +2923,9 @@ fn binary(r: &mut Report) {
 }
 
 /// M51.4: whether the shell can cut and convert media (ferrule ships no
-/// ffmpeg and needs none), and burn subtitles (the `subtitles` filter
-/// exists only in an ffmpeg built with libass). Informational only.
+/// ffmpeg), and burn subtitles (the `subtitles` filter exists only in an
+/// ffmpeg built with libass). M65: `watch_video` needs ffmpeg and ffprobe.
+/// Informational only.
 fn ffmpeg_check(r: &mut Report) {
     let ffmpeg = ferrule_sandbox::host::system_program("ffmpeg");
     let run = |arg: &str| {
@@ -2939,7 +2940,7 @@ fn ffmpeg_check(r: &mut Report) {
     let Some(version) = run("-version") else {
         r.note(
             "media",
-            "ffmpeg isn't on your PATH: the agent can't trim, convert or re-encode audio and video through the shell (nothing else needs it)",
+            "ffmpeg isn't on your PATH: the agent can't watch videos (watch_video) or trim, convert and re-encode audio and video through the shell",
         );
         r.hint("brew install ffmpeg, or apt install ffmpeg");
         return;
@@ -2960,6 +2961,13 @@ fn ffmpeg_check(r: &mut Report) {
             format!("ffmpeg{which} without libass: the shell can trim and convert; burning subtitles needs an ffmpeg built with libass")
         },
     );
+    // M65 §1: the gateway looks for both on PATH and in Homebrew's dirs.
+    if ferrule_gateway::tools::Ffmpeg::find().is_none() {
+        r.note(
+            "media",
+            "ffprobe or ffmpeg isn't on the gateway's PATH or in Homebrew's dirs, so chats aren't offered watch_video",
+        );
+    }
 }
 
 /// Is there a Chrome or Chromium, does it start headless the way the
