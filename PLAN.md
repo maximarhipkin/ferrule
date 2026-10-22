@@ -10713,6 +10713,13 @@ as unpriced, though a plan call is $0 by design (M35).
   the card and `/update` offer a `claude` update even when Ferrule is
   current, and `update` runs it first.
 - `models/catalog.rs`: `unpriced` skips a plan's models.
+- Second commit: connecting an MCP server that isn't in the catalog
+  from the chat. The agent asked for `mcp.higgsfield.ai`; the Connect
+  button said `/connect higgsfield` (the name `from_url` makes from the
+  host, kept short for Telegram's 64-byte buttons), and that name isn't
+  in the catalog, so the tap failed with "unknown service". A pending ask
+  now keeps its resolved service and `/connect` falls back to it; a bare
+  host is taken as `https://` (`Catalog::resolve`).
 - Docs: README (system service), `updates.md`, `backup.md`,
   `m38-instances.md`, `m20-connections.md`.
 
@@ -10725,3 +10732,7 @@ mode protects its directory, M54 §2).
 still updates only Ferrule. Claude plan models stay the `sonnet`/`opus`/
 `haiku` aliases; a current `claude` maps `sonnet` to the newest Sonnet,
 so pinning a version wasn't added. Nothing ran on a real system service.
+
+**Checks.** `make check` green after each commit: 1891 passed, 0 failed,
+28 ignored across 73 test binaries (macOS). The two golden-unit tests now
+expect 0.8.0's system unit plus the config directory in `ReadWritePaths`.

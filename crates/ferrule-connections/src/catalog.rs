@@ -734,8 +734,12 @@ impl Catalog {
         self.services.iter().find(|s| s.name == name)
     }
 
-    /// A name, or an MCP URL.
+    /// A name, or an MCP URL (a bare host such as `mcp.example.com` is
+    /// taken as https).
     pub fn resolve(&self, what: &str) -> Result<Service> {
+        if !what.contains("://") && what.contains('.') && !what.contains(char::is_whitespace) {
+            return self.resolve(&format!("https://{what}"));
+        }
         if what.starts_with("https://") || what.starts_with("http://") {
             if let Some(s) = self.services.iter().find(|s| s.url == what) {
                 return Ok(s.clone());

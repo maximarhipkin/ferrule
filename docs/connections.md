@@ -277,6 +277,14 @@ Sheets and People MCP previews (on the Google tile), and the six bundled
 skills. Why a short curated list and no public plugin hub, and every
 source: `docs/m63-connections-wave-b.md` §4.
 
+## Any MCP server by its address
+
+A server that isn't in the catalog connects by its address, from the chat
+too: the agent's `connection_request` takes an MCP URL (a bare host such
+as `mcp.example.com` is taken as `https://`), and the button you get,
+`/connect <name>` with a name made from the host, connects that address.
+`/connect https://…` does the same by hand.
+
 ## Any MCP server with a key
 
 From the dashboard (M50): **Connect → Any app by its address**, then the
