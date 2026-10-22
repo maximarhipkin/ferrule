@@ -52,7 +52,8 @@ What the code does today, and why that happens:
 
 - Sending video to models as native video input (Gemini's video parts).
   Frames plus a transcript work on every vision model ferrule drives.
-- A timeline editor or any dashboard page for editing.
+- A timeline editor, or editing inside the dashboard. The Files page
+  (part 5) shows, plays, uploads and deletes; the agent does the editing.
 - Real-time or streaming avatars; lip-syncing to arbitrary audio beyond
   what an avatar model on OpenRouter offers.
 - New media providers outside OpenRouter.
@@ -79,17 +80,25 @@ What the code does today, and why that happens:
 - `ferrule_core::vision::MAX_IMAGES` is 4: at most four images go as
   pixels per request, counted across the conversation. Understanding a
   video has to fit in that.
-- `media.rs` and the Telegram send branches are M51's surface (PLAN.md,
-  "One owner per surface"): make the smallest change and say so.
+- `media.rs` and the Telegram send branches are M51's surface, and the
+  dashboard's keys, Safe and config pages are M52's (PLAN.md, "One owner
+  per surface"): make the smallest change there and say so. The Files
+  page is new; it touches the shared dashboard code only for its routes
+  and `limit_for`.
 - The owner's standing rules: no new tests unless asked (existing tests
   are changed to match), and nothing is run live without the owner's
   go-ahead (OpenRouter video calls cost dollars).
 - ffmpeg isn't bundled. `ferrule doctor` already reports it (M51.4). With
   no ffmpeg, the video tools say so in one sentence and how to install it.
 - Telegram bots can download at most 20 MB (`channels/telegram.rs`, the
-  inbox default in `channels/files.rs` is the same). A longer phone clip
-  never reaches the workspace; the agent says so and asks for a shorter
-  or compressed one. A local Bot API server is out of scope.
+  inbox default in `channels/files.rs` is the same). A bigger file comes
+  in through the dashboard instead (part 5). A local Bot API server is
+  out of scope.
+- The owner opens the dashboard remotely through a Cloudflare tunnel or
+  the relay, and Cloudflare refuses a request body over 100 MB on the
+  free plan. The dashboard's server also reads each request whole into
+  memory (`dashboard/http.rs`, with a per-route cap in `limit_for`). So a
+  big upload goes up in chunks.
 - Images go as pixels only under 3.5 MB (`vision.rs`, a byte cap, and an
   image over it is refused, not shrunk). The contact sheet is sized to fit
   under it.
@@ -243,7 +252,9 @@ ffmpeg, a structured tool is the upgrade.
     at once.
 - **Enforced, not only asked for** (my call, because unchecked sending is
   the problem being fixed): `send_file` refuses an image or video file
-  this session hasn't looked at since the file last changed. Looked at
+  the agent made or changed (under `media/`, or written by this session)
+  that this session hasn't looked at since the file last changed. Files
+  the owner provided (`uploads/`, `inbox/`) pass as they are. Looked at
   means its pixels, or the helper's description of them (part 0), were
   returned to this session's model by `watch_video`, `read_file` or
   `generate_image`. The refusal says to watch it first. When looking is
@@ -262,10 +273,78 @@ ffmpeg, a structured tool is the upgrade.
   counter. If the model loops, a per-request attempts counter is the
   upgrade.
 
-### 5. Docs
+### 5. Big files and a media library, in the dashboard
+
+Asked for by the owner after the first draft: upload big files from the
+dashboard for the agent, and a files and media library there.
+
+**Uploading.**
+
+- A **Files** page (`/files`), behind the dashboard's sign-in like every
+  page.
+- The page cuts the file into chunks of at most 32 MB and sends each with
+  `PUT /api/files/upload/<id>?offset=<n>`, with the same checks as
+  `/api/chat/photo`: the session, same origin, the CSRF header. Each
+  chunk is appended to `<workspace>/uploads/.part/<id>`. A last call
+  checks the size and moves the file to `uploads/<day>/<name>`.
+  - A dropped connection resumes from the offset the server has.
+  - One chunk in memory at a time (the existing `BIG` slot), so
+    `http.rs` needs no streaming rewrite.
+  - A part file nobody finished is removed after a day.
+- Caps: `[dashboard] max_upload_mb` (default 2048). An upload is refused
+  when it would leave the disk with less than 1 GB free.
+- **From Telegram.** When a file is over Telegram's 20 MB, today's "too
+  big" reply (`Inbox::too_big`) gains a button: **Upload it here**, a
+  one-time sign-in link to the Files page tied to that chat. When the
+  upload finishes, that chat's session is woken (`Router::wake`): the
+  file the owner tried to send is at `uploads/…`. The owner's request is
+  already in that chat's history, so the agent carries on with it.
+- **From the dashboard itself.** After an upload, the page offers a box
+  for words. They go with the file to the dashboard's chat as the
+  owner's message, the way `say_photo` hands photos over today.
+
+**The library.**
+
+- The same page lists, newest first:
+  - what was uploaded (`uploads/`);
+  - what chats sent (`inbox/<channel>/<day>/`);
+  - what the agent made (`media/`, including `media/screen/`).
+- Filters: photos, videos, audio, other; and where it came from.
+- Each item shows a thumbnail, its name, size and date, and where it came
+  from. Images use the file itself. A video gets a poster frame, made once
+  with ffmpeg in the sandbox and cached under `.ferrule/thumbs/`, or no
+  thumbnail when there's no ffmpeg. Generated media also show the
+  prompt, the model, the cost (from `media_jobs`) and whether the agent
+  checked it and sent it.
+- Actions:
+  - **Open**: images inline, videos and audio in the browser's player;
+  - **Download**;
+  - **Use in chat**: the dashboard's chat, with the file named in the
+    message;
+  - **Delete**, behind a confirm. It moves the file to
+    `.ferrule/trash/`, and housekeeping empties that after 7 days (my
+    call: the owner can take back a slip).
+- **Serving files safely.**
+  - Only files under those folders, resolved inside the workspace, with
+    symlinks refused.
+  - `Content-Type` from the extension (`files::mime_for`) with `nosniff`.
+  - Anything that isn't an image, video or audio file is served as a
+    download (`Content-Disposition: attachment`), so an uploaded HTML or
+    SVG file never runs on the dashboard's origin.
+  - HTTP `Range` requests are answered, because Safari on iPhone won't
+    play a video without them, and seeking needs them everywhere.
+  - A file is sent in pieces, never read whole into memory.
+
+**Not in the library** (possible follow-ups): folders and albums, tags,
+search beyond the filters, share links for other people, and saved
+"people": a named reference photo the agent reuses whenever it's asked
+for that person.
+
+### 6. Docs
 
 `docs/models.md` "Making media" (the checks, references, the avatar),
 `docs/vision.md` (`watch_video` among the tools that return images),
+the dashboard docs (the Files page and its limits),
 `docs/roadmap.md` (the M65 line), this file's "As built", and a PLAN.md
 Session Log entry per task.
 
@@ -281,6 +360,8 @@ Session Log entry per task.
   and refuses plainly for one that doesn't.
 - The talking avatar works, or the doc says why it was left out.
 - The `video-editing` skill is bundled and discoverable.
+- A 500 MB video uploads from an iPhone through the tunnel, the Telegram
+  chat that asked is woken with its path, and the Files page plays it.
 - `make check` is green on all three CI platforms. Nothing is run live
   until the owner says so.
 
@@ -309,3 +390,5 @@ skill's exact recipes; how the transcript's timing is used for subtitles
    builder prices it from what the listing does give (a per-video SKU),
    because an unpriced model is refused while any dollar cap is set
    (`media.rs`, the estimate check).
+3. **Big files through the dashboard, and a media library there**
+   (asked for after the first draft). Hence part 5.
