@@ -30,7 +30,12 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - The latest release is **v0.14.2** (2026-10-22, tagged on `main`
+  - **v0.14.3** (2026-10-22, PR #62): a system service saves its settings
+    (the config directory is writable to it; an older unit heals itself),
+    `update` and the dashboard's Install cover the `claude` CLI, connect any
+    MCP URL from the chat, no price warning for plan models. Every crate is
+    at 0.14.3 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.2** (2026-10-22, tagged on `main`
     after PR #61): M65 (video it understands, edits and checks before
     sending; the vision helper; the dashboard Files page), on top of
     v0.14.1. Every crate is at 0.14.2 except `ferrule-plugin-sdk`.
@@ -10739,3 +10744,21 @@ so pinning a version wasn't added. Nothing ran on a real system service.
 **Checks.** `make check` green after each commit: 1891 passed, 0 failed,
 28 ignored across 73 test binaries (macOS). The two golden-unit tests now
 expect 0.8.0's system unit plus the config directory in `ReadWritePaths`.
+
+### 2026-10-22 — Release 0.14.3 (Claude, Sonnet 5.5)
+
+No milestone claimed. On `fix-system-config-writes` (PR #62), as its last
+commit.
+
+**What changed.** Every crate goes from 0.14.2 to 0.14.3
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+A patch release: the fixes in the entry above, no breaking config change.
+A system service set up by 0.14.2 or older is rewritten by the root apply
+run after it updates, so the update itself is what unlocks its config.
+
+**Checks.** `make check` green before the tag; CI on the PR before the
+merge.
+
+**Open.** Nothing ran on a real system service yet.
