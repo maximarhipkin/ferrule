@@ -104,8 +104,10 @@ and run sudo apt-get. mcp_add takes `name` and `command` (a list of words) or `u
 (NAME=VALUE), `enabled_tools` and `replace`; it starts the server and scans its tools before adding it. A key goes \
 in a header only as ${NAME} of a key `secrets` lists; for a new key use secret_request. mcp_add with `catalog` (an \
 entry of ferrule's vetted catalog, `write` true for changes) takes everything else from the catalog: a missing key \
-is asked for and the server added once it's saved; an unknown name is answered with the list. One change per call. \
-Use this rather than asking the owner to type a command. In a turn that has read nothing from outside (no web page, \
+is asked for and the server added once it's saved; an unknown name is answered with the list. A server that signs \
+in only with the owner's own OAuth app (Slack, Asana, Dropbox, or one by its https `url`) also takes `client_id`, \
+the app's id the owner gives you, and `client_secret` true when the app has a secret: the owner gets a link for it. \
+One change per call. Use this rather than asking the owner to type a command. In a turn that has read nothing from outside (no web page, \
 search, browser, connected service's read or someone else's message), these run at once without a card, and the \
 owner gets a receipt with Undo: task_add, task_schedule, task_pause and task_delete for the owner's own tasks, \
 model_default and model_here to a model that's already connected.";
@@ -137,8 +139,10 @@ package_install and package_remove take `packages` (apt names) and run sudo apt-
 the server and scans its tools before adding it. A key goes in a header only as ${NAME} of a key `secrets` lists; \
 for a new key use secret_request. mcp_add with `catalog` (an entry of ferrule's vetted catalog, `write` true for \
 changes) takes everything else from the catalog: a missing key is asked for and the server added once it's saved; \
-an unknown name is answered with the list. One change per call. Use this rather than asking the owner to type a \
-command.";
+an unknown name is answered with the list. A server that signs in only with the owner's own OAuth app (Slack, \
+Asana, Dropbox, or one by its https `url`) also takes `client_id`, the app's id the owner gives you, and \
+`client_secret` true when the app has a secret: the owner gets a link for it. One change per call. Use this rather \
+than asking the owner to type a command.";
 
 pub const SPAWN_DESCRIPTION: &str = "Start another agent in the background on a task and return its id at once. \
 It runs with the same tools, sandbox and access as you, in its own session.\n\

@@ -4,8 +4,9 @@
 //! in `docs/m26-isolation.md` §2.
 //!
 //! - Writes: the token is `WRITE_RESTRICTED` with one capability SID per
-//!   writable root, and each root's DACL grants its SID. Every write needs
-//!   both the user's access and a restricting SID's, so it only lands in a
+//!   writable root, and each root's DACL grants its SID, and the user
+//!   while Authenticated Users is off ([`grant`]). Every write needs both
+//!   the user's access and a restricting SID's, so it only lands in a
 //!   root. Reads are judged as for the user.
 //! - Reads of ferrule's own secrets: Authenticated Users is deny-only in the
 //!   sandbox token, and those paths carry a protected DACL that lets the
@@ -30,9 +31,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
     ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
-    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, SetSecurityInfo,
-    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SDDL_REVISION_1, SE_FILE_OBJECT,
-    SE_KERNEL_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    GetNamedSecurityInfoW, SetNamedSecurityInfoW, SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::{
     CopySid, CreateRestrictedToken, CreateWellKnownSid, EqualSid, GetLengthSid,
@@ -40,9 +40,8 @@ use windows_sys::Win32::Security::{
     TokenGroups, TokenUser, WinAuthenticatedUserSid, WinRestrictedCodeSid, WinWorldSid, ACL,
     DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE, LUA_TOKEN,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE,
-    SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_ADJUST_DEFAULT,
-    TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_QUERY,
-    TOKEN_USER, WELL_KNOWN_SID_TYPE, WRITE_RESTRICTED,
+    SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL,
+    TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_USER, WELL_KNOWN_SID_TYPE, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE,
@@ -404,40 +403,49 @@ fn can_open(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Adds an inheritable allow ACE for `sid` to `root`, unless its DACL
-/// already names the SID. Setting it propagates to what's inside, which
-/// takes a while on a big tree, once.
-fn grant(root: &Path, sid: &Sid) -> Result<(), String> {
-    let sid_str = sid.string()?;
-    let (sd, dacl) = file_dacl(root)?;
-    if dacl_sddl(sd.0)?.contains(&sid_str) {
+/// Adds two inheritable allow ACEs to `root`, the ones its DACL lacks: one
+/// for its capability SID (the restricted half of the write check), and
+/// one for the user while Authenticated Users is off — in the sandbox
+/// token only (the normal half). That half can't lean on what usually
+/// grants it: Authenticated Users is deny-only there, and so is
+/// Administrators under UAC, so a root writable only through them (a
+/// folder at the top of `C:\`) refused every write. Setting them
+/// propagates to what's inside, which takes a while on a big tree, once.
+fn grant(root: &Path, sid: &Sid, user: &Sid) -> Result<(), String> {
+    // Each ACE the way Windows writes it back, so the check below finds it.
+    let want = [
+        format!("(A;OICI;{ROOT_RIGHTS:#x};;;{})", sid.string()?),
+        format!(
+            "(XA;OICI;{ROOT_RIGHTS:#x};;;{};(Not_Member_of {{SID(AU)}}))",
+            user.string()?
+        ),
+    ]
+    .iter()
+    .map(|ace| {
+        let back = Sd::parse(&format!("D:{ace}"))?.dacl_sddl()?;
+        Ok(back.strip_prefix("D:").unwrap_or(&back).to_string())
+    })
+    .collect::<Result<Vec<String>, String>>()?;
+    let missing = |dacl: &str| -> String {
+        want.iter()
+            .filter(|ace| !dacl.contains(ace.as_str()))
+            .map(String::as_str)
+            .collect()
+    };
+    let (sd, _) = file_dacl(root)?;
+    let old = dacl_sddl(sd.0)?;
+    let add = missing(&old);
+    if add.is_empty() {
         return Ok(());
     }
-    let ea = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: ROOT_RIGHTS,
-        grfAccessMode: GRANT_ACCESS,
-        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-        Trustee: TRUSTEE_W {
-            pMultipleTrustee: null_mut(),
-            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_UNKNOWN,
-            ptstrName: sid.ptr().cast(),
-        },
-    };
-    let mut new_acl: *mut ACL = null_mut();
-    // SAFETY: one entry, the old DACL borrowed from `sd`; the new one is
-    // LocalAlloc'd and owned by `_free`.
-    let rc = unsafe { SetEntriesInAclW(1, &ea, dacl, &mut new_acl) };
-    if rc != ERROR_SUCCESS {
-        return Err(win32_err("SetEntriesInAclW", rc));
-    }
-    let _free = Local(new_acl.cast());
-    if let Err(e) = set_file_dacl(root, new_acl, false) {
+    // Appended after the inherited ACEs, which setting the DACL derives
+    // from the parent again.
+    let new = Sd::parse(&format!("{old}{add}"))?;
+    if let Err(e) = set_file_dacl(root, new.dacl()?, false) {
         // Propagation stops at a child it can't write; the root itself may
-        // have taken the ACE, which is what counts.
+        // have taken the ACEs, which is what counts.
         let (sd, _) = file_dacl(root)?;
-        if !dacl_sddl(sd.0)?.contains(&sid_str) {
+        if !missing(&dacl_sddl(sd.0)?).is_empty() {
             return Err(e);
         }
         tracing::warn!("sandbox: granting {}: {e}", root.display());
@@ -624,7 +632,7 @@ pub fn launch(spec: &Spec, program: &Path, args: &[OsString]) -> Result<i32, Str
     let caps = if spec.confine_writes {
         let caps = capability_sids(&spec.write_roots, &state_file(spec))?;
         for (root, sid) in spec.write_roots.iter().zip(&caps) {
-            grant(root, sid)?;
+            grant(root, sid, &id.user)?;
         }
         caps
     } else {

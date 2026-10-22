@@ -1,4 +1,5 @@
 use crate::config::McpServerConfig;
+use crate::era::{self, Era, ParamHeader};
 use crate::error::McpError;
 use crate::http::HttpTransport;
 use ferrule_sandbox::Sandbox;
@@ -13,7 +14,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 
+/// The handshake (legacy) version ferrule asks for in `initialize`; the
+/// modern one is `era::MODERN_VERSION`.
 pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// How long a stdio server gets to answer the `server/discover` probe
+/// before it is taken for a legacy one (the spec's "a reasonable
+/// timeout"); a slower answer still counts if `initialize` then fails.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The shortest re-list a tool list's `ttlMs` asks for (wave C): a server
+/// that says 0 isn't polled every second.
+const MIN_RELIST: Duration = Duration::from_secs(300);
 
 type PendingMap = Arc<StdMutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
@@ -72,6 +84,20 @@ pub struct McpClient {
     list_changed: watch::Sender<u64>,
     /// Set by `shutdown`: no respawn after that.
     closed: AtomicBool,
+    /// Wave C: a stdio server's era, found by the first spawn's probe and
+    /// kept across respawns of the same config (the spec allows it).
+    era: StdMutex<Option<Era>>,
+    /// Wave C, over HTTP: each tool's `x-mcp-header` parameters.
+    param_headers: StdMutex<HashMap<String, Vec<ParamHeader>>>,
+    /// Wave C: a re-list is scheduled from a tool list's `ttlMs`.
+    relist_armed: Arc<AtomicBool>,
+}
+
+/// Why a fresh stdio connection isn't ready.
+enum Settle {
+    /// The server exited on the era probe (some legacy servers do).
+    ClosedOnProbe,
+    Failed(McpError),
 }
 
 pub(crate) fn extract_result(resp: Value) -> Result<Value, McpError> {
@@ -140,6 +166,9 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             list_changed: watch::channel(0).0,
             closed: AtomicBool::new(false),
+            era: StdMutex::new(None),
+            param_headers: StdMutex::new(HashMap::new()),
+            relist_armed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -159,8 +188,10 @@ impl McpClient {
     }
 
     /// Wakes whenever the server sends `notifications/tools/list_changed`.
-    /// Only stdio servers can: a URL server would need the server-initiated
-    /// stream this client doesn't open.
+    /// Only legacy stdio servers can: a URL server would need the
+    /// server-initiated stream this client doesn't open, and a modern one
+    /// `subscriptions/listen`. Wave C: also when a tool list's `ttlMs` runs
+    /// out (at least five minutes after it was read).
     pub fn subscribe_list_changed(&self) -> watch::Receiver<u64> {
         self.list_changed.subscribe()
     }
@@ -205,14 +236,28 @@ impl McpClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, McpError> {
+        self.request_with(method, params, &[], timeout).await
+    }
+
+    /// [`request`](Self::request) with a tool call's `Mcp-Param-*` headers
+    /// (sent only to a modern server over HTTP).
+    async fn request_with(
+        &self,
+        method: &str,
+        params: Value,
+        params_headers: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
         if let Some(local) = &self.cfg.local {
             return tokio::time::timeout(timeout, local.request(method, params))
                 .await
                 .map_err(|_| McpError::Timeout)?;
         }
         if let Some(http) = &self.http {
-            let resp = http.request(&self.next_id, method, params, timeout).await?;
-            return extract_result(resp);
+            let resp = http
+                .request(&self.next_id, method, params, params_headers, timeout)
+                .await?;
+            return extract_result(resp).and_then(era::complete);
         }
         if self.closed.load(Ordering::SeqCst) {
             return Err(McpError::NotConnected);
@@ -230,8 +275,12 @@ impl McpClient {
             }
             guard.as_ref().expect("just connected").handle.clone()
         };
+        let params = match self.era.lock().unwrap().clone() {
+            Some(Era::Modern(version)) => era::with_meta(params, &version),
+            _ => params,
+        };
         let result = Self::send_and_wait(&handle, &self.next_id, method, params, timeout).await;
-        extract_result(result?)
+        extract_result(result?).and_then(era::complete)
     }
 
     /// Fire-and-forget notification (no response expected). Only used for
@@ -254,6 +303,27 @@ impl McpClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, McpError> {
+        let (id, rx) = Self::send_request(conn, next_id, method, params).await?;
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(value)) => Ok(value),
+            // Sender was dropped — the reader task saw EOF/error and gave up
+            // on every in-flight call.
+            Ok(Err(_)) => Err(McpError::ConnectionClosed),
+            Err(_) => {
+                conn.pending.lock().unwrap().remove(&id);
+                Err(McpError::Timeout)
+            }
+        }
+    }
+
+    /// Writes one request and hands back its id and where its response
+    /// will arrive; the caller waits (and forgets the id on giving up).
+    async fn send_request(
+        conn: &Handle,
+        next_id: &AtomicU64,
+        method: &str,
+        params: Value,
+    ) -> Result<(u64, oneshot::Receiver<Value>), McpError> {
         let id = next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         conn.pending.lock().unwrap().insert(id, tx);
@@ -274,17 +344,7 @@ impl McpClient {
                 return Err(McpError::Io(e));
             }
         }
-
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(value)) => Ok(value),
-            // Sender was dropped — the reader task saw EOF/error and gave up
-            // on every in-flight call.
-            Ok(Err(_)) => Err(McpError::ConnectionClosed),
-            Err(_) => {
-                conn.pending.lock().unwrap().remove(&id);
-                Err(McpError::Timeout)
-            }
-        }
+        Ok((id, rx))
     }
 
     /// The server's command, spawned the way the shell tool spawns one:
@@ -363,7 +423,102 @@ impl McpClient {
         }
     }
 
+    /// A fresh process, ready for requests: probed once for its era (wave
+    /// C), then given `initialize` if it is a legacy server. A server that
+    /// exits on the probe is taken for a legacy one and started again,
+    /// once.
     async fn spawn_and_handshake(&self) -> Result<Connection, McpError> {
+        for attempt in 0..2 {
+            let conn = self.spawn().await?;
+            match self.settle(&conn.handle).await {
+                Ok(()) => return Ok(conn),
+                Err(Settle::ClosedOnProbe) if attempt == 0 => {
+                    *self.era.lock().unwrap() = Some(Era::Legacy);
+                }
+                Err(Settle::ClosedOnProbe) => {
+                    return Err(McpError::Handshake(McpError::ConnectionClosed.to_string()))
+                }
+                Err(Settle::Failed(e)) => return Err(e),
+            }
+        }
+        Err(McpError::Handshake(McpError::ConnectionClosed.to_string()))
+    }
+
+    /// The era handshake on a fresh connection (stdio, "Backward
+    /// Compatibility"): `server/discover` with the modern version in
+    /// `_meta`; a `DiscoverResult` or a modern error is a modern server, any
+    /// other answer or none within [`PROBE_TIMEOUT`] a legacy one, which
+    /// then gets `initialize`. Known from an earlier spawn, the probe is
+    /// skipped.
+    async fn settle(&self, h: &Handle) -> Result<(), Settle> {
+        let known = self.era.lock().unwrap().clone();
+        let mut late = None;
+        match known {
+            Some(Era::Modern(_)) => return Ok(()),
+            Some(Era::Legacy) => {}
+            None => {
+                let params = era::with_meta(json!({}), era::MODERN_VERSION);
+                let (id, mut rx) = Self::send_request(h, &self.next_id, "server/discover", params)
+                    .await
+                    .map_err(|e| Settle::Failed(McpError::Handshake(e.to_string())))?;
+                let wait = PROBE_TIMEOUT.min(self.cfg.startup_timeout());
+                match tokio::time::timeout(wait, &mut rx).await {
+                    Ok(Ok(resp)) => {
+                        let found = era::era_of(&resp).map_err(Settle::Failed)?;
+                        let modern = matches!(found, Era::Modern(_));
+                        *self.era.lock().unwrap() = Some(found);
+                        if modern {
+                            return Ok(());
+                        }
+                    }
+                    Ok(Err(_)) => return Err(Settle::ClosedOnProbe),
+                    // Slow, or silent: try `initialize`, and keep listening.
+                    Err(_) => late = Some((id, rx)),
+                }
+            }
+        }
+        let init_params = json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": { "name": "ferrule", "version": env!("CARGO_PKG_VERSION") },
+        });
+        let resp = Self::send_and_wait(
+            h,
+            &self.next_id,
+            "initialize",
+            init_params,
+            self.cfg.startup_timeout(),
+        )
+        .await
+        .and_then(extract_result);
+        match (resp, late) {
+            (Ok(_), late) => {
+                if let Some((id, _)) = late {
+                    h.pending.lock().unwrap().remove(&id);
+                }
+                *self.era.lock().unwrap() = Some(Era::Legacy);
+            }
+            // A modern server that was slow to start refuses `initialize`,
+            // and by now has answered the probe.
+            (Err(e), Some((_, mut rx))) => match rx.try_recv() {
+                Ok(probe) => match era::era_of(&probe) {
+                    Ok(found @ Era::Modern(_)) => {
+                        *self.era.lock().unwrap() = Some(found);
+                        return Ok(());
+                    }
+                    _ => return Err(Settle::Failed(McpError::Handshake(e.to_string()))),
+                },
+                Err(_) => return Err(Settle::Failed(McpError::Handshake(e.to_string()))),
+            },
+            (Err(e), None) => return Err(Settle::Failed(McpError::Handshake(e.to_string()))),
+        }
+        Self::send_notification(h, "notifications/initialized")
+            .await
+            .map_err(Settle::Failed)
+    }
+
+    /// A process with its reader tasks, before any handshake.
+    async fn spawn(&self) -> Result<Connection, McpError> {
         let mut cmd = self.build_command(&self.cfg.args)?;
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -463,7 +618,7 @@ impl McpClient {
             reader_pending.lock().unwrap().clear();
         });
 
-        let conn = Connection {
+        Ok(Connection {
             handle: Handle {
                 stdin,
                 pending,
@@ -472,35 +627,20 @@ impl McpClient {
             _child: child,
             _reader: reader_task,
             _stderr: stderr_task,
-        };
-
-        let init_params = json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": { "name": "ferrule", "version": env!("CARGO_PKG_VERSION") },
-        });
-        let resp = Self::send_and_wait(
-            &conn.handle,
-            &self.next_id,
-            "initialize",
-            init_params,
-            self.cfg.startup_timeout(),
-        )
-        .await;
-        match resp {
-            Ok(v) => {
-                extract_result(v).map_err(|e| McpError::Handshake(e.to_string()))?;
-            }
-            Err(e) => return Err(McpError::Handshake(e.to_string())),
-        }
-        Self::send_notification(&conn.handle, "notifications/initialized").await?;
-        Ok(conn)
+        })
     }
 
     /// `tools/list`, following `nextCursor` until the server stops sending one.
+    /// Wave C: over HTTP a tool whose `x-mcp-header` parameters break the
+    /// spec's rules is left out, with a warning, as the spec asks; a list
+    /// with a `ttlMs` schedules one re-list ([`subscribe_list_changed`]).
+    ///
+    /// [`subscribe_list_changed`]: Self::subscribe_list_changed
     pub async fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
         let mut all = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut headers = HashMap::new();
+        let mut ttl: Option<u64> = None;
         loop {
             let params = match &cursor {
                 Some(c) => json!({ "cursor": c }),
@@ -514,7 +654,23 @@ impl McpClient {
                 .and_then(|t| t.as_array())
                 .cloned()
                 .unwrap_or_default();
+            if ttl.is_none() {
+                ttl = result.get("ttlMs").and_then(Value::as_u64);
+            }
             for t in tools {
+                if self.http.is_some() {
+                    let name = t.get("name").and_then(Value::as_str).unwrap_or("?");
+                    match era::param_headers(t.get("inputSchema").unwrap_or(&Value::Null)) {
+                        Err(why) => {
+                            tracing::warn!(server = %self.cfg.name, "mcp tool `{name}` left out: {why}");
+                            continue;
+                        }
+                        Ok(h) if !h.is_empty() => {
+                            headers.insert(name.to_string(), h);
+                        }
+                        Ok(_) => {}
+                    }
+                }
                 all.push(serde_json::from_value(t)?);
             }
             cursor = result
@@ -525,7 +681,26 @@ impl McpClient {
                 break;
             }
         }
+        *self.param_headers.lock().unwrap() = headers;
+        if let Some(ms) = ttl {
+            self.relist_after(Duration::from_millis(ms).max(MIN_RELIST));
+        }
         Ok(all)
+    }
+
+    /// Wave C, `ttlMs`: tell the list's watchers to re-list once `after`
+    /// has passed; one timer at a time.
+    fn relist_after(&self, after: Duration) {
+        if self.relist_armed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let armed = self.relist_armed.clone();
+        let changed = self.list_changed.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            armed.store(false, Ordering::SeqCst);
+            changed.send_modify(|n| *n += 1);
+        });
     }
 
     /// `tools/call` for one remote tool. `timeout` is per-call so the
@@ -537,8 +712,17 @@ impl McpClient {
         timeout: Duration,
     ) -> Result<CallToolResult, McpError> {
         self.warm_up().await;
+        let params_headers = self
+            .param_headers
+            .lock()
+            .unwrap()
+            .get(name)
+            .map(|h| era::param_values(h, &arguments))
+            .unwrap_or_default();
         let params = json!({ "name": name, "arguments": arguments });
-        let result = self.request("tools/call", params, timeout).await?;
+        let result = self
+            .request_with("tools/call", params, &params_headers, timeout)
+            .await?;
         Ok(serde_json::from_value(result)?)
     }
 }

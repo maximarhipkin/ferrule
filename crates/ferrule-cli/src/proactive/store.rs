@@ -18,6 +18,11 @@ pub const DIR: &str = "proactive";
 /// little more.
 pub const REQUESTS_KEPT_SECS: i64 = 30 * 86_400;
 
+/// M64.5: Not now and 👎 on a kind are counted over this window (§7).
+pub const BACK_OFF_WINDOW_SECS: i64 = 30 * 86_400;
+/// The longest a kind waits after them, in days.
+pub const BACK_OFF_MAX_DAYS: i64 = 16;
+
 /// One message the owner sent in their own chat.
 #[derive(Debug, Clone, Serialize)]
 pub struct Request {
@@ -107,6 +112,8 @@ pub struct Item {
     pub outcome_at: Option<i64>,
     /// The task its action made, which Undo deletes.
     pub undo: Option<String>,
+    /// The owner's last 👍 or 👎 on its message (M64.5): `up` or `down`.
+    pub thumb: Option<String>,
 }
 
 /// What a new item says.
@@ -169,6 +176,14 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY,
+    item TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    verdict TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_kind ON feedback(kind, at);
 ";
 
 pub fn now() -> i64 {
@@ -363,6 +378,23 @@ impl Store {
         Ok(())
     }
 
+    /// The item that went out in this message, if one did.
+    pub fn item_by_message(
+        &self,
+        channel: &str,
+        chat: &str,
+        message: &str,
+    ) -> Result<Option<Item>> {
+        Ok(self
+            .db()
+            .query_row(
+                &format!("SELECT {ITEM} FROM items WHERE message = ?1 ORDER BY at DESC LIMIT 1"),
+                params![format!("{channel}\t{chat}\t{message}")],
+                item,
+            )
+            .optional()?)
+    }
+
     /// Where an item went out: `channel`, `chat`, the message's id.
     pub fn set_message(&self, id: &str, channel: &str, chat: &str, message: &str) -> Result<()> {
         self.db().execute(
@@ -383,6 +415,27 @@ impl Store {
         Ok(())
     }
 
+    /// The list, oldest first: each kind and when.
+    pub fn suppressed(&self) -> Result<Vec<(String, i64)>> {
+        let db = self.db();
+        let mut st = db.prepare("SELECT kind, at FROM suppressed ORDER BY at")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Takes `kind` off the list; `false` when it wasn't on it.
+    pub fn unsuppress(&self, kind: &str) -> Result<bool> {
+        let n = self
+            .db()
+            .execute("DELETE FROM suppressed WHERE kind = ?1", params![kind])?;
+        Ok(n > 0)
+    }
+
+    /// Empties the list; how many kinds were on it.
+    pub fn clear_suppressed(&self) -> Result<usize> {
+        Ok(self.db().execute("DELETE FROM suppressed", [])?)
+    }
+
     pub fn is_suppressed(&self, kind: &str) -> Result<bool> {
         Ok(self
             .db()
@@ -395,7 +448,72 @@ impl Store {
             .is_some())
     }
 
-    // ---- state ----------------------------------------------------------------
+    // ---- feedback (M64.5) ---------------------------------------------------
+
+    /// The owner's word on an item, kept by its kind for the back-off:
+    /// `not_now`, `down` (slow the kind down), `useful`, `up` (back to
+    /// normal).
+    pub fn add_feedback(&self, item: &Item, verdict: &str) -> Result<()> {
+        self.db().execute(
+            "INSERT INTO feedback (item, kind, at, verdict) VALUES (?1, ?2, ?3, ?4)",
+            params![item.id, item.kind, now(), verdict],
+        )?;
+        Ok(())
+    }
+
+    /// Until when `kind` waits after Not now or 👎 (§7), if it does now.
+    pub fn resting(&self, kind: &str, now: i64) -> Result<Option<i64>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT at, verdict FROM feedback WHERE kind = ?1 AND at >= ?2 ORDER BY at, id",
+        )?;
+        let rows: Vec<(i64, String)> = st
+            .query_map(params![kind, now - BACK_OFF_WINDOW_SECS], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(back_off(&rows, now))
+    }
+
+    /// Every kind waiting now, and until when.
+    pub fn resting_kinds(&self, now: i64) -> Result<Vec<(String, i64)>> {
+        let kinds: Vec<String> = {
+            let db = self.db();
+            let mut st = db.prepare("SELECT DISTINCT kind FROM feedback WHERE at >= ?1")?;
+            let rows = st.query_map(params![now - BACK_OFF_WINDOW_SECS], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut out = Vec::new();
+        for kind in kinds {
+            if let Some(until) = self.resting(&kind, now)? {
+                out.push((kind, until));
+            }
+        }
+        out.sort_by_key(|(_, until)| *until);
+        Ok(out)
+    }
+
+    // ---- state --------------------------------------------------------------
+
+    pub fn state(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT value FROM state WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
+        self.db().execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
 }
 
 const COMMITMENT: &str =
@@ -417,8 +535,31 @@ fn commitment(r: &Row<'_>) -> rusqlite::Result<Commitment> {
     })
 }
 
+/// The back-off of §7 over one kind's feedback (oldest first, the
+/// window's only): the n-th Not now or 👎 since the last 👍 or Useful
+/// makes the kind wait 2^(n-1) days (at most 16) from it. Until when, if
+/// that's still ahead.
+pub fn back_off(rows: &[(i64, String)], now: i64) -> Option<i64> {
+    let reset = rows
+        .iter()
+        .rposition(|(_, v)| v == "up" || v == "useful")
+        .map_or(0, |i| i + 1);
+    let waved: Vec<i64> = rows[reset..]
+        .iter()
+        .filter(|(_, v)| v == "not_now" || v == "down")
+        .map(|(at, _)| *at)
+        .collect();
+    let last = *waved.last()?;
+    let n = u32::try_from(waved.len()).unwrap_or(u32::MAX);
+    let days = 2i64.pow(n.saturating_sub(1).min(4)).min(BACK_OFF_MAX_DAYS);
+    let until = last + days * 86_400;
+    (until > now).then_some(until)
+}
+
 const ITEM: &str =
-    "id, at, kind, mode, text, action, basis, commitment, message, outcome, outcome_at, undo";
+    "id, at, kind, mode, text, action, basis, commitment, message, outcome, outcome_at, undo,
+    (SELECT f.verdict FROM feedback f WHERE f.item = items.id AND f.verdict IN ('up', 'down')
+     ORDER BY f.at DESC, f.id DESC LIMIT 1)";
 
 fn item(r: &Row<'_>) -> rusqlite::Result<Item> {
     let action: Option<String> = r.get(5)?;
@@ -439,6 +580,7 @@ fn item(r: &Row<'_>) -> rusqlite::Result<Item> {
         outcome: r.get(9)?,
         outcome_at: r.get(10)?,
         undo: r.get(11)?,
+        thumb: r.get(12)?,
     })
 }
 

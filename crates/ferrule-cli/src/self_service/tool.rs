@@ -74,7 +74,9 @@ impl Tool for AdminTool {
                     "hosts": { "type": "array", "items": { "type": "string" } },
                     "why": { "type": "string" },
                     "catalog": { "type": "string" },
-                    "write": { "type": "boolean" }
+                    "write": { "type": "boolean" },
+                    "client_id": { "type": "string" },
+                    "client_secret": { "type": "boolean" }
                 },
                 "required": ["op"],
                 "additionalProperties": false
@@ -271,8 +273,17 @@ pub(super) async fn ask_and_run(
     let done = match &op {
         Op::Update => start_update(admin, ctx, here, session),
         Op::Restart => start_restart(admin, ctx, here, session),
-        Op::McpAddCatalog { catalog, write } => {
-            super::catalog::add(admin, ctx, here, session, catalog, *write, &by)
+        Op::McpAddCatalog {
+            catalog,
+            write,
+            client_id,
+            client_secret,
+        } => {
+            let client = super::catalog::OwnerApp {
+                id: client_id.clone(),
+                secret: *client_secret,
+            };
+            super::catalog::add(admin, ctx, here, session, catalog, *write, &client, &by)
                 .await
                 .map_err(|e| ctx.redactor.redact(&e))
         }

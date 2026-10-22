@@ -1,7 +1,9 @@
 //! OAuth 2.1 for MCP servers: discovery (RFC 9728 → RFC 8414 / OIDC),
-//! dynamic client registration (RFC 7591), PKCE S256, the code exchange,
-//! refresh, and revocation (RFC 7009). Errors are fixed phrases plus the
-//! OAuth `error` code: never a server's free text, never a token.
+//! the client (wave C: the owner's pre-registered one, ferrule's Client ID
+//! Metadata Document, or dynamic client registration, RFC 7591, in the MCP
+//! authorization spec's order), PKCE S256, the code exchange, refresh, and
+//! revocation (RFC 7009). Errors are fixed phrases plus the OAuth `error`
+//! code: never a server's free text, never a token.
 
 use crate::catalog::{ClientKind, Service};
 use crate::seal::{b64, random};
@@ -17,6 +19,11 @@ pub struct Endpoints {
     pub token: String,
     pub registration: Option<String>,
     pub revocation: Option<String>,
+    /// Wave C: the metadata's `client_id_metadata_document_supported`.
+    pub cimd: bool,
+    /// Wave C: the metadata's `issuer`, which a callback's `iss` (RFC
+    /// 9207) must match.
+    pub issuer: Option<String>,
 }
 
 /// A client, registered or the owner's.
@@ -120,6 +127,8 @@ pub async fn discover(http: &reqwest::Client, service: &Service) -> Result<Endpo
             token: t.clone(),
             registration: None,
             revocation: service.revoke_url.clone(),
+            cimd: false,
+            issuer: None,
         });
     }
     let mcp = url::Url::parse(&service.url).context("the service's URL")?;
@@ -161,6 +170,8 @@ pub async fn discover(http: &reqwest::Client, service: &Service) -> Result<Endpo
             token: format!("{base}/token"),
             registration: Some(format!("{base}/register")),
             revocation: None,
+            cimd: false,
+            issuer: None,
         });
     };
     if let Some(methods) = meta["code_challenge_methods_supported"].as_array() {
@@ -174,45 +185,137 @@ pub async fn discover(http: &reqwest::Client, service: &Service) -> Result<Endpo
         token: field("token_endpoint").context("no token_endpoint")?,
         registration: field("registration_endpoint"),
         revocation: field("revocation_endpoint").or_else(|| service.revoke_url.clone()),
+        cimd: meta["client_id_metadata_document_supported"] == true,
+        issuer: field("issuer"),
     })
 }
 
-/// A client for this flow: registered (DCR) for `redirect`, or the owner's
-/// from the secrets. The error for a missing owner client says what to do.
+/// Wave C: the owner's pre-registered client for `service`, from the
+/// secrets: `<client_env>_ID`, and `<client_env>_SECRET` when it has one.
+pub fn owner_client(
+    service: &Service,
+    secrets: &(dyn Fn(&str) -> Option<String> + Send + Sync),
+) -> Option<Client> {
+    let env = service.client_env_name();
+    let id = secrets(&format!("{env}_ID"))?;
+    Some(Client {
+        id,
+        secret: secrets(&format!("{env}_SECRET")),
+    })
+}
+
+/// Wave C: checks a Client ID Metadata Document before ferrule signs in
+/// with it (MCP authorization, "Client ID Metadata Documents"; the IETF
+/// draft `draft-ietf-oauth-client-id-metadata-document`): `url` is https
+/// with a path, the document is JSON whose `client_id` is `url` exactly,
+/// with a `client_name`, and whose `redirect_uris` lists `redirect`.
+pub async fn check_cimd(http: &reqwest::Client, url: &str, redirect: &str) -> Result<()> {
+    let u = url::Url::parse(url).context("the client metadata URL")?;
+    if u.scheme() != "https" || u.path().trim_matches('/').is_empty() || u.fragment().is_some() {
+        bail!("a client metadata URL is https with a path, and no #");
+    }
+    let doc = get_json(http, url)
+        .await
+        .context("the client metadata document didn't load as JSON")?;
+    if doc["client_id"].as_str() != Some(url) {
+        bail!("the client metadata document's client_id isn't its own URL");
+    }
+    if doc["client_name"].as_str().is_none_or(str::is_empty) {
+        bail!("the client metadata document has no client_name");
+    }
+    let listed = doc["redirect_uris"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|r| r.as_str() == Some(redirect)));
+    if !listed {
+        bail!("the client metadata document doesn't list the callback {redirect}");
+    }
+    Ok(())
+}
+
+/// Which kind of client a flow signs in with, for the owner's message and
+/// the audit line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientVia {
+    /// The owner's pre-registered client.
+    Owner,
+    /// ferrule's Client ID Metadata Document.
+    Cimd,
+    /// Registered just now (RFC 7591).
+    Dcr,
+}
+
+impl ClientVia {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClientVia::Owner => "owner",
+            ClientVia::Cimd => "cimd",
+            ClientVia::Dcr => "dcr",
+        }
+    }
+}
+
+/// A client for this flow, in the MCP authorization spec's order of
+/// preference (2025-11-25 and 2026-07-28, "Client Registration
+/// Approaches"): the owner's pre-registered client when one is saved;
+/// ferrule's Client ID Metadata Document (`cimd`: its URL, already checked
+/// for `redirect`) when the authorization server says it takes one;
+/// dynamic client registration when it offers that. An owner-only service
+/// takes nothing but the owner's client. The error says what to do.
 pub async fn client(
     http: &reqwest::Client,
     service: &Service,
     endpoints: &Endpoints,
     redirect: &str,
+    cimd: Option<&str>,
     secrets: &(dyn Fn(&str) -> Option<String> + Send + Sync),
-) -> Result<Client> {
-    if service.client == ClientKind::Owner {
-        let env = service
-            .client_env
-            .as_deref()
-            .unwrap_or("FERRULE_OAUTH_CLIENT");
-        let id = secrets(&format!("{env}_ID"));
-        let secret = secrets(&format!("{env}_SECRET"));
-        return match (id, secret) {
-            (Some(id), Some(secret)) => Ok(Client {
-                id,
-                secret: Some(secret),
-            }),
-            _ => Err(anyhow!(
-                "{} needs your own OAuth client: {env}_ID and {env}_SECRET in the secrets file (see docs/m20-connections.md §3.3)",
-                service.title()
-            )),
-        };
+) -> Result<(Client, ClientVia)> {
+    let env = service.client_env_name();
+    if let Some(c) = owner_client(service, secrets) {
+        return Ok((c, ClientVia::Owner));
     }
-    let reg = endpoints.registration.as_deref().context(
-        "the service offers no client registration; add a custom entry with an owner client",
-    )?;
+    if service.client == ClientKind::Owner {
+        bail!(
+            "{} needs your own OAuth client: {env}_ID (and {env}_SECRET if it has a secret) in the secrets file (see docs/m20-connections.md §3.3)",
+            service.title()
+        );
+    }
+    if let (true, Some(url)) = (endpoints.cimd, cimd) {
+        return Ok((
+            Client {
+                id: url.to_string(),
+                secret: None,
+            },
+            ClientVia::Cimd,
+        ));
+    }
+    let Some(reg) = endpoints.registration.as_deref() else {
+        if endpoints.cimd {
+            bail!(
+                "{} takes ferrule's client metadata document, and none is served here: set up \
+                 the relay (or redeploy it: `ferrule connections relay deploy`), or register an \
+                 OAuth client with {} yourself and save its id as {env}_ID",
+                service.title(),
+                service.title()
+            );
+        }
+        bail!(
+            "{} offers no client registration: register an OAuth client with it yourself and \
+             save its id as {env}_ID (and its secret as {env}_SECRET)",
+            service.title()
+        );
+    };
+    // MCP 2026-07-28 (SEP-837): say which kind of app this is, "native"
+    // for a loopback redirect, "web" for the relay's or a tunnel's.
+    let native = url::Url::parse(redirect)
+        .map(|u| crate::catalog::is_loopback(&u))
+        .unwrap_or(false);
     let mut body = serde_json::json!({
         "client_name": "Ferrule",
         "redirect_uris": [redirect],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
+        "application_type": if native { "native" } else { "web" },
     });
     // Every scope either mode may ask for, so one client serves both.
     let mut scopes: Vec<&str> = Vec::new();
@@ -244,10 +347,13 @@ pub async fn client(
     let id = doc["client_id"]
         .as_str()
         .context("client registration: no client_id")?;
-    Ok(Client {
-        id: id.to_string(),
-        secret: doc["client_secret"].as_str().map(String::from),
-    })
+    Ok((
+        Client {
+            id: id.to_string(),
+            secret: doc["client_secret"].as_str().map(String::from),
+        },
+        ClientVia::Dcr,
+    ))
 }
 
 pub struct AuthorizeRequest<'a> {
@@ -275,7 +381,7 @@ pub fn authorize_url(r: &AuthorizeRequest<'_>) -> Result<String> {
             q.append_pair("scope", &r.scopes.join(" "));
         }
         if r.service.resource_param {
-            q.append_pair("resource", r.service.url(r.write));
+            q.append_pair("resource", r.service.resource(r.write));
         }
         for (k, v) in &r.service.extra_params {
             q.append_pair(k, v);
@@ -311,6 +417,12 @@ async fn token_request(
         .map_err(|_| TokenError::Transient("the token endpoint didn't answer".into()))?;
     let status = resp.status();
     let doc: Value = resp.json().await.unwrap_or(Value::Null);
+    // Slack answers a refused exchange with 200 and `"ok": false`.
+    if status.is_success() && doc["ok"] == false {
+        return Err(TokenError::Refused(
+            error_code(&doc).unwrap_or_else(|| "refused".into()),
+        ));
+    }
     if status.is_success() {
         return serde_json::from_value::<Tokens>(doc)
             .map_err(|_| TokenError::Transient("the token reply had no access_token".into()));
@@ -409,6 +521,8 @@ mod tests {
             token: "https://mcp.linear.app/token".into(),
             registration: None,
             revocation: None,
+            cimd: false,
+            issuer: None,
         };
         let client = Client {
             id: "cid".into(),

@@ -345,6 +345,12 @@ run follows the recorded lesson — visible as a playbook diff.
   mid-session `list_changed` is re-scanned.
 - `ferrule mcp list`/`remove`, and an "MCP servers" step in `ferrule setup`
   on the same code.
+- Wave C (2026-10-22, `docs/m17-mcp-add.md` §8): MCP 2026-07-28 next to
+  2025-06-18. A `server/discover` probe (stdio) or a first modern request
+  (HTTP) finds the era once per server; a modern server gets `_meta` on
+  every request, the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` and
+  `Mcp-Param-*` headers and no session; legacy servers keep `initialize`.
+  No modern server tried live.
 
 **Goal.** Connecting a server is one guided command, not a hand-edited
 TOML file and a restart.
@@ -500,6 +506,14 @@ to the fallback with one message.
 **Done means.** The owner connects a service from a phone with one tap
 and a login, and its tools appear. No token ever reaches the model, a
 tool result, the audit log, `/status` or an error.
+
+**Wave C** (2026-10-22, `docs/m20-connections.md` §3.6): the client
+comes in the MCP authorization spec's order, the owner's pre-registered
+app, then ferrule's Client ID Metadata Document (served by the relay at
+`/client.json`, or the owner's own copy), then DCR (now with
+`application_type`); a callback's `iss` is checked. Unlocks Home
+Assistant's MCP server by its address, and catalog entries for Slack,
+Asana and Dropbox with the owner's own app. Not signed in live.
 
 ### M19c — live-bot fixes
 
@@ -1199,6 +1213,13 @@ every lesson stays readable and revertible the M16 way.
 
 **Follow-ups from the gap analysis** (built on `autopilot`, one section
 each in `docs/m53-contrastive-probing.md`):
+- **M53.1's fix** (wave C, 2026-10-22): the gate re-runs the episode
+  with the change and again without it (a control, when the caps leave
+  room for a second run); without a check, the judge compares the pair
+  blind under seeded A/B labels and says better, worse or neither
+  (neither is the default), and only "better" keeps; with a check, the
+  control must fail it. One re-run only is weak evidence, kept only when
+  the owner's 👍 corroborates it.
 - **M53.2**, evidence discipline and honest clipping: tool results
   clipped at 10,000 characters (head and tail) in a 40,000-character
   window, every cut marked as the renderer's, and a reflector that must
@@ -1594,6 +1615,30 @@ Current State; numbers are claimed there before anything is built.
     Never list or was offered in 30 days. `proactive::offer`, the one way
     an item reaches the owner; Do it adds the owner's task (Undo deletes
     it); `/proactive patterns` offers the candidates now. Not run live.
+  - **M64.4, the heartbeat**: the built-in `ferrule-proactive` task (every
+    3 h at minute 7, the owner's zone). Skipped, with the reason logged,
+    when off, in quiet hours, under the kill switch or a `[trust]` cap,
+    past its own day's dollars (from the ledger, fail closed), or past the
+    day's message cap or gap. Reads profile facts, the new owner messages,
+    open commitments and loops, patterns, the owner's tasks, its own
+    recent items, the Never list, and the next 24 h of native calendars
+    and unread mail headers (in-process, scrubbed, fenced as outside
+    content). No model call when nothing changed (a due reminder still
+    goes out); one call to the cheap model otherwise, a JSON decision
+    that ferrule checks; one message a pass; `proactive_pass` audited.
+    Not run live.
+  - **M64.5, feedback, `/proactive` and the page**: Not now and the
+    owner's 👎 back a kind off 2^(n-1) days (at most 16, counted over 30
+    days), 👍 and Useful end the wait, Never is for good and clearable;
+    👍/👎 on Telegram reach the proactive store through the same reaction
+    sink as M53.5's (a message's id finds its item; the rest goes on to
+    learning). `/proactive` `status`, `on`, `off`, `level`, `never`,
+    `clear`, `patterns` (in the owner menu, 24 commands). The Proactive
+    page: the switch and settings, today's messages and spend against its
+    caps, the last and next pass, Run a pass now, the commitments, the
+    last 30 days of items with outcomes and thumbs, the Never list. A
+    settings write goes the Config page's way (base hash, loader check,
+    guard, version) and the pass's task follows at once. Not run live.
 
 **Still open from earlier tracks.**
 

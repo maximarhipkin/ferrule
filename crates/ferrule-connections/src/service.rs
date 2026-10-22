@@ -433,17 +433,35 @@ impl Connections {
         relay.healthy().await.then_some(relay)
     }
 
-    /// Whether the owner's own OAuth client for `service` is saved.
+    /// Whether `service` has the client it needs: any service but an
+    /// owner-only one does; that one needs the owner's client id saved
+    /// (wave C: its secret only when it has one).
     pub fn has_client(&self, service: &Service) -> bool {
         if service.client != ClientKind::Owner {
             return true;
         }
-        let env = service
-            .client_env
-            .as_deref()
-            .unwrap_or("FERRULE_OAUTH_CLIENT");
+        let env = service.client_env_name();
         (self.secrets)(&format!("{env}_ID")).is_some()
-            && (self.secrets)(&format!("{env}_SECRET")).is_some()
+    }
+
+    /// Wave C: the Client ID Metadata Document ferrule can sign in with
+    /// for `redirect`, checked: the owner's own (`[connections]
+    /// client_metadata_url`), else the relay's `/client.json` when the
+    /// redirect is the relay's. `None`, with the reason logged, when
+    /// neither holds up.
+    async fn cimd_for(&self, relay: Option<&Relay>, redirect: &str) -> Option<String> {
+        let url = match (&self.cfg.client_metadata_url, relay) {
+            (Some(url), _) => url.clone(),
+            (None, Some(r)) if r.callback_url() == redirect => r.client_metadata_url(),
+            _ => return None,
+        };
+        match oauth::check_cimd(&self.http, &url, redirect).await {
+            Ok(()) => Some(url),
+            Err(e) => {
+                tracing::warn!("the client metadata document at {url} can't be used: {e:#}");
+                None
+            }
+        }
     }
 
     pub fn last_attempt(&self, service: &str) -> Option<Attempt> {
@@ -491,27 +509,39 @@ impl Connections {
         };
         let no_relay_keys = " Those are entered on the dashboard's Connections page (or \
              with `ferrule connections setup`), never in a chat.";
-        if !self.has_client(service) {
-            let env = service
-                .client_env
-                .as_deref()
-                .unwrap_or("FERRULE_OAUTH_CLIENT");
+        if !self.has_client(service) && google {
+            let env = service.client_env_name();
             return Some(Reply {
                 text: format!(
                     "{} signs in with your own OAuth client, and none is saved yet ({env}). \
                      Set it up on the dashboard (Connections → {} → Set up), or run \
-                     `ferrule connections setup {}`. Simpler ways in need no client:{}{no_relay_keys}",
+                     `ferrule connections setup {}`. Simpler ways in need no client: Gmail \
+                     with an app password, or Drive/Sheets/Docs/Calendar with a service \
+                     account's key.{no_relay_keys}",
                     service.title(),
                     service.tile(),
                     service.tile(),
-                    if google {
-                        " Gmail with an app password, or Drive/Sheets/Docs/Calendar with a \
-                         service account's key."
-                    } else {
-                        " an API key."
-                    }
                 ),
-                buttons: simple(if google { &["gmail", "google"] } else { &[] }),
+                buttons: simple(&["gmail", "google"]),
+            });
+        }
+        if !self.has_client(service) {
+            // Wave C: any other service's own client (Slack, Asana, Dropbox).
+            let env = service.client_env_name();
+            let mut steps = String::new();
+            for (n, step) in service.guide.iter().enumerate() {
+                steps.push_str(&format!("\n{}. {step}", n + 1));
+            }
+            return Some(Reply {
+                text: format!(
+                    "{} signs in only with an OAuth app you register with it, and none is saved \
+                     yet ({env}_ID).{steps}\nThen give ferrule its client id: run `ferrule \
+                     connections setup {}` at the terminal, or ask me to add it with the id (its \
+                     secret, if it has one, goes through a one-time link, never the chat).",
+                    service.title(),
+                    service.name,
+                ),
+                buttons: Vec::new(),
             });
         }
         if service.fixed_callback && !relay_live {
@@ -524,7 +554,7 @@ impl Connections {
                      fixed address (dashboard → Connections → Fixed callback address, or \
                      `ferrule connections setup relay`).{no_relay_keys}"
                 )
-            } else {
+            } else if google {
                 format!(
                     "{} needs a callback address that stays the same (Google checks it against \
                      the list in your OAuth client), and none is set up. Set up the relay \
@@ -533,13 +563,23 @@ impl Connections {
                      password, or Drive/Sheets/Docs/Calendar with a service account's key.{no_relay_keys}",
                     service.title()
                 )
+            } else {
+                format!(
+                    "{} needs a callback address that stays the same (the app you registered \
+                     with it lists it), and none is set up. Set up the relay (dashboard → \
+                     Connections → Fixed callback address, or `ferrule connections setup \
+                     relay`), then add its /cb address to the app.",
+                    service.title()
+                )
             };
             return Some(Reply {
                 text,
                 buttons: simple(if google {
                     &["gmail", "google"]
-                } else {
+                } else if explain::is_atlassian(service) {
                     &["jira"]
+                } else {
+                    &[]
                 }),
             });
         }
@@ -1182,8 +1222,22 @@ impl Connections {
                 None => ("paste", self.cfg.loopback_redirect.clone(), state),
             }
         };
-        let client =
-            oauth::client(&self.http, &service, &endpoints, &redirect, &*self.secrets).await?;
+        // Wave C: ferrule's client metadata document, checked, when the
+        // server takes one and no client of the owner's comes first.
+        let cimd = if endpoints.cimd && oauth::owner_client(&service, &*self.secrets).is_none() {
+            self.cimd_for(relay.as_ref(), &redirect).await
+        } else {
+            None
+        };
+        let (client, client_via) = oauth::client(
+            &self.http,
+            &service,
+            &endpoints,
+            &redirect,
+            cimd.as_deref(),
+            &*self.secrets,
+        )
+        .await?;
         let pkce = Pkce::new();
         let scopes = service.scopes(write).to_vec();
         let url = oauth::authorize_url(&oauth::AuthorizeRequest {
@@ -1223,12 +1277,16 @@ impl Connections {
         }
         self.events.audit(
             "connection_started",
-            json!({"service": name, "via": via, "write": write, "requested_by": requested_by}),
+            json!({"service": name, "via": via, "write": write, "requested_by": requested_by,
+                   "client": client_via.as_str()}),
         );
         let mut text = format!(
             "Sign in to {title} and approve. {}",
             service.read_only_story(write)
         );
+        if client_via == oauth::ClientVia::Owner && service.client != ClientKind::Owner {
+            text.push_str("\nWith the OAuth app you registered.");
+        }
         if !scopes.is_empty() {
             text.push_str(&format!("\nScopes: {}", scopes.join(", ")));
         }
@@ -1334,7 +1392,7 @@ impl Connections {
                 match got {
                     Ok(Some(cb)) if cb.state == st => {
                         if let Some(flow) = me.take(&st) {
-                            let v = json!({"kind": "oauth", "code": cb.code, "error": cb.error});
+                            let v = json!({"kind": "oauth", "code": cb.code, "error": cb.error, "iss": cb.iss});
                             me.finish(flow, v).await;
                         }
                         return;
@@ -1445,7 +1503,7 @@ impl Connections {
             );
         };
         let title = flow.service.title().to_string();
-        let v = json!({"kind": "oauth", "code": p.code, "error": p.error});
+        let v = json!({"kind": "oauth", "code": p.code, "error": p.error, "iss": p.iss});
         let this = self.clone();
         tokio::spawn(async move { this.finish(flow, v).await });
         Reply::text(format!("Got it; finishing the {title} connection."))
@@ -1523,7 +1581,18 @@ impl Connections {
                     .into());
                 }
                 let code = v["code"].as_str().context("no code came back")?;
-                let resource = service.resource_param.then(|| service.url(flow.write));
+                // RFC 9207 (MCP 2026-07-28, SEP-2468): a present `iss`
+                // must be the authorization server this flow began with.
+                if let (Some(iss), Some(issuer)) = (v["iss"].as_str(), &endpoints.issuer) {
+                    if iss.trim_end_matches('/') != issuer.trim_end_matches('/') {
+                        bail!(
+                            "the sign-in came back from a different authorization server than {} \
+                             uses (its iss didn't match), so the code wasn't used",
+                            service.title()
+                        );
+                    }
+                }
+                let resource = service.resource_param.then(|| service.resource(flow.write));
                 let tokens = oauth::exchange(
                     &self.http, endpoints, client, code, verifier, redirect, resource,
                 )

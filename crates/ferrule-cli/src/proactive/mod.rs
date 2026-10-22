@@ -5,9 +5,13 @@
 //! receipt and Undo.
 
 pub mod door;
+pub mod feedback;
+pub mod heartbeat;
 pub mod loops;
+pub mod outside;
 pub mod patterns;
 pub mod reminder;
+pub mod status;
 pub mod store;
 pub mod tool;
 
@@ -22,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use store::{Action, Commitment, NewItem, Store};
 
 /// `[proactive]` (docs/m64-proactive.md §9).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProactiveConfig {
     /// Off until the owner turns it on.

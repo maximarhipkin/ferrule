@@ -68,6 +68,13 @@ impl Relay {
         format!("{}/cb", self.url)
     }
 
+    /// Wave C: where the relay serves ferrule's OAuth Client ID Metadata
+    /// Document, which lists `callback_url` (a relay deployed before wave
+    /// C answers 404 here, and `oauth::check_cimd` says so).
+    pub fn client_metadata_url(&self) -> String {
+        format!("{}/client.json", self.url)
+    }
+
     /// The key form's link: everything after `#` stays in the browser.
     pub fn key_form_url(&self, slot: &Slot, public_key: &str, title: &str) -> String {
         let title: String = url::form_urlencoded::byte_serialize(title.as_bytes()).collect();

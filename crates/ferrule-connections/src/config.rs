@@ -22,6 +22,11 @@ pub struct ConnectionsConfig {
     pub gate_writes: bool,
     /// Services beyond the catalog, or a built-in one changed.
     pub custom: Vec<Service>,
+    /// Wave C: an https URL where the owner hosts ferrule's OAuth Client
+    /// ID Metadata Document (its `client_id` must be this URL, and its
+    /// `redirect_uris` must list the callback in use). Unset: the relay's
+    /// `/client.json`, when the relay serves one.
+    pub client_metadata_url: Option<String>,
     /// `<data>/bin`, where the dashboard fetches cloudflared to; set by
     /// the process, never read from the file.
     #[serde(skip)]
@@ -36,6 +41,7 @@ impl Default for ConnectionsConfig {
             loopback_redirect: DEFAULT_LOOPBACK.into(),
             gate_writes: true,
             custom: Vec::new(),
+            client_metadata_url: None,
             bin_dir: None,
         }
     }

@@ -51,10 +51,13 @@ pub struct SecretSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
-    /// ferrule registers a client itself (RFC 7591).
+    /// No client of the owner's needed: one the owner saved anyway (wave
+    /// C: `<client_env>_ID`), else ferrule's Client ID Metadata Document
+    /// when the server takes one, else one registered (RFC 7591).
     #[default]
     Dcr,
-    /// A client the owner made; its id and secret are in the secrets file.
+    /// A client the owner made (pre-registered); its id, and its secret
+    /// when it has one, are in the secrets file.
     Owner,
 }
 
@@ -122,9 +125,15 @@ pub struct Service {
     pub skill: Option<String>,
     #[serde(default)]
     pub client: ClientKind,
-    /// `client = "owner"`: `<client_env>_ID` and `<client_env>_SECRET`.
+    /// The owner's client: `<client_env>_ID` and, when it has one,
+    /// `<client_env>_SECRET` (default `<NAME>_OAUTH_CLIENT`, see
+    /// [`Service::client_env_name`]).
     #[serde(default)]
     pub client_env: Option<String>,
+    /// Wave C: RFC 8707's `resource` when the vendor documents one other
+    /// than the MCP URL (Asana's `https://mcp.asana.com/v2`).
+    #[serde(default)]
+    pub resource: Option<String>,
     #[serde(default)]
     pub scopes: Vec<String>,
     #[serde(default)]
@@ -317,6 +326,39 @@ impl Service {
         }
     }
 
+    /// Wave C: where the owner's client for this service is kept:
+    /// `<it>_ID` and `<it>_SECRET` in the secrets file. `client_env`, else
+    /// the name in capitals with `_OAUTH_CLIENT` (`SLACK_OAUTH_CLIENT`), a
+    /// name the Safe and `secret_request` accept.
+    pub fn client_env_name(&self) -> String {
+        if let Some(env) = &self.client_env {
+            return env.clone();
+        }
+        let base: String = self
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let base = if base.starts_with(|c: char| c.is_ascii_uppercase()) {
+            base
+        } else {
+            format!("MCP_{base}")
+        };
+        format!("{base}_OAUTH_CLIENT")
+    }
+
+    /// RFC 8707's `resource` for a sign-in: the documented one, else the
+    /// MCP URL.
+    pub fn resource(&self, write: bool) -> &str {
+        self.resource.as_deref().unwrap_or(self.url(write))
+    }
+
     pub fn url(&self, write: bool) -> &str {
         match (&self.write_url, &self.read_only_url, write) {
             (Some(url), _, true) => url,
@@ -387,6 +429,7 @@ impl Service {
             skill: None,
             client: ClientKind::Dcr,
             client_env: None,
+            resource: None,
             scopes: Vec::new(),
             write_scopes: Vec::new(),
             read_only: ReadOnly::None,
@@ -510,15 +553,17 @@ impl Service {
             }
             AuthKind::None => {}
             AuthKind::Oauth => {
-                if self.client == ClientKind::Owner
-                    && (self.client_env.is_none()
-                        || self.authorize_url.is_none()
-                        || self.token_url.is_none())
-                {
-                    bail!(
-                        "{}: client = \"owner\" needs client_env, authorize_url and token_url",
-                        self.name
-                    );
+                // Wave C: an owner's client works with discovery too; pinned
+                // endpoints come as a pair or not at all.
+                if self.authorize_url.is_some() != self.token_url.is_some() {
+                    bail!("{}: authorize_url and token_url come together", self.name);
+                }
+                if let Some(r) = &self.resource {
+                    let r =
+                        url::Url::parse(r).with_context(|| format!("{}: resource", self.name))?;
+                    if r.scheme() != "https" || r.fragment().is_some() {
+                        bail!("{}: resource is an https URL without a #", self.name);
+                    }
                 }
             }
         }
@@ -761,7 +806,10 @@ mod tests {
                 "sentry",
                 "todoist",
                 "google_maps",
-                "mapbox"
+                "mapbox",
+                "slack",
+                "asana",
+                "dropbox"
             ]
         );
         let gmail = cat.get("gmail_mcp").unwrap();

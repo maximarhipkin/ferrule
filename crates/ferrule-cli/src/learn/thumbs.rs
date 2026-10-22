@@ -33,8 +33,8 @@ pub struct Thumbs {
     replies: Mutex<VecDeque<Sent>>,
 }
 
-/// The sink, when `[learning]` is on; learning off asks Telegram for no
-/// reactions at all.
+/// The sink, when `[learning]` is on; learning off (and, M64.5, the
+/// proactive agent off) asks Telegram for no reactions at all.
 pub fn thumbs(cfg: &Config, hub: Arc<Hub>) -> Result<Option<Arc<Thumbs>>> {
     if !cfg.learning.enabled {
         return Ok(None);

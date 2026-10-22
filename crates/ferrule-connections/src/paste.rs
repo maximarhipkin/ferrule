@@ -1,6 +1,7 @@
 //! Paste-back, the last resort: the browser lands on a page that doesn't
 //! load (the loopback redirect), and the owner pastes its address into the
-//! chat. Only `state` and `code` (or `error`) are taken from it.
+//! chat. Only `state` and `code` (or `error`), and `iss` (RFC 9207), are
+//! taken from it.
 
 /// What a pasted redirect carried.
 #[derive(Debug, PartialEq)]
@@ -8,6 +9,7 @@ pub struct Pasted {
     pub state: String,
     pub code: Option<String>,
     pub error: Option<String>,
+    pub iss: Option<String>,
 }
 
 /// Finds a redirect URL in `text` that carries a `state`. Anything else in
@@ -22,11 +24,13 @@ pub fn parse(text: &str) -> Option<Pasted> {
         let mut state = None;
         let mut code = None;
         let mut error = None;
+        let mut iss = None;
         for (k, v) in url.query_pairs() {
             match &*k {
                 "state" => state = Some(v.into_owned()),
                 "code" => code = Some(v.into_owned()),
                 "error" => error = Some(v.into_owned()),
+                "iss" => iss = Some(v.into_owned()),
                 _ => {}
             }
         }
@@ -34,7 +38,12 @@ pub fn parse(text: &str) -> Option<Pasted> {
         if code.is_none() && error.is_none() {
             return None;
         }
-        Some(Pasted { state, code, error })
+        Some(Pasted {
+            state,
+            code,
+            error,
+            iss,
+        })
     })
 }
 

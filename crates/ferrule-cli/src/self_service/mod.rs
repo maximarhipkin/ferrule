@@ -162,10 +162,17 @@ pub enum Op {
         replace: bool,
     },
     /// M63.4: `mcp_add` with `catalog`: everything from the catalog entry,
-    /// its key asked for with `secret_request` (`catalog::add`).
+    /// its key asked for with `secret_request` (`catalog::add`). Wave C:
+    /// `catalog` may be an OAuth server's https address, and `client_id`
+    /// names the owner's own OAuth app for it, whose secret (when
+    /// `client_secret`) is asked for with `secret_request`.
     McpAddCatalog {
         catalog: String,
         write: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        client_secret: bool,
     },
     HooksTrust {
         sha: String,
@@ -247,6 +254,20 @@ struct Args {
     why: Option<String>,
     catalog: Option<String>,
     write: Option<bool>,
+    client_id: Option<String>,
+    client_secret: Option<bool>,
+}
+
+/// Wave C: an OAuth client id as the owner's app shows it: one word of
+/// printable characters, not a key.
+fn client_id(id: &Option<String>) -> Result<Option<String>, String> {
+    let Some(id) = id.as_deref().map(str::trim) else {
+        return Ok(None);
+    };
+    if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_graphic()) {
+        return Err("`client_id` is one word, as the OAuth app's settings show it".into());
+    }
+    Ok(Some(id.to_string()))
 }
 
 impl Op {
@@ -314,13 +335,41 @@ impl Op {
                     || a.hosts.is_some()
                 {
                     return Err(
-                        "`mcp_add` with `catalog` takes only `catalog` and `write`: the rest comes from the catalog"
+                        "`mcp_add` with `catalog` takes only `catalog`, `write` and (for a sign-in with the owner's own OAuth app) `client_id` and `client_secret`: the rest comes from the catalog"
                             .into(),
                     );
                 }
                 Op::McpAddCatalog {
                     catalog: need!(catalog).trim().to_ascii_lowercase(),
                     write: a.write.unwrap_or(false),
+                    client_id: client_id(&a.client_id)?,
+                    client_secret: a.client_secret.unwrap_or(false),
+                }
+            }
+            // Wave C: an OAuth server by its address, signed in with the
+            // owner's own app.
+            "mcp_add" if a.client_id.is_some() => {
+                if a.command.is_some()
+                    || a.name.is_some()
+                    || a.env.is_some()
+                    || a.headers.is_some()
+                    || a.enabled_tools.is_some()
+                    || a.hosts.is_some()
+                {
+                    return Err(
+                        "`mcp_add` with `client_id` takes `url` (or `catalog`), `write`, `client_id` and `client_secret`: it signs in to an OAuth server with the owner's own app"
+                            .into(),
+                    );
+                }
+                let url = need!(url).trim().to_string();
+                if !url.starts_with("https://") {
+                    return Err("`url` is the server's https:// address".into());
+                }
+                Op::McpAddCatalog {
+                    catalog: url,
+                    write: a.write.unwrap_or(false),
+                    client_id: client_id(&a.client_id)?,
+                    client_secret: a.client_secret.unwrap_or(false),
                 }
             }
             "mcp_add" => Op::McpAdd {

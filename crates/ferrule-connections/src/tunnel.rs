@@ -18,6 +18,8 @@ pub struct Callback {
     pub state: String,
     pub code: Option<String>,
     pub error: Option<String>,
+    /// RFC 9207's issuer, when the server sends one.
+    pub iss: Option<String>,
 }
 
 pub struct Listener {
@@ -107,12 +109,14 @@ fn parse_target(target: &str) -> Option<Callback> {
         state: String::new(),
         code: None,
         error: None,
+        iss: None,
     };
     for (k, v) in url.query_pairs() {
         match &*k {
             "state" => cb.state = v.into_owned(),
             "code" => cb.code = Some(v.into_owned()),
             "error" => cb.error = Some(v.into_owned()),
+            "iss" => cb.iss = Some(v.into_owned()),
             _ => {}
         }
     }

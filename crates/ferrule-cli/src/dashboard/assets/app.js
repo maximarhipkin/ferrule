@@ -575,6 +575,7 @@
     routing: "M3 19a3 3 0 1 0 6 0a3 3 0 1 0 -6 0M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15M15 5a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
     usage: "M3 3v16a2 2 0 0 0 2 2h16M18 17V9M13 17V5M8 17v-3",
     tasks: "M13 5h8M13 12h8M13 19h8M3 17l2 2 4-4M3 7l2 2 4-4",
+    proactive: "M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5M9 18h6M10 22h4",
     logs: "M3 5h1M3 12h1M3 19h1M8 5h1M8 12h1M8 19h1M13 5h8M13 12h8M13 19h8",
     extensions: "M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z",
     agents: "M12 8V4H8M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM2 14h2M20 14h2M15 13v2M9 13v2",
@@ -3379,6 +3380,146 @@
     },
   };
 
+  // ---- Proactive (M64.5): what it brings up by itself ----------------------
+  // On or off and its settings (written like a Config field: the file's
+  // hash, the loader's check, a version kept), where the pass stands, the
+  // commitments, what it noticed, asked and did, and the Never list.
+
+  const LEVEL_WORDS = {
+    off: /*tr*/"It notices commitments, patterns and what's coming up, and says nothing.",
+    suggest: /*tr*/"Every idea comes as a question with Do it, Not now and Never.",
+    act: /*tr*/"Reminders for what you said and your own tasks from a pattern are made without asking, each with Undo. Anything from your calendar or mail is still only asked.",
+  };
+  const MODES = { noticed: /*tr*/"noticed", suggest: /*tr*/"asked", done: /*tr*/"done by itself", message: /*tr*/"said" };
+  const OUTCOMES = { done: /*tr*/"done", not_now: /*tr*/"not now", never: /*tr*/"never again", undone: /*tr*/"undone", useful: /*tr*/"useful", failed: /*tr*/"failed", expired: /*tr*/"lapsed", up: "👍", down: "👎" };
+
+  sections.proactive = {
+    every: 30,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead(tr("Proactive"), tr("what it brings up by itself")), this.box);
+    },
+    async load() {
+      let r;
+      try {
+        r = await api("/api/proactive");
+      } catch (e) { return sectionError(this.box, e); }
+      this.r = r;
+      setKids(this.box, this.state(r), this.settings(r), this.commitments(r), this.items(r), this.never(r));
+    },
+    // A settings change carries the hash of the file this page read.
+    set(body, b) {
+      return act("proactive/settings", Object.assign({ base_hash: this.r.hash }, body), b);
+    },
+    state(r) {
+      const s = r.status, p = s.settings, t = s.task;
+      const sw = toggle(p.enabled ? tr("Turn proactive off") : tr("Turn proactive on"), p.enabled,
+        (e) => this.set({ enabled: !p.enabled }, e.currentTarget));
+      const next = t && !t.enabled ? tr("Its task is paused on the Tasks page.")
+        : t && t.next ? clock(t.next) + " (" + ago(t.next) + ")" : tr("not scheduled yet");
+      return card({ title: tr("Proactive"), icon: "proactive", right: sw },
+        el("p", { class: "muted small mt0", text: p.enabled ? tr(LEVEL_WORDS[p.level])
+          : tr("Off. Turn it on and it looks at what you said and what's coming up every few hours, and messages you only when something is worth it.") }),
+        kv([
+          p.enabled ? [tr("Next pass"), next] : null,
+          [tr("Last pass"), s.last_pass ? frag(ago(s.last_pass.at), " · ", text(s.last_pass.summary)) : tr("none yet")],
+          [tr("Messages today"), s.sent_today + " / " + p.max_messages_per_day],
+          [tr("Spent today"), s.spent_today === null ? text(s.spend_error || "–")
+            : usd(s.spent_today) + " / " + (p.max_usd_per_day > 0 ? usd(p.max_usd_per_day) : tr("no cap of its own"))],
+          p.enabled && r.reactions === false ? [tr("Reactions"), tr("👍/👎 count from the next restart; the buttons work now.")] : null,
+        ]),
+        p.enabled && t && t.enabled ? el("div", { class: "row" }, btn(tr("Run a pass now"), "tasks/run", { id: t.id })) : null);
+    },
+    settings(r) {
+      const p = r.status.settings;
+      const box = (label, input, hint) => el("label", { class: "field" }, el("span", { text: label }), input,
+        hint ? el("span", { class: "hint msg", dir: "auto", text: hint }) : null);
+      const number = (value, min, max, step) => el("input", { type: "number", min, max, step, value: String(value), inputmode: "decimal" });
+      const every = number(p.every_hours, "1", "24", "1");
+      const quiet = el("input", { type: "text", value: p.quiet_hours, placeholder: "22:00-07:00", dir: "ltr", autocomplete: "off" });
+      const most = number(p.max_messages_per_day, "0", "50", "1");
+      const gap = number(p.min_gap_minutes, "0", "1440", "1");
+      const dollars = number(p.max_usd_per_day, "0", "100", "0.05");
+      const save = button(tr("Save"), { kind: "primary" });
+      save.onclick = () => this.set({
+        every_hours: Number(every.value), quiet_hours: quiet.value.trim(),
+        max_messages_per_day: Number(most.value), min_gap_minutes: Number(gap.value), max_usd_per_day: Number(dollars.value),
+      }, save);
+      return card({ title: tr("How it works"), icon: "settings" },
+        el("div", { class: "field" }, el("span", { text: tr("Level") }),
+          chips(tr("Level"), [["off", tr("Notice only")], ["suggest", tr("Suggest")], ["act", tr("Act")]], p.level,
+            (v) => { if (v !== p.level) this.set({ level: v }); })),
+        el("p", { class: "muted small mt0", text: tr(LEVEL_WORDS[p.level]) }),
+        el("div", { class: "grid2" },
+          box(tr("Look every (hours)"), every),
+          box(tr("Quiet hours"), quiet, fill("Nothing runs then, in %s. Empty: none.", r.status.timezone)),
+          box(tr("Messages a day, at most"), most),
+          box(tr("Minutes between messages, at least"), gap),
+          box(tr("Dollars a day for its passes"), dollars, tr("0: no cap of its own; the spending caps still apply. A model without prices counts as $0."))),
+        el("div", { class: "row" }, save));
+    },
+    commitments(r) {
+      const c = r.commitments;
+      const status = (x, s, days) => (e) => act("proactive/commitment", { id: x.id, status: s, days }, e.currentTarget);
+      const row = (x, ...actions) => el("div", { class: "item" },
+        el("div", { class: "grow" },
+          el("div", { class: "t msg", dir: "auto", text: x.text }),
+          el("div", { class: "d" },
+            x.kind === "loop" ? tag(tr("unfinished")) : null,
+            x.status === "dropped" ? tag(tr("dropped")) : null,
+            x.due_words ? " " + fill("due %s", x.due_words) : null,
+            x.reminder ? " · " + tr("reminder set") : null,
+            x.status === "snoozed" && x.snoozed_until ? " " + fill("snoozed until %s", clock(x.snoozed_until)) : null)),
+        actions);
+      const open = c.open.map((x) => row(x,
+        button(tr("Mark done"), { onclick: status(x, "done") }),
+        button(tr("Snooze a day"), { kind: "ghost", onclick: status(x, "snoozed", 1) }),
+        button(tr("Drop"), { kind: "ghost", onclick: status(x, "dropped") })));
+      const snoozed = c.snoozed.map((x) => row(x,
+        button(tr("Mark done"), { onclick: status(x, "done") }),
+        button(tr("Drop"), { kind: "ghost", onclick: status(x, "dropped") })));
+      return card({ title: tr("Commitments"), icon: "tasks" },
+        el("p", { class: "muted small mt0", text: tr("What you said you'd do, and things left unfinished. /commitments lists them in your chat.") }),
+        open.length ? el("div", { class: "plain-list" }, open) : el("p", { class: "muted small", text: tr("Nothing open.") }),
+        snoozed.length ? frag(el("h3", { text: tr("Snoozed") }), el("div", { class: "plain-list" }, snoozed)) : null,
+        c.done.length ? frag(el("h3", { text: tr("Done lately") }), el("div", { class: "plain-list" }, c.done.map((x) => row(x)))) : null);
+    },
+    items(r) {
+      const rows = r.items.map((i) => el("div", { class: "item" },
+        el("div", { class: "grow" },
+          el("div", { class: "t msg", dir: "auto", text: i.text }),
+          el("div", { class: "d" },
+            tag(MODES[i.mode] ? tr(MODES[i.mode]) : i.mode), " ",
+            el("span", { dir: "auto", text: i.words }), " · ", ago(i.at),
+            i.basis === "outside" ? " · " + tr("from your calendar or mail") : null,
+            i.outcome ? frag(" · ", tag(OUTCOMES[i.outcome] ? tr(OUTCOMES[i.outcome]) : i.outcome, i.outcome === "failed" ? "bad" : "")) : null,
+            i.thumb && i.thumb !== i.outcome ? " " + OUTCOMES[i.thumb] : null))));
+      return card({ title: tr("What it brought up"), icon: "logs" },
+        el("p", { class: "muted small mt0", text: tr("The last 30 days: what it noticed, asked and did, and what you answered.") }),
+        rows.length ? el("div", { class: "plain-list" }, rows) : el("p", { class: "muted small", text: tr("Nothing yet.") }));
+    },
+    never(r) {
+      const s = r.status;
+      const rows = s.never.map((k) => el("div", { class: "item" },
+        el("div", { class: "grow" },
+          el("div", { class: "t msg", dir: "auto", text: k.words }),
+          el("div", { class: "d" }, el("span", { class: "mono", dir: "ltr", text: k.kind }), " · ", ago(k.at))),
+        button(tr("Clear"), { kind: "ghost", aria: tr("Clear") + " " + k.kind,
+          onclick: (e) => act("proactive/clear", { kind: k.kind }, e.currentTarget) })));
+      const resting = s.resting.map((k) => el("div", { class: "item" },
+        el("div", { class: "grow" },
+          el("div", { class: "t msg", dir: "auto", text: k.words }),
+          el("div", { class: "d", text: fill("waits until %s", clock(k.at)) }))));
+      const all = s.never.length ? button(tr("Clear all"), { kind: "ghost", onclick: (e) => act("proactive/clear", {}, e.currentTarget) }) : null;
+      return card({ title: tr("Never list"), icon: "x", right: all },
+        el("p", { class: "muted small mt0", text: tr("What you answered Never to. It stays off until you clear it.") }),
+        rows.length ? el("div", { class: "plain-list" }, rows) : el("p", { class: "muted small", text: tr("Empty.") }),
+        resting.length ? frag(el("h3", { text: tr("Holding off") }),
+          el("p", { class: "muted small mt0", text: tr("After Not now or 👎, a kind waits a day, then two, four, up to sixteen. 👍 or Useful ends the wait.") }),
+          el("div", { class: "plain-list" }, resting)) : null);
+    },
+  };
+
   // ---- Settings (M47): look, language, backup ------------------------------
 
   const bytes = (n) => (n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB");
@@ -3472,15 +3613,15 @@
   // The groups put what a beginner touches daily first (D3).
 
   const GROUPS = [
-    [/*tr*/"Everyday", ["health", "chat", "tasks", "memory", "usage"]],
+    [/*tr*/"Everyday", ["health", "chat", "tasks", "proactive", "memory", "usage"]],
     [/*tr*/"Setup", ["connect", "channels", "connections", "models"]],
     [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
   ];
   const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
   const TABS = ["health", "chat", "connect", "tasks"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
-  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   // What /api/login or /api/session said: the CSRF token and the session's limits.

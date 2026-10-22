@@ -2821,7 +2821,8 @@ fn build_channels(
                         ferrule_gateway::channels::files::DEFAULT_MAX_MB,
                     )
                 }))
-                // M53.5: the owner's 👍/👎, only while learning is on.
+                // M53.5: the owner's 👍/👎, only while learning (or, M64.5,
+                // the proactive agent) is on.
                 .with_reactions(reactions),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
@@ -3155,10 +3156,17 @@ async fn run_gateway(
     )
     .await?;
 
-    // M53.5: the owner's 👍/👎 on replies, when `[learning]` is on.
+    // M53.5: the owner's 👍/👎 on replies, when `[learning]` is on; M64.5:
+    // and on the proactive agent's messages, when it's on.
     let thumbs = learn::thumbs(&cfg, trust::hub(&cfg)?)?;
-    let mut named_channels =
-        build_channels(&cfg, Some(&workspace), thumbs.as_ref().map(|t| t.sink()))?;
+    let reactions = proactive::feedback::sink(
+        cfg.proactive
+            .enabled
+            .then(|| trust::hub(&cfg))
+            .transpose()?,
+        thumbs.as_ref().map(|t| t.sink()),
+    );
+    let mut named_channels = build_channels(&cfg, Some(&workspace), reactions)?;
     if let Some(policy) = managed::policy() {
         named_channels.retain(|name, _| {
             let keep = policy.allows_channel(name);
@@ -3329,6 +3337,7 @@ async fn run_gateway(
     // M64: reminders run whether proactive is on or not; the owner's
     // messages are kept and the tool offered only while it is.
     let scheduler = proactive::reminder::register(scheduler, hub.clone());
+    let scheduler = proactive::heartbeat::register(&cfg, scheduler, hub.clone(), true);
     proactive::set_on(cfg.proactive.enabled);
     let scheduler = Arc::new(learn::register(
         &cfg,
@@ -3482,6 +3491,7 @@ async fn run_gateway(
     // M64: last, so what it keeps is a message on its way to the agent.
     gateway = gateway.with_interceptor(Arc::new(proactive::door::ProactiveDoor {
         hub: hub.clone(),
+        admin: Some(admin.clone()),
     }));
     gateway = gateway.with_menu(self_service::menu::all(cfg.dashboard.enabled));
     for channel in adapters {
