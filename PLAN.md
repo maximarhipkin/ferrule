@@ -10728,8 +10728,11 @@ service can now write its config, as they already could on a user
 service; with it on, the config stays out of their writable roots (owner
 mode protects its directory, M54 §2).
 
-**Not done.** The dashboard's own update button (`dashboard/api.rs`)
-still updates only Ferrule. Claude plan models stay the `sonnet`/`opus`/
+- Third commit: the dashboard's update row and **Install**
+  (`dashboard/api.rs`, `app.js`) cover claude the same way: the row shows
+  when only claude is behind, the confirm names both, claude goes first.
+
+**Not done.** Claude plan models stay the `sonnet`/`opus`/
 `haiku` aliases; a current `claude` maps `sonnet` to the newest Sonnet,
 so pinning a version wasn't added. Nothing ran on a real system service.
 

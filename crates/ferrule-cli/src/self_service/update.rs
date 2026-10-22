@@ -80,14 +80,20 @@ fn claude(data: &Path) -> Option<crate::update::claude::Claude> {
     crate::update::claude::Claude::from_config(&cfg, data)
 }
 
+/// claude's line for a check, and `(installed, newest)` when it's behind;
+/// `None` without the Claude plan.
+pub async fn claude_check(data: &Path) -> Option<(String, Option<(String, String)>)> {
+    let c = claude(data)?;
+    Some(crate::update::claude::check(&c).await)
+}
+
 /// `update_check`'s answer, Ferrule's line then claude's, and whether
 /// `update` has anything to install.
 pub async fn check_all(apply: &Apply<'_>) -> Result<(String, bool), String> {
     let found = check(apply).await?;
     let mut text = check_text(&apply.current, found.as_ref());
     let mut any = found.is_some();
-    if let Some(c) = claude(&apply.data) {
-        let (line, behind) = crate::update::claude::check(&c).await;
+    if let Some((line, behind)) = claude_check(&apply.data).await {
         text = format!("{text}\n{line}");
         any |= behind.is_some();
     }
@@ -203,10 +209,7 @@ pub async fn card(apply: &Apply<'_>, units: bool) -> Result<String, String> {
     let found = check(apply)
         .await
         .map_err(|e| format!("Couldn't check for a new Ferrule: {e}"))?;
-    let behind = match claude(&apply.data) {
-        Some(c) => crate::update::claude::check(&c).await.1,
-        None => None,
-    };
+    let behind = claude_check(&apply.data).await.and_then(|(_, b)| b);
     let claude = behind.map(|(have, new)| {
         format!("Update the claude CLI the Claude plan runs from {have} to {new}, with its own updater.")
     });
