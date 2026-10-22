@@ -235,6 +235,7 @@ leading `VAR=value`), and matches each simple command. Gated:
 | recursive delete | `rm` with `-r`, `-R` or `--recursive` (with or without `-f`, any order, combined flags like `-rfv`); `find … -delete` or `find … -exec rm`; `git clean` with `-f`; `rsync … --delete*` (not gated: `rm -f file`, `rmdir`) |
 | force push | `git push` with `-f` (alone or combined, `-fu`), `--force`, `--force-with-lease[=…]`, `--force-if-includes`, `--mirror`, `--delete`/`-d`, or a refspec starting with `+` or `:` |
 | DELETE to a bound host | `curl -X DELETE` / `-XDELETE` / `--request DELETE`; `wget --method=DELETE`; `http`/`https`/`xh DELETE url`; `gh api -X DELETE` / `--method DELETE` (host `api.github.com`), where a URL's host matches a `[secrets]` host pattern. A `DELETE` whose URL can't be found (`curl -X DELETE "$URL"`) is gated too |
+| POST, PUT or PATCH to a bound host (M64.0) | only after the run has read outside content (§6b): the same clients and hosts, the method said (`-X POST`) or implied (curl's `-d`, `--data…`, `--json`, `-F`, `-T`; wget's `--post-data`; httpie's data items; `gh api` with `-f`/`-F`/`--input`; a `gh` verb that changes something, `gh issue create`, `gh pr merge`…) |
 
 Everything is lowercased and quotes are removed before matching (`'rm'`
 matches `rm`). Every path counts, not just the workspace: `rm -rf /tmp/x`
@@ -353,6 +354,63 @@ nothing: there `gates` decides.
 an MCP server added with `mcp_add` (its tools aren't classified; only
 connected services' are). The sandbox and the proxy are the boundary;
 this gate keeps the keys from being used for the injected party.
+
+### HTTP writes to a bound host (M64.0)
+
+Before M64 only a `DELETE` from the shell counted. But the proxy swaps a
+bound key in for a POST just as well: M63.1's Home Assistant skill turns
+a device on with `curl -X POST` to the owner's own host, and an injected
+page could have asked for that without a gate. Before the agent acts on
+its own (M64's proactive pass), a **state-changing request from the
+sandboxed shell to a host with a bound `[secrets]` key** leaves the box
+too: `Kind::HttpWrite`, a POST, PUT or PATCH, said or implied (§6's
+table), read from curl, wget, httpie, `xh` and `gh`
+(`classify::classify_http_write`). Its host is found as for a DELETE: a
+URL whose host matches a bound pattern, or no URL, or one with a
+variable in its host (`"$HA/api/services/light/turn_on"`), which can't
+be told apart from a bound one, so it asks.
+
+It is gated **only after outside content**, in every mode:
+
+- **Ordinary mode** (gates on): a turn that has read nothing from
+  outside runs it untapped, as before, so the owner's own requests ("turn
+  the kitchen light on") add no prompt. Once the run has read outside
+  content (a web page, a connected service's mail, a `curl` that fetched
+  something, a guest's message), it asks like any gate, and the question
+  names what was read.
+- **Owner mode** (gates off for the owner): one of the classes the one
+  gate keeps, next to a connected service's change, a force push and a
+  `DELETE`.
+- **Unattended** (a scheduled task): nobody can say yes, so after outside content it is refused. A task that reads the
+  weather and then switches a device is refused; the wave A exception
+  (sends to the owner alone) is for a connected service's send only.
+
+**A call doesn't taint itself.** What counts is what the run had read
+*before* the call: a `curl` is an outside source for what comes after it,
+not for its own request, so a first `curl -X POST` asks nothing for being
+a `curl`. This holds for every class here: before M64.0 a first `curl -X
+DELETE` in owner mode asked because it marked the run itself. A standing
+grant (§7b) is looked up the same way.
+
+**A guest's message is outside content in every mode now.** M54.5 marked
+a guest's run only in owner mode; M64.0 marks it in ordinary mode too
+(`trust::equip`, `owner_mode::owner_tree`), so a POST through the owner's
+key asks in a guest's run, and no standing grant for a send covers a
+guest's run.
+
+**Grants.** As for a connected service's change: no standing grant
+("Always here") covers an HTTP write, since it is only ever asked about
+after outside content, and none is offered from it. A shell gate's
+per-run grant ("Allow for this run") still covers the exact same
+command again in that run.
+
+`[trust] untrusted_send_gate = false` lets HTTP writes through in every
+mode (guarded, as above). **What it can't see:** a POST from `python`,
+`node` or a script file, a request to a host that has no bound key (the
+key is what the deputy would misuse), and an unrecognised client
+(`aria2c`, `nc`). A `gh` verb is matched against a list of words that
+change things (`create`, `edit`, `merge`, `comment`, `set`, `run`…), so a
+verb missing from it passes.
 
 ## 7. The approval round-trip
 

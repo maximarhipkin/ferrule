@@ -707,6 +707,9 @@ pub struct SkillsConfig {
     /// Whether the workspace's own skills may trigger. Off: a cloned repo
     /// mustn't make its skills load on common words.
     pub project_triggers: bool,
+    /// M63.1: the skills ferrule ships (weather, news, …); `disabled`
+    /// turns off one of them.
+    pub bundled: bool,
 }
 
 impl Default for SkillsConfig {
@@ -720,6 +723,7 @@ impl Default for SkillsConfig {
             max_triggered: 2,
             trigger_budget_tokens: 4000,
             project_triggers: false,
+            bundled: true,
         }
     }
 }
@@ -800,6 +804,10 @@ pub struct Config {
     /// making are kept (docs/housekeeping.md).
     #[serde(default)]
     pub housekeeping: crate::housekeeping::HousekeepingConfig,
+    /// M64: the proactive agent, off until the owner turns it on
+    /// (docs/m64-proactive.md).
+    #[serde(default)]
+    pub proactive: crate::proactive::ProactiveConfig,
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -1748,6 +1756,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # max_triggered = 2          # skills one message loads that way
 # trigger_budget_tokens = 4000   # their combined size
 # project_triggers = false   # let the workspace's skills trigger too
+# bundled = true             # ferrule's own (weather, news, hacker-news, maps,
+#                            # exchange-rates, home-assistant); `disabled` drops one
 
 # [web_search]              # The web_search tool (docs/web-search.md). With no
 # provider = "brave"         # provider: keyless DuckDuckGo (light use, rate-limited).
@@ -1799,6 +1809,22 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # audit_keep_days = 90       # the audit log's other events; 0 = keep them all
 # max_mb = 500               # per directory, after the age rule, oldest first; 0 = none
 #                            # Never transcripts, memory, the ledger, config or keys.
+
+# [proactive]               # M64: a pass that follows up on what you said you'd do
+# enabled = false            # (docs/m64-proactive.md). Off until you turn it on:
+#                            # the dashboard's Proactive page or /proactive on.
+# level = "suggest"          # off: notice only; suggest: ask with buttons; act:
+#                            # set reminders and your own tasks, each with Undo.
+# every_hours = 3            # how often it looks; no model call when nothing changed
+# quiet_hours = "22:00-07:00"  # your timezone; "" for none
+# timezone = "Asia/Jerusalem"  # unset: [trust] timezone
+# max_messages_per_day = 3
+# min_gap_minutes = 120
+# max_usd_per_day = 0.25     # the passes' own cap, inside [trust]'s
+# model = "cheap"            # unset: [routing]'s first tier, else the default
+# calendar = true            # the next 24 h of connected calendars (outside content)
+# mail = true                # unread mail headers (outside content)
+# patterns = true            # offer to schedule what you ask for again and again
 
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
 # endpoint = "http://127.0.0.1:4318"  # (docs/otel.md). Off until set; /v1/traces
@@ -1911,7 +1937,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                            # Discord, else Slack.
 # approval_timeout_secs = 600 # No answer refuses the command.
 # plan_timeout_secs = 3600
-# gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host.
+# gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host
+#                            # (and, after outside content, POST/PUT/PATCH there).
 #
 # [health]                   # M19b (docs/m19b-reliability.md): the gateway is
 #                            # never silently deaf. /status answers from any chat.
@@ -2048,6 +2075,7 @@ impl Config {
         }
         crate::managed::apply(&mut self);
         self.check_providers()?;
+        self.proactive.check(&self.trust.timezone)?;
         self.memory.hybrid()?;
         self.egress.policy()?;
         self.transcription.choice(&self.providers, |_| None)?;

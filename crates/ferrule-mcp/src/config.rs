@@ -64,6 +64,20 @@ pub struct McpServerConfig {
     /// Caps for single tools (remote names), over `max_output_chars`.
     #[serde(default)]
     pub output_caps: HashMap<String, usize>,
+    /// M63.4: tools (remote names) that change something whatever their
+    /// `readOnlyHint` says: the trust gate treats them as writes.
+    #[serde(default)]
+    pub write_tools: Vec<String>,
+    /// M63.4: the catalog entry this server was added from. Such a server
+    /// is a connected service for the trust gate: what it reads is
+    /// outside content, and what it changes waits for the owner's yes.
+    #[serde(default)]
+    pub catalog: Option<String>,
+    /// M63.4: its state dir is under `<data>/mcp-private`, which commands
+    /// and the file tools can't read: for a server that keeps its own
+    /// sign-in there (a token cache).
+    #[serde(default)]
+    pub private_state: bool,
     /// macOS: open the Seatbelt profile to the system's Mach/XPC services
     /// (see `Sandbox::with_desktop_services`). Set only for the built-in
     /// browser; not reachable from a config file.
@@ -103,6 +117,9 @@ impl Default for McpServerConfig {
             enabled_tools: Vec::new(),
             max_output_chars: None,
             output_caps: HashMap::new(),
+            write_tools: Vec::new(),
+            catalog: None,
+            private_state: false,
             desktop_services: false,
             warm_up: Vec::new(),
             auth: None,

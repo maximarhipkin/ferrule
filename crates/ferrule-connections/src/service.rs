@@ -722,6 +722,7 @@ impl Connections {
         reason: &str,
     ) -> Result<String> {
         let service = self.catalog.resolve(what)?;
+        not_a_connection(&service)?;
         let name = service.name.clone();
         if let Some(r) = self.store.load()?.iter().find(|r| r.name == name) {
             if r.state == State::Connected && (r.write || !write) {
@@ -1046,6 +1047,7 @@ impl Connections {
             _ => bail!("only the owner can connect a service"),
         };
         let service = self.catalog.resolve(what)?;
+        not_a_connection(&service)?;
         let name = service.name.clone();
         let (ask_chat, requested_by, write) = {
             let mut inner = self.inner.lock().unwrap();
@@ -1757,6 +1759,8 @@ impl Connections {
             }
         }
         fields.retain(|_, v| !v.trim().is_empty());
+        // M63.2: what the catalog fixes wins over anything typed.
+        fields.extend(service.preset.iter().map(|(k, v)| (k.clone(), v.clone())));
         let key_expires = match fields.remove("expires") {
             Some(day) => Some(parse_day(&day)?),
             None => None,
@@ -2073,6 +2077,7 @@ impl Connections {
             name: record.name.clone(),
             url: Some(service.url(record.write).to_string()),
             headers,
+            write_tools: service.writes.clone(),
             ..Default::default()
         }
     }
@@ -2139,7 +2144,8 @@ impl Connections {
     /// An MCP server per working connection. One that needs reconnecting
     /// is left out: its tools are suspended.
     /// The mail accounts connected services send from, lower-cased: a
-    /// native Gmail connection's address, read from its sealed fields.
+    /// native Gmail or mailbox (M63.2) connection's address, read from its
+    /// sealed fields.
     /// The trust gate takes them as the owner's own addresses (wave A).
     pub fn own_addresses(&self) -> Vec<String> {
         let Ok(records) = self.store.load() else {
@@ -2148,7 +2154,10 @@ impl Connections {
         records
             .iter()
             .filter(|r| r.state == State::Connected)
-            .filter(|r| r.service.native.as_deref() == Some("gmail") && r.oauth.is_none())
+            .filter(|r| {
+                matches!(r.service.native.as_deref(), Some("gmail") | Some("mail"))
+                    && r.oauth.is_none()
+            })
             .filter_map(|r| self.store.open(r).ok())
             .filter_map(|secret| secret.fields.get("email").cloned())
             .map(|email| email.trim().to_lowercase())
@@ -2171,6 +2180,21 @@ impl Connections {
 enum Path {
     Relay(Relay, Slot),
     Tunnel(tunnel::Listener, tunnel::Tunnel),
+}
+
+/// M63.4: a catalog entry that isn't a remote server (a pinned stdio
+/// server, a bundled skill, one that needs no sign-in) is added with
+/// `mcp_add`'s `catalog`, not connected.
+fn not_a_connection(service: &Service) -> Result<()> {
+    if service.kind != crate::catalog::Kind::Remote || service.auth == AuthKind::None {
+        bail!(
+            "{} isn't connected from here: it's added from the catalog (the dashboard's \
+             Extensions page, or ferrule_admin mcp_add with catalog \"{}\")",
+            service.title(),
+            service.name
+        );
+    }
+    Ok(())
 }
 
 /// `YYYY-MM-DD` as the end of that day (UTC), for a key's expiry.

@@ -20,6 +20,25 @@
 #              sits on, its option's name, what it covers, the steps
 #   fixed_callback  M37: sign-in only through the relay's fixed address
 #   preview    M37: a vendor preview, offered last
+#   preset     M63.2: field values the catalog fixes (a mail provider's
+#              servers); never asked for, never taken from the form
+#
+# Catalog v2 (M63.4, docs/m63-connections-wave-b.md §4). Every entry here
+# is vetted by hand: an official, maintained server, its address or
+# package checked against the vendor's own docs on the date given.
+#   kind       "remote" (the default: the vendor hosts it at `url`) |
+#              "stdio" (a pinned package run in the sandbox) | "skill"
+#              (one of ferrule's bundled skills, `skill`)
+#   auth       "oauth" | "api_key" (or "key") | "none"
+#   package    stdio: npm:<name>@<exact version>; `args`, `read_only_args`
+#              (added unless the owner asks for writes), `env` (no keys),
+#              `integrity` (as published, for the record)
+#   registry   its name in the official MCP Registry (identity only)
+#   secret     { name, hosts, header, value }: the key `mcp_add` with
+#              `catalog` asks the owner for with secret_request, bound to
+#              exactly these hosts; never hosts from the model
+#   read_only_url  the address used while read-only (the default)
+#   writes     tools that change something, whatever their hints say
 
 # ── Atlassian: three ways in, simplest first (M37 §3.5). ──
 
@@ -160,6 +179,299 @@ secret = true
 kind = "password"
 placeholder = "abcd efgh ijkl mnop"
 
+# ── Mail from any provider, over IMAP and SMTP (M63.2). Checked on
+# 2026-10-21 against each provider's own settings page (`docs`). Outlook.com
+# and Hotmail aren't here: Microsoft lists OAuth2 (Modern Auth) as the only
+# sign-in for their IMAP and SMTP, so an app password can't connect.
+
+[[service]]
+name = "icloud_mail"
+title = "iCloud Mail (app-specific password)"
+url = "https://www.icloud.com/mail"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "iCloud Mail"
+covers = "iCloud Mail (icloud.com, me.com, mac.com): search and read any folder; send (a write, which asks you first)."
+key_url = "https://account.apple.com"
+docs = "https://support.apple.com/en-us/102525"
+revoke_note = "Revoke the app-specific password at https://account.apple.com (Sign-In and Security → App-Specific Passwords) to cut it off at Apple too."
+guide = [
+  "The Apple Account needs two-factor authentication.",
+  "Open https://account.apple.com → Sign-In and Security → App-Specific Passwords, and generate one named ferrule.",
+  "Paste it below with your iCloud Mail address. ferrule signs in over IMAP to test it before saving.",
+]
+preset = { imap_host = "imap.mail.me.com", imap_port = "993", imap_tls = "tls", imap_user = "{local}", smtp_host = "smtp.mail.me.com", smtp_port = "587", smtp_tls = "starttls" }
+[[service.fields]]
+name = "email"
+label = "iCloud Mail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App-specific password"
+secret = true
+kind = "password"
+placeholder = "abcd-efgh-ijkl-mnop"
+
+[[service]]
+name = "fastmail_mail"
+title = "Fastmail (app password)"
+url = "https://app.fastmail.com"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "Fastmail"
+covers = "Fastmail mail: search and read any folder; send (a write, which asks you first). Needs a plan with IMAP (not Basic)."
+key_url = "https://www.fastmail.help/hc/en-us/articles/360058752854"
+docs = "https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports"
+revoke_note = "Delete the app password in Fastmail (Settings → Privacy & Security → Manage app passwords and access) to cut it off at Fastmail too."
+guide = [
+  "In Fastmail: Settings → Privacy & Security → Connected apps & API tokens → Manage app passwords and access → New app password (mail access is enough).",
+  "Paste it below with your full Fastmail address. Your normal password won't work here.",
+]
+preset = { imap_host = "imap.fastmail.com", imap_port = "993", imap_tls = "tls", smtp_host = "smtp.fastmail.com", smtp_port = "465", smtp_tls = "tls" }
+[[service.fields]]
+name = "email"
+label = "Fastmail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "yahoo_mail"
+title = "Yahoo Mail (app password)"
+url = "https://mail.yahoo.com"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "Yahoo Mail"
+covers = "Yahoo Mail: search and read any folder; send (a write, which asks you first)."
+key_url = "https://help.yahoo.com/kb/generate-password-sln15241.html"
+docs = "https://help.yahoo.com/kb/SLN4075.html"
+revoke_note = "Remove the app password on Yahoo's Account Security page to cut it off at Yahoo too."
+guide = [
+  "Sign in to Yahoo and open the Account Security page (how: https://help.yahoo.com/kb/generate-password-sln15241.html).",
+  "Under External connections, press Create app password, name it ferrule, and press Generate password.",
+  "Paste it below with your full Yahoo address.",
+]
+preset = { imap_host = "imap.mail.yahoo.com", imap_port = "993", imap_tls = "tls", smtp_host = "smtp.mail.yahoo.com", smtp_port = "465", smtp_tls = "tls" }
+[[service.fields]]
+name = "email"
+label = "Yahoo address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "mail"
+title = "Any mailbox (IMAP and SMTP)"
+url = "https://www.rfc-editor.org/rfc/rfc3501"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "Any other mailbox"
+covers = "Any provider that speaks IMAP and SMTP over TLS: search and read any folder; send (a write, which asks you first)."
+guide = [
+  "Find your provider's IMAP and SMTP servers (its help pages call them incoming and outgoing mail settings).",
+  "Make an app password if your provider has them (most do once two-factor sign-in is on); a normal password often won't work.",
+  "Fill in the servers below. Ports default to 993 (IMAP) and 465 (SMTP); 143 and 587 use STARTTLS. Nothing goes unencrypted.",
+]
+[[service.fields]]
+name = "email"
+label = "Email address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "Password (an app password if your provider has them)"
+secret = true
+kind = "password"
+[[service.fields]]
+name = "imap_host"
+label = "IMAP server"
+placeholder = "imap.example.com"
+[[service.fields]]
+name = "imap_port"
+label = "IMAP port"
+optional = true
+placeholder = "993"
+[[service.fields]]
+name = "imap_tls"
+label = "IMAP security"
+optional = true
+hint = "tls (from the first byte) or starttls; empty: starttls on 143, tls otherwise"
+[[service.fields]]
+name = "smtp_host"
+label = "SMTP server"
+placeholder = "smtp.example.com"
+[[service.fields]]
+name = "smtp_port"
+label = "SMTP port"
+optional = true
+placeholder = "465"
+[[service.fields]]
+name = "smtp_tls"
+label = "SMTP security"
+optional = true
+hint = "tls (from the first byte) or starttls; empty: starttls on 587, tls otherwise"
+[[service.fields]]
+name = "username"
+label = "User name"
+optional = true
+hint = "Only if it isn't the email address."
+
+# ── Calendars over CalDAV, and a calendar's secret address (M63.3).
+# Checked on 2026-10-21 (`docs`); iCloud's CalDAV address is from
+# third-party clients' guides, Apple doesn't publish it.
+
+[[service]]
+name = "icloud_calendar"
+title = "iCloud Calendar (app-specific password)"
+url = "https://caldav.icloud.com"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "iCloud Calendar"
+covers = "Your iCloud calendars: list events (repeats worked out); create, change and delete events (writes, which ask you first)."
+key_url = "https://account.apple.com"
+docs = "https://support.apple.com/en-us/102654"
+revoke_note = "Revoke the app-specific password at https://account.apple.com (Sign-In and Security → App-Specific Passwords) to cut it off at Apple too."
+guide = [
+  "The Apple Account needs two-factor authentication.",
+  "Open https://account.apple.com → Sign-In and Security → App-Specific Passwords, and generate one named ferrule.",
+  "Paste it below with your Apple Account's email. ferrule finds your calendars to test it before saving.",
+]
+preset = { url = "https://caldav.icloud.com/", extra_hosts = "*.icloud.com" }
+[[service.fields]]
+name = "username"
+label = "Apple Account email"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App-specific password"
+secret = true
+kind = "password"
+placeholder = "abcd-efgh-ijkl-mnop"
+
+[[service]]
+name = "fastmail_calendar"
+title = "Fastmail Calendar (app password)"
+url = "https://caldav.fastmail.com"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "Fastmail Calendar"
+covers = "Your Fastmail calendars: list events; create, change and delete events (writes, which ask you first)."
+key_url = "https://www.fastmail.help/hc/en-us/articles/360058752854"
+docs = "https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports"
+revoke_note = "Delete the app password in Fastmail (Settings → Privacy & Security → Manage app passwords and access) to cut it off at Fastmail too."
+guide = [
+  "In Fastmail: Settings → Privacy & Security → Manage app passwords and access → New app password, with calendar access.",
+  "Paste it below with your full Fastmail address.",
+]
+preset = { url = "https://caldav.fastmail.com/" }
+[[service.fields]]
+name = "username"
+label = "Fastmail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "nextcloud_calendar"
+title = "Nextcloud Calendar"
+url = "https://nextcloud.com"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "Nextcloud"
+covers = "Your Nextcloud's calendars: list events; create, change and delete events (writes, which ask you first)."
+docs = "https://docs.nextcloud.com/server/stable/user_manual/en/groupware/sync_windows10.html"
+guide = [
+  "The address is your Nextcloud's, followed by /remote.php/dav (like https://cloud.example.com/remote.php/dav).",
+  "Make an app password in Nextcloud: your settings → Security → Devices & sessions → Create new app password (needed with two-factor sign-in, better anyway).",
+  "Paste it below with your Nextcloud user name.",
+]
+[[service.fields]]
+name = "url"
+label = "CalDAV address"
+placeholder = "https://cloud.example.com/remote.php/dav"
+[[service.fields]]
+name = "username"
+label = "User name"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "caldav"
+title = "Any CalDAV calendar"
+url = "https://www.rfc-editor.org/rfc/rfc4791"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "Any other CalDAV server"
+covers = "Calendars on any CalDAV server over https: list events; create, change and delete events (writes, which ask you first)."
+guide = [
+  "Find your provider's CalDAV address in its help pages (the server's own address often works: ferrule tries /.well-known/caldav).",
+  "Make an app password if the provider has them.",
+  "Fill in below. The password only ever goes to that address's host.",
+]
+[[service.fields]]
+name = "url"
+label = "CalDAV address"
+placeholder = "https://dav.example.com/"
+[[service.fields]]
+name = "username"
+label = "User name"
+[[service.fields]]
+name = "app_password"
+label = "Password (an app password if your provider has them)"
+secret = true
+kind = "password"
+
+[[service]]
+name = "ics_calendar"
+title = "A calendar's secret address (read-only)"
+url = "https://calendar.google.com"
+auth = "api_key"
+native = "ics"
+read_only = "tools"
+tile = "calendar"
+option = "A calendar's secret address (read-only), like Google Calendar's"
+covers = "One calendar, read-only: list its events (common repeats worked out). Google Calendar without a Cloud project, or any calendar published as an .ics address. Nothing can be changed this way."
+docs = "https://support.google.com/calendar/answer/37648"
+revoke_note = "To cut it off, reset the secret address where you copied it (Google: Integrate calendar → Secret address in iCal format → Reset)."
+guide = [
+  "Google Calendar on a computer: Settings → under Settings for my calendars, your calendar → Integrate calendar → Secret address in iCal format → copy.",
+  "Other calendars: copy the .ics (or webcal://) address the service gives for publishing or subscribing.",
+  "Paste it below. Anyone with it can read the calendar, so ferrule keeps it sealed like a password and never shows it; if it ever leaks, Reset it where you copied it.",
+]
+[[service.fields]]
+name = "secret_url"
+label = "The calendar's secret address"
+secret = true
+kind = "password"
+placeholder = "https://calendar.google.com/calendar/ical/…/basic.ics"
+
 [[service]]
 name = "google"
 title = "Google Drive, Sheets, Docs, Calendar (service account)"
@@ -267,6 +579,96 @@ docs = "https://developers.google.com/workspace/drive/api/guides/mcp"
 note = "Google's MCP servers are a Developer Preview that needs enrolment."
 
 [[service]]
+name = "gcalendar_mcp"
+title = "Calendar MCP (Google preview)"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+scopes = ["https://www.googleapis.com/auth/calendar.calendarlist.readonly", "https://www.googleapis.com/auth/calendar.events.freebusy", "https://www.googleapis.com/auth/calendar.events.readonly"]
+read_only = "scope"
+resource_param = false
+fixed_callback = true
+preview = true
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Preview: Google's Calendar MCP server"
+covers = "Google's own Calendar MCP tools, read-only (Google lists only read scopes for it). A Developer Preview: your project must be enrolled."
+docs = "https://developers.google.com/workspace/guides/configure-mcp-servers"
+note = "Google's MCP servers are a Developer Preview that needs enrolment, and the OAuth client must have \"Use this client for an AI-powered agent\" ticked."
+
+[[service]]
+name = "gdocs_mcp"
+title = "Docs MCP (Google preview)"
+url = "https://docsmcp.googleapis.com/mcp/v1"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/documents.readonly"]
+write_scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/documents"]
+read_only = "scope"
+resource_param = false
+fixed_callback = true
+preview = true
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Preview: Google's Docs MCP server"
+covers = "Google's own Docs MCP tools. A Developer Preview: your project must be enrolled."
+docs = "https://developers.google.com/workspace/guides/configure-mcp-servers"
+note = "Google's MCP servers are a Developer Preview that needs enrolment, and the OAuth client must have \"Use this client for an AI-powered agent\" ticked."
+
+[[service]]
+name = "gsheets_mcp"
+title = "Sheets MCP (Google preview)"
+url = "https://sheetsmcp.googleapis.com/mcp/v1"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+write_scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/spreadsheets"]
+read_only = "scope"
+resource_param = false
+fixed_callback = true
+preview = true
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Preview: Google's Sheets MCP server"
+covers = "Google's own Sheets MCP tools. A Developer Preview: your project must be enrolled."
+docs = "https://developers.google.com/workspace/guides/configure-mcp-servers"
+note = "Google's MCP servers are a Developer Preview that needs enrolment, and the OAuth client must have \"Use this client for an AI-powered agent\" ticked."
+
+[[service]]
+name = "gpeople_mcp"
+title = "People MCP (Google preview)"
+url = "https://people.googleapis.com/mcp/v1"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+scopes = ["https://www.googleapis.com/auth/directory.readonly", "https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/contacts.readonly"]
+read_only = "scope"
+resource_param = false
+fixed_callback = true
+preview = true
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Preview: Google's People (contacts) MCP server"
+covers = "Google's own People MCP tools: your contacts and directory, read-only. A Developer Preview: your project must be enrolled."
+docs = "https://developers.google.com/workspace/guides/configure-mcp-servers"
+note = "Google's MCP servers are a Developer Preview that needs enrolment, and the OAuth client must have \"Use this client for an AI-powered agent\" ticked."
+
+[[service]]
 name = "github"
 title = "GitHub"
 url = "https://api.githubcopilot.com/mcp/"
@@ -365,3 +767,119 @@ read_only = "none"
 docs = "https://docs.sentry.io/product/sentry-mcp/"
 option = "Sign in"
 covers = "Issues, events and releases from your Sentry organisation."
+
+# ── Catalog v2 (M63.4): vetted servers, checked on 2026-10-21. ──
+
+[[service]]
+name = "todoist"
+title = "Todoist"
+url = "https://ai.todoist.net/mcp"
+auth = "oauth"
+client = "dcr"
+read_only = "none"
+registry = "net.todoist/mcp"
+tile = "todoist"
+option = "Sign in"
+covers = "Todoist's own hosted MCP server: find, add, update, complete and reschedule tasks, projects, sections, comments, labels and reminders."
+docs = "https://github.com/Doist/todoist-mcp"
+writes = ["add-tasks", "update-tasks", "complete-tasks", "uncomplete-tasks", "reschedule-tasks", "add-projects", "update-projects", "project-management", "project-move", "add-sections", "update-sections", "add-comments", "update-comments", "add-reminders", "update-reminders", "add-labels", "update-labels", "add-filters", "update-filters", "manage-assignments", "delete-object", "reorder-objects", "import-project-template"]
+
+[[service]]
+name = "google_maps"
+title = "Google Maps Grounding Lite"
+url = "https://mapstools.googleapis.com/mcp"
+auth = "api_key"
+header = "X-Goog-Api-Key"
+header_value = "{key}"
+read_only = "none"
+registry = "com.googleapis.mapstools/mcp"
+tile = "maps"
+option = "Google Maps Grounding Lite (API key)"
+covers = "Google Maps' hosted MCP server: search places, weather, routes (distance and time, no turn-by-turn), and resolve place names and Maps links. Billed per request to your Google Cloud project; show Google Maps as the source."
+key_url = "https://console.cloud.google.com/apis/credentials"
+docs = "https://developers.google.com/maps/ai/grounding-lite"
+guide = [
+  "In Google Cloud, turn on the Maps Grounding Lite API for a project with billing.",
+  "Create an API key under APIs & Services → Credentials, and restrict it to the Maps Grounding Lite API.",
+  "Paste it below. It is sent only to mapstools.googleapis.com.",
+]
+secret = { name = "GOOGLE_MAPS_GROUNDING_KEY", hosts = ["mapstools.googleapis.com"], header = "X-Goog-Api-Key", value = "{key}" }
+
+[[service]]
+name = "mapbox"
+title = "Mapbox"
+url = "https://mcp.mapbox.com/mcp"
+auth = "api_key"
+read_only = "none"
+registry = "io.github.mapbox/mcp-server"
+tile = "maps"
+option = "Mapbox (access token)"
+covers = "Mapbox's hosted MCP server: directions, travel-time matrices, isochrones, geocoding, place search and static maps. Billed by Mapbox past its free tier."
+key_url = "https://account.mapbox.com/access-tokens/"
+docs = "https://github.com/mapbox/mcp-server/blob/main/docs/hosted-mcp-guide.md"
+guide = [
+  "Make an access token at https://account.mapbox.com/access-tokens/ (or use the default public one).",
+  "Paste it below. It is sent only to mcp.mapbox.com.",
+]
+secret = { name = "MAPBOX_MCP_TOKEN", hosts = ["mcp.mapbox.com"], header = "Authorization", value = "Bearer {key}" }
+
+[[service]]
+name = "microsoft365"
+title = "Microsoft 365 for a personal account (Outlook.com)"
+kind = "stdio"
+auth = "none"
+package = "npm:@softeria/ms-365-mcp-server@0.170.2"
+integrity = "sha512-TuGDN7LlQDn5EPUSR3QX2QPF5sTiMi2F0DhrQQyvWgi3MssGrAEHSndjOUk6XJZAtHLfzN6g5aPI/MncoyH7qw=="
+read_only_args = ["--read-only"]
+env = { MS365_MCP_TENANT_ID = "consumers" }
+registry = "io.github.Softeria/ms-365-mcp-server"
+covers = "Outlook.com mail, calendar, OneDrive, To Do and contacts of a personal Microsoft account, through Softeria's open-source server (MIT), pinned at 0.170.2 and run in the sandbox with its sign-in kept in a hidden folder. It signs in itself: its login tool gives a code to enter at Microsoft's page. Read-only unless you add it for writes."
+docs = "https://github.com/Softeria/ms-365-mcp-server"
+
+[[service]]
+name = "weather"
+title = "Weather (bundled skill)"
+kind = "skill"
+skill = "weather"
+auth = "none"
+covers = "Current weather and forecasts from Open-Meteo, no key."
+
+[[service]]
+name = "news"
+title = "News feeds (bundled skill)"
+kind = "skill"
+skill = "news"
+auth = "none"
+covers = "Headlines from RSS and Atom feeds, yours or a few defaults."
+
+[[service]]
+name = "hacker-news"
+title = "Hacker News (bundled skill)"
+kind = "skill"
+skill = "hacker-news"
+auth = "none"
+covers = "Hacker News through its official API, no key."
+
+[[service]]
+name = "exchange-rates"
+title = "Exchange rates (bundled skill)"
+kind = "skill"
+skill = "exchange-rates"
+auth = "none"
+covers = "Central bank reference rates and conversions from Frankfurter, no key."
+
+[[service]]
+name = "maps"
+title = "Maps from OpenStreetMap (bundled skill)"
+kind = "skill"
+skill = "maps"
+auth = "none"
+covers = "Places, addresses, distances and travel times from Nominatim and OSRM, no key."
+
+[[service]]
+name = "home-assistant"
+title = "Home Assistant (bundled skill)"
+kind = "skill"
+skill = "home-assistant"
+auth = "none"
+covers = "Your Home Assistant's states and actions over its REST API; the skill asks you for its token (HA_TOKEN, bound to your Home Assistant's host)."

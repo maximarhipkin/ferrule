@@ -72,7 +72,7 @@ fn make(cfg: &config::Config) -> Result<Arc<Connections>> {
         Arc::new(GatewayEvents),
         Some(host),
     )?;
-    set_gate(cfg, &conns);
+    set_gate(cfg, Some(&conns));
     Ok(conns)
 }
 
@@ -80,15 +80,28 @@ fn make(cfg: &config::Config) -> Result<Arc<Connections>> {
 /// the owner's yes, unless `[connections] gate_writes = false`. And the
 /// accounts they send mail from, which an owner's scheduled task may send
 /// to without a tap after reading outside content (wave A, M54.5).
-fn set_gate(cfg: &config::Config, conns: &Connections) {
+fn set_gate(cfg: &config::Config, conns: Option<&Connections>) {
     let Ok(hub) = trust::hub(cfg) else { return };
-    let names = if conns.config().gate_writes {
-        conns.servers().into_iter().map(|s| s.name).collect()
-    } else {
-        Vec::new()
-    };
+    let gate = conns.map_or(cfg.connections.gate_writes, |c| c.config().gate_writes);
+    let mut names: Vec<String> = Vec::new();
+    if gate {
+        if let Some(c) = conns {
+            names.extend(c.servers().into_iter().map(|s| s.name));
+        }
+        // M63.4: a server added from the catalog is a connected service
+        // too: its reads are outside content, its changes wait for a yes.
+        names.extend(
+            BASE.lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.catalog.is_some())
+                .map(|s| s.name.clone()),
+        );
+    }
     hub.set_connected(names);
-    hub.set_own_accounts(conns.own_addresses());
+    if let Some(c) = conns {
+        hub.set_own_accounts(c.own_addresses());
+    }
 }
 
 /// The gateway's way to the owner and back into a chat.
@@ -108,7 +121,10 @@ pub fn attach(
 /// config server of the same name wins.
 pub fn with_connections(cfg: &config::Config, base: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
     *BASE.lock().unwrap() = base.clone();
-    match shared(cfg) {
+    let conns = shared(cfg);
+    // M63.4: the config's catalog servers count for the gate as they change.
+    set_gate(cfg, conns.as_deref());
+    match conns {
         Some(conns) => merge(base, conns.servers()),
         None => base,
     }
@@ -154,7 +170,7 @@ pub fn follow(manager: &Arc<ferrule_extensions::ExtensionManager>, cfg: &config:
             let Some(manager) = manager.upgrade() else {
                 return;
             };
-            set_gate(&cfg, &conns);
+            set_gate(&cfg, Some(&conns));
             let base = BASE.lock().unwrap().clone();
             for change in manager.set_configured(merge(base, conns.servers())).await {
                 tracing::info!("connections: mcp server {change}");
@@ -485,8 +501,15 @@ pub async fn run(op: ConnectionsCmd) -> Result<()> {
         }
         ConnectionsCmd::Catalog => {
             for s in conns.catalog().services() {
-                println!("{:<12} {} ({:?})", s.name, s.title(), s.auth);
+                println!(
+                    "{:<20} {:<7} {} ({:?})",
+                    s.name,
+                    format!("{:?}", s.kind).to_lowercase(),
+                    s.title(),
+                    s.auth
+                );
             }
+            println!("(remote: connect it here or on the dashboard; stdio and skill: add it from the dashboard's Extensions page, or ferrule_admin mcp_add with catalog)");
         }
         ConnectionsCmd::Remove { name } => println!("{}", conns.disconnect(&name).await?),
         ConnectionsCmd::Add { service, write } => add(&conns, &service, write).await?,

@@ -40,7 +40,8 @@ pub fn hub(cfg: &Config) -> Result<Arc<Hub>> {
 }
 
 /// The hosts a configured secret may reach: a DELETE to one of them is
-/// gated, like one to a host the classifier can't read.
+/// gated, like one to a host the classifier can't read, and (M64.0) a
+/// POST, PUT or PATCH after outside content.
 pub fn bound_hosts(cfg: &Config) -> Vec<HostPattern> {
     cfg.secrets
         .values()
@@ -252,14 +253,15 @@ pub fn equip(
     // Owner mode runs the owner's own trees without approval questions;
     // guests keep the hub's `gates` (docs/m54-autonomous.md §5). M54.5: one
     // gate stays there, for a send after outside content, and a guest's
-    // message is outside content.
+    // message is outside content. M64.0: in every mode, so a POST to a
+    // bound host asks in a guest's run too.
     let owner_mode = crate::owner_mode::on(cfg);
-    let owners = owner_mode && crate::owner_mode::owner_tree(cfg, &hub, tree);
+    let owners = crate::owner_mode::owner_tree(cfg, &hub, tree);
     let root = TrustGuard::root(hub, tree, route_for(tree))
         .planning(is_planning(tree))
-        .gates(!owners)
+        .gates(!(owner_mode && owners))
         .untrusted_gate(owner_mode && cfg.trust.untrusted_send_gate)
-        .guest_input(owner_mode && !owners)
+        .guest_input(!owners)
         .workspace(workspace);
     let guard = if child { root.child() } else { root };
     Ok((
@@ -291,6 +293,23 @@ impl ChannelNotifier {
         text: &str,
         buttons: &[ferrule_gateway::Button],
     ) -> Result<(), String> {
+        let (channel, msg) = self.outbound(chat, text)?;
+        ferrule_gateway::send_with_buttons(channel.as_ref(), msg, buttons)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    fn outbound(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+    ) -> Result<
+        (
+            Arc<dyn ferrule_gateway::Channel>,
+            ferrule_gateway::OutboundMessage,
+        ),
+        String,
+    > {
         let Some(channel) = self.0.get(&chat.channel) else {
             return Err(format!("{} isn't running", chat.channel_title()));
         };
@@ -301,10 +320,18 @@ impl ChannelNotifier {
             reply_to: None,
             attachments: vec![],
         };
-        ferrule_gateway::send_with_buttons(channel.as_ref(), msg, buttons)
-            .await
-            .map_err(|e| e.to_string())
+        Ok((channel.clone(), msg))
     }
+}
+
+fn buttons(choices: &[(String, String)]) -> Vec<ferrule_gateway::Button> {
+    choices
+        .iter()
+        .map(|(label, reply)| ferrule_gateway::Button {
+            text: label.clone(),
+            action: ferrule_gateway::ButtonAction::Command(reply.clone()),
+        })
+        .collect()
 }
 
 #[async_trait::async_trait]
@@ -323,14 +350,19 @@ impl ferrule_trust::Notifier for ChannelNotifier {
         text: &str,
         choices: &[(String, String)],
     ) -> Result<(), String> {
-        let buttons: Vec<_> = choices
-            .iter()
-            .map(|(label, reply)| ferrule_gateway::Button {
-                text: label.clone(),
-                action: ferrule_gateway::ButtonAction::Command(reply.clone()),
-            })
-            .collect();
-        self.deliver(chat, text, &buttons).await
+        self.deliver(chat, text, &buttons(choices)).await
+    }
+
+    async fn post_choices(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+        choices: &[(String, String)],
+    ) -> Result<Option<String>, String> {
+        let (channel, msg) = self.outbound(chat, text)?;
+        ferrule_gateway::post_with_buttons(channel.as_ref(), msg, &buttons(choices))
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -592,7 +624,7 @@ pub fn status_lines(hub: &Hub) -> Vec<String> {
     out.push(format!(
         "gates:    {}",
         if c.gates {
-            "on (rm -r, force push, DELETE to a bound host)"
+            "on (rm -r, force push, DELETE to a bound host; POST, PUT or PATCH there after outside content)"
         } else {
             "off"
         }

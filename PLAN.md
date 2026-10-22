@@ -152,6 +152,21 @@ below it is append-only.
   6. the paste guard's link to the Safe, and keyless search that says
      when DuckDuckGo refuses;
   7. CI hygiene: this refresh, the Windows self-test flake (below).
+- **Wave B, M63** (2026-10-21, night) on `autopilot`, after wave A:
+  connections, skills and the catalog (re-audit Part 2 and Part 3
+  #3–#6), one commit and one Session Log entry per task: M63.1 the
+  bundled skills pack; M63.2 IMAP/SMTP mail from any provider; M63.3
+  CalDAV and read-only secret-address calendars; M63.4 catalog v2 with
+  one-step add (`mcp_add` with `catalog`, the Extensions page's Add).
+  Built, `make check` green, nothing run live. Design and status:
+  `docs/m63-connections-wave-b.md`.
+- **M64, a proactive agent** (2026-10-21, night) on `autopilot`, after
+  wave B, one commit and one Session Log entry per task: M64.0 the HTTP
+  write gate (a POST to a bound host asks after outside content); the
+  design (`docs/m64-proactive.md`); commitments and open loops; pattern
+  suggestions; the heartbeat; feedback, the suppression list and the
+  Proactive page. Owner-only, off by default, every action through the
+  existing gates and caps.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -164,10 +179,10 @@ below it is append-only.
   2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
      M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
      prompt prefix unmeasured; no nightly job.
-  3. **Connections**: a curated catalog v2 with one-step add, a bundled
-     skills pack (weather, RSS, HN, maps, Home Assistant REST),
-     any-provider IMAP/SMTP mail, CalDAV/ICS calendars (re-audit Part 3
-     #3–#6).
+  3. **Connections** (wave B built them, M63): run them live, above all
+     Todoist's DCR, the Microsoft 365 server's sign-in in the sandbox,
+     iCloud's CalDAV discovery and the mail presets; CardDAV contacts and
+     Outlook.com mail (OAuth only) are still missing.
   4. **M53.1's evidence**: no control run without the lesson, unblinded
      labels; fix before offering learning in owner mode.
   5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
@@ -191,7 +206,10 @@ below it is append-only.
   only; both PR #52), **M62 compaction's summary input** (PR #54). M54's
   numbered items (M54.1–M54.7) and M52's (M52.1–M52.6) keep their
   parent's number; so do wave A's tasks, which are follow-ups, not
-  milestones. **The next free number is M63.** The first claim wins,
+  milestones. **M63 is claimed by wave B** (connections, skills and
+  the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
+  proactive agent** (`autopilot`, 2026-10-21). **The next free number
+  is M65.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9281,3 +9299,449 @@ the launcher failed; if it's the state file, the fix is to retry the
 rename (as `update/swap.rs`'s `rename_retrying` does) or to go on with
 the new SIDs when the save fails (the cost is one more ACE per root next
 time). Branch protection waits on the owner.
+
+### 2026-10-21 — Wave B claims M63: connections, skills and the catalog (Claude, Opus 5.5)
+
+Claims **M63** for improvement wave B (the next free number was M63; it
+is now M64), in the `autopilot` worktree on top of `d12441c`. `main`
+had nothing `autopilot` lacked (`git fetch origin main`, empty
+`HEAD..FETCH_HEAD`). Four tasks, one commit and one entry each: M63.1
+the bundled skills pack, M63.2 IMAP/SMTP mail, M63.3 CalDAV and ICS
+calendars, M63.4 catalog v2 with one-step add. Current State updated in
+place (the claim, the in-flight line).
+
+### 2026-10-21 — M63.1: the bundled skills pack (Claude, Opus 5.5)
+
+Wave B, task 1, in the `autopilot` worktree. The re-audit's Part 2 §2d
+("Skills catalog") and Part 3 #4: ferrule shipped no skills at all, where
+OpenClaw and Hermes ship everyday ones.
+
+**What changed.**
+- `crates/ferrule-skills/bundled/`: six skills in the Agent Skills
+  format, `weather` (Open-Meteo, with a WMO code table), `news` (RSS and
+  Atom; the owner's feeds from memory, else BBC, NPR, The Guardian, DW),
+  `hacker-news` (the official Firebase API), `exchange-rates`
+  (Frankfurter v2), `maps` (Nominatim and the FOSSGIS OSRM server, with
+  both operators' rules: one request a second, a named User-Agent, no
+  auto-complete or bulk, attribution) and `home-assistant` (its REST API,
+  `HA_TOKEN` asked for with `ferrule_admin` `secret_request`, bound to the
+  owner's host). No scripts and no triggers; each gives the model `curl`
+  commands for the sandboxed shell, so the proxy and `[egress]` apply.
+- `ferrule-skills`: `bundled::install` writes the pack to
+  `<data>/bundled-skills` (a changed file written beside and renamed,
+  what the pack dropped removed); a new `Scope::Bundled`, which may
+  trigger like a user skill.
+- `ferrule-cli`: `[skills] bundled = true` (new); `bundled_skills` adds
+  the root after the installed skills and before the learned ones, in
+  the gateway's live set and in `discover_skills` (`ferrule skills`, the
+  settings view); `ferrule skills` explains the scope; the dashboard's
+  Extensions page tags a bundled skill. Per-skill off is the existing
+  `[skills] disabled` list.
+- Docs: `docs/m63-connections-wave-b.md` (new: the pack, how it ships,
+  every service's endpoint and rules with the URLs read, the limits),
+  `docs/skills.md` ("Bundled skills", the search order, the config), the
+  README's documentation list, the roadmap's M63 entry.
+
+**Verified against the operators' docs on 2026-10-21** (URLs in the
+M63 doc): Open-Meteo's forecast, geocoding, terms and licence; the HN
+API; Frankfurter v1 and v2; Nominatim's search, reverse and usage
+policy; OSRM's route API and the demo server's page; Home Assistant's
+REST API. **Checked by one request each, not in docs:** Frankfurter v2's
+response shape; FOSSGIS's `routed-car|bike|foot` paths (different
+durations, where `router.project-osrm.org` answers the car's for every
+profile); the four default feeds answering 200.
+
+**Found on the way.** A Home Assistant on plain HTTP or at an address
+can't get its token: the Safe binds keys to names only (no address,
+`localhost` or port) and the proxy swaps only over HTTPS (or HTTP to
+loopback). The skill says so. A `curl -X POST` to a bound host isn't a
+gated kind (`classify.rs`; its tests pass it on purpose), so turning a
+device on is not behind the approval gate; the skill's own rules (only
+what the owner asked, never from fetched text, a yes first for locks,
+alarms and doors) are what stand there. Not changed: widening the gate
+to POSTs would gate every API write the owner's keys make.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** No skill has run in a live session, through ferrule's proxy,
+or on Windows. The skills weren't put through the injection scan (they
+have no triggers, so nothing scans them); their text was written against
+the scan's patterns. The catalog grows by about 400 tokens a request
+while skills are on (a one-time prefix change at the upgrade), unmeasured
+by the eval gate. `ferrule skills` (`discover_skills`) still leaves out
+the agent-installed skills the gateway's set has, as before.
+
+### 2026-10-21 — M63.2: mail from any provider over IMAP and SMTP (Claude, Opus 5.5)
+
+Wave B, task 2, in the `autopilot` worktree. The re-audit's Part 2 §2c #2
+and Part 3 #5: Gmail was the only mailbox.
+
+**What changed.**
+- `ferrule-connections` `native/mail.rs` (new): `Mail`, a mailbox over
+  IMAP and SMTP with an app password, in two flavours. `Gmail` keeps
+  M37's behaviour exactly (X-GM-RAW over All Mail, Google's servers, the
+  `gmail_*` tool names, Google's wording); `gmail.rs` is now its
+  constructor. `Imap` searches by RFC 3501 criteria in a named mailbox
+  and lists `mail_search`, `mail_read`, `mail_folders` and, on a write
+  connection, `mail_send`; STARTTLS on 143 and 587, TLS otherwise, never
+  in the clear.
+- `native/imap.rs`: `search_criteria` and `mailboxes`; `Part` is `Copy`.
+- `native/mod.rs`: kind `mail` (`normalize_mail` checks and fills the
+  fields: host names only, ports, `tls`/`starttls`; `hosts` is the two
+  servers; `probe` logs in; `server` builds it).
+- `catalog.rs`: a service's `preset` (fixed field values, merged after the
+  form's so a typed value can't replace them; a name that is both a preset
+  and a field is refused). `service.rs` merges them in `connect_key_to`;
+  `own_addresses` counts a mail connection's address too (wave A's owner
+  briefings).
+- `catalog.toml`: a Mail tile with iCloud Mail, Fastmail and Yahoo Mail
+  presets and "Any other mailbox". Outlook.com and Hotmail aren't there:
+  Microsoft's settings page lists only OAuth2 for their IMAP and SMTP.
+- Docs: `connections.md` ("Mail from any provider", the option table),
+  `m63-connections-wave-b.md` §2 (the design, the providers' settings with
+  their URLs, why the password goes through the connection form rather
+  than `secret_request`), the roadmap's M63.2 line.
+
+**A deviation from the brief, on purpose.** The brief said the app
+password comes "via `secret_request` or the Safe". `secret_request` saves
+a `[secrets]` key that commands get as a placeholder for the proxy; this
+password never reaches a command, only ferrule's own IMAP/SMTP code. So it
+stays in the sealed connection store, entered on the dashboard's
+write-only Connections form (or `ferrule connections setup mail`), tested
+before it's saved and bound to the record's two hosts, as Gmail's always
+was. From a chat, `connection_request` asks the owner with a button.
+
+**Tests changed, none added** (the owner's standing rule):
+`the_built_in_catalog_parses_and_checks` lists the four new names. The
+Gmail end-to-end test (mock IMAP and SMTP) passes through the new code
+unchanged.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Not run against any real provider (iCloud's local-part login,
+the STARTTLS path, Yahoo's and Fastmail's passwords). The generic flavour
+has no test. The email channel's `use_connection` still takes a Gmail
+connection only. A connection's reads count as untrusted only while
+`[connections] gate_writes` is on (the default), as for every
+connection: that switch also empties the hub's `connected` list.
+
+### 2026-10-21 — M63.3: calendars over CalDAV, and a calendar's secret address (Claude, Opus 5.5)
+
+Wave B, task 3, in the `autopilot` worktree. The re-audit's Part 2 §2c #1
+and Part 3 #6: Google was the only calendar, and only through a service
+account or an OAuth client plus the relay.
+
+**What changed.**
+- `ferrule-connections` `native/caldav.rs` (new): `CalDav` (kind
+  `caldav`): RFC 6764/5397/4791 discovery (`current-user-principal` at
+  the address, then `/.well-known/caldav`; `calendar-home-set`; the
+  home's calendars, task lists left out; kept 10 minutes);
+  `calendars_list`, `events_list` (`calendar-query` with `expand`, a week
+  by default, at most a year), and on a write connection `event_create`
+  (`PUT` with `If-None-Match: *`), `event_update` (only the series' own
+  lines rewritten, `If-Match` on the ETag; a moved start keeps its length)
+  and `event_delete` (destructive). Event ids are paths inside the
+  account's calendars; others are refused. `Ics` (kind `ics`): a secret
+  `.ics` address, read-only, `events_list` only. Both send the credential
+  only to the saved hosts and follow redirects themselves, refusing one
+  elsewhere.
+- `native/ical.rs` (new): an iCalendar reader and writer (unfolding,
+  parameters, escaped text, dates, durations) and repeat expansion
+  (DAILY, WEEKLY with BYDAY, MONTHLY on the day or an nth weekday,
+  YEARLY; INTERVAL, COUNT, UNTIL, EXDATE, RECURRENCE-ID overrides;
+  anything else shown once with its rule). `native/xml.rs` (new): a small
+  reader for multistatus answers. No new dependency.
+- `native/mod.rs`: kinds `caldav` and `ics` (normalize: https only,
+  `webcal://` read as https; hosts: the address's plus a preset's
+  `extra_hosts`; probe: discovery, or one download).
+- `catalog.toml`: a Calendar tile: iCloud (`caldav.icloud.com`,
+  `extra_hosts = "*.icloud.com"`), Fastmail (`caldav.fastmail.com`),
+  Nextcloud and any CalDAV server, and "A calendar's secret address"
+  (`secret_url`, a secret field, so `Store::secret_values` hands it to the
+  tool-result scrub).
+- Docs: `connections.md` ("Calendars over CalDAV, and a secret address",
+  the option table), `m63-connections-wave-b.md` §3 (the protocol steps
+  with the RFC sections, the providers with their URLs, what isn't
+  verified), the roadmap's M63.3 line.
+
+**Verified against docs on 2026-10-21:** RFC 4791 (calendar-home-set,
+time-range in UTC, expand, PUT with If-None-Match), RFC 6764 (the
+well-known redirect, principal discovery), Fastmail's CalDAV address,
+Apple's app-specific passwords, Google's secret iCal address. **Not in
+the vendors' docs:** `caldav.icloud.com` and its `pNN-caldav` hosts
+(third-party guides); Nextcloud's `remote.php/dav` is the form its sync
+guide shows.
+
+**Tests changed, none added** (the owner's standing rule):
+`the_built_in_catalog_parses_and_checks` lists the five new names.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Nothing ran against a real CalDAV server or a real secret
+address. The XML reader, the iCalendar reader and the repeat expansion
+have no tests. No time zone conversion: ranges are compared on each
+event's own clock, and no `TZID` is written (floating or UTC times only).
+Updating or deleting one occurrence of a repeating event isn't offered
+(the whole series changes). CardDAV contacts (re-audit #9) are not here.
+
+### 2026-10-21 — M63.4: catalog v2 and one-step add (Claude, Opus 5.5)
+
+Wave B, task 4, in the `autopilot` worktree. The re-audit's Part 2 §2d
+("A built-in curated catalog") and Part 3 #3. Touches M54's surfaces with
+the smallest changes, said here: `ferrule-sandbox` (`for_helper`, one
+carve), `self_service/` (the `mcp_add` op's `catalog`, a continuation in
+`keys.rs`), `backup::SECRETS` (one entry, which hides it).
+
+**What changed.**
+- `ferrule-connections` `catalog.rs`: `kind` (remote, stdio, skill),
+  `auth = "none"` (and `"key"` as `api_key`), `package` (an exact
+  `npm:name@x.y.z`, ranges and tags refused), `args`, `read_only_args`,
+  `env`, `integrity` (recorded, not checked), `registry`, `secret`
+  (`{name, hosts, header, value}`; a remote entry's hosts must include its
+  url's host), `read_only_url` (on the url's host), `writes`, `skill`;
+  `Service::check_v2`, `secret_header`. `names()` lists only what
+  connects; the Connections page, `ferrule connections setup` and
+  `/connect`/`connection_request` refuse a stdio or skill entry with where
+  to add it instead. A connection's MCP config carries `writes`.
+- `catalog.toml`: Todoist (hosted, OAuth DCR, its write tools), Google
+  Maps Grounding Lite and Mapbox (keys with `secret` blocks), Microsoft 365
+  for a personal account (`@softeria/ms-365-mcp-server@0.170.2`, stdio,
+  read-only by default), Google's Calendar, Docs, Sheets and People MCP
+  previews, and the six bundled skills.
+- `ferrule-mcp`: `[[mcp.servers]]` `write_tools` (gated as writes whatever
+  the hint), `catalog` (the entry it came from), `private_state`.
+- `ferrule-cli` `connections::set_gate`: a config server with `catalog` is
+  in the hub's connected list (untrusted reads, gated writes), refreshed
+  whenever the config's servers are (`with_connections`).
+- `<data>/mcp-private`: in `backup::SECRETS`, so hidden from commands and
+  the file tools (not on Windows: the Windows sandbox hides by a DACL every
+  sandboxed process shares); a `private_state` server's state dir is
+  there (`Layout::mcp_state_for`), and `Sandbox::for_helper` replaces the
+  hidden folder, for that server only, with its other entries.
+- `self_service`: `mcp_add` with `catalog` (+ `write`) is
+  `Op::McpAddCatalog`, refused with any other field; its card
+  (`catalog::card`) says what runs, where, and which key goes where;
+  `catalog::add` signs in (an OAuth entry's button), turns on a skill, or
+  adds the server with the entry's settings, asking for a missing key with
+  `secret_request` and registering `keys::when_saved`, so the server is
+  added the moment the Safe saves the key, and the session is woken with
+  the outcome. `mcp_add`'s `AddArgs` gained the three new fields.
+- Dashboard: Extensions → "From the catalog" (stdio, skills, remote
+  entries with a `secret`) with Add (`POST mcp/catalog`, confirmed; a
+  missing key opens the Safe filled in, and the same continuation
+  finishes the add). Managed mode's extensions lock refuses both.
+- `ferrule-agents` prompts: the admin tool's descriptions mention
+  `catalog` (the prompt prefix changes once, at the upgrade).
+- Docs: `m63-connections-wave-b.md` §4 (the schema, the flow, what an
+  added server is held to, every entry with its sources, the trust model:
+  why curated, why no public hub), `connections.md` ("The catalog"),
+  `m17-mcp-add.md` (the three keys), `sandbox.md` (`mcp-private`), the
+  roadmap's M63.4 line, the README's list.
+
+**Verified on 2026-10-21:** Todoist's hosted URL (Doist's README) and its
+tool names (`src/utils/tool-names.ts`); Grounding Lite's endpoint, header,
+tools and terms (Google's page); Mapbox's hosted endpoint and Bearer
+token (its guide); the Softeria package's latest version, licence and
+integrity (npm's registry API) and its flags, env and cache (README);
+Google's four preview endpoints and scopes (Workspace guide); the MCP
+Registry names (its API) and its moderation policy. **Not verified:**
+Todoist accepting ferrule's DCR; any of it live.
+
+**Found on the way.** `MS365_MCP_USE_KEYTAR` can't be set: `mcp_add`
+refuses an env name that looks like a key ("KEY" is in it), so the server
+relies on its own fallback when there's no credential store (a key file
+beside the cache, per its README). Native connections reach their
+services directly, not through the proxy's egress policy (as before
+M63; noted, not changed).
+
+**Tests changed, none added** (the owner's standing rule): the catalog
+test's names and Google tile.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** Nothing added against the real services; the carve in
+`for_helper` not run on Linux or macOS; private state not hidden on
+Windows; `integrity` recorded, not enforced; a continuation lives in
+memory (a restart before the key is saved forgets the add); the
+dashboard's Add from a key-missing entry gives its outcome in the log,
+not on the page.
+
+### 2026-10-21 — M64 claimed; M64.0: a POST to a bound host leaves the box (Claude, Opus 5.5)
+
+Claims **M64**, the proactive agent, in the `autopilot` worktree (the
+next free number was M64; it is now M65). `git fetch origin main` found
+one commit `autopilot` lacked, PR #55's merge, whose tree is
+`d12441c`'s; merged (signed, `559b350`, no file changes) after `make
+check` passed. Current State updated in place (the claim, the in-flight
+line).
+
+M64's task 0, the gate fix the owner's brief asks for before the agent
+acts on its own. M63.1 found it: the Home Assistant skill switches
+devices with `curl -X POST`, and the classifier only stopped a DELETE.
+
+**What changed.**
+- `ferrule-trust` `classify.rs`: `Kind::HttpWrite` (leaves the box);
+  `classify_http_write`, a POST, PUT or PATCH (said, or implied by
+  curl's `-d`/`--json`/`-F`/`-T`, wget's `--post-data`, httpie's data
+  items, `gh api` fields, a `gh` verb that changes something) to a bound
+  host, or to a host the command line doesn't show. One request reader
+  (`request`, getopt-style `options` that skip flags' values) now serves
+  the DELETE check too; `scan` is the old `classify_depth` with a
+  matcher.
+- `guard.rs`: the run's outside content is taken from **before** the
+  call (a fetch doesn't taint itself, for every class and for standing
+  grants); an HTTP write asks only after outside content, in ordinary
+  mode (unless `[trust] untrusted_send_gate = false`) and in owner mode's
+  one gate, and is refused when unattended.
+- `ferrule-cli` `trust::equip`: a guest's run counts as outside content
+  in every mode (was owner mode only). Texts: `owner_mode::openings`,
+  the `gates:` status line, the config template's comment.
+- The Home Assistant skill's rule and `m63-connections-wave-b.md` say
+  what the gate now covers; `m19-trust-cost.md` §6's table and a new §6b
+  part; `sandbox.md`'s owner-mode paragraph; the roadmap's M64 entry.
+
+**Behaviour changes to know.** A first `curl -X DELETE` to a bound host
+in owner mode no longer asks (it marked the run itself before). In
+ordinary mode, a scheduled task that fetched something and then POSTs to
+a bound host is now refused; a guest's run now never uses a standing
+grant for a send, a force push or an HTTP write.
+
+**Tests changed, none added** (the owner's standing rule): two
+`ferrule-cli` trust tests (`slash_plan_explores…`,
+`the_owner_approves_stops…`) now expect the `untrusted_seen` line a
+group's turn writes.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean. One run before it failed
+`ferrule-memory`'s `without_a_vector_hybrid_is_exactly_bm25` (two
+recall scores a microsecond of decay apart; untouched here, passes
+alone and on the rerun): a flaky test, noted.
+
+**Open.** Not run live. A `gh` verb outside the list passes; a POST
+from `python` or a script isn't seen (as for DELETE). Every guest turn
+now writes one `untrusted_seen` audit line (pruned with the audit log).
+
+### 2026-10-21 — M64.1: the proactive agent's design (Claude, Opus 5.5)
+
+M64's task 1, in the `autopilot` worktree: `docs/m64-proactive.md`,
+linked from the README's "Running it day to day" list.
+
+**What it settles.** What it learns (commitments and deadlines, open
+loops, recurring patterns, M56.4's preferences) and from what (the
+owner's own messages in their private chat and the dashboard's, which a
+new door records with their time, and the owner's scheduled tasks; never
+a guest's or a group's). The store (`<data>/proactive/proactive.db`,
+hidden from guests). The heartbeat: a built-in task, every 3 h at minute
+7 in the owner's timezone, skipped in quiet hours, under the kill switch
+and caps, its own dollar cap, the daily message cap and the gap; one
+model call only when its inputs' digest changed; at most one message a
+pass. The levels: off (notice only), suggest (Do it / Not now / Never),
+act (only a reminder for a stated commitment and an owner's own task
+from a pattern, with Undo; nothing built on calendar or mail text is done
+by itself). Reminders are built-in one-off tasks whose text is delivered
+as is, with no model call, so outside text never becomes a prompt.
+Feedback: buttons and Telegram's 👍/👎 through M53.5's sink; Never is a
+clearable per-kind list; Not now backs a kind off 2^(n-1) days. The
+page, `/proactive`, `/commitments`.
+
+**A choice, justified in the doc (§1).** Commitments are extracted in the
+heartbeat's one call rather than by a `note_commitment` tool (a round
+trip of the whole conversation per call, a schema in every request's
+prefix) or a post-turn pass (a call per message, or an English keyword
+filter). Cost: a few hundred input tokens on a call that happens anyway;
+delay: until the next pass, while an explicit "remind me at 9" stays the
+chat model's no-card `task_add`.
+
+**Verified on 2026-10-21:** OpenClaw's heartbeat page (heartbeat folded
+into automation jobs, a "Proactive check" job every 30 minutes,
+`NO_REPLY`, `activeHours`, `skipIfScratchEmpty`, `delivery.target:
+"owner"`). OpenAI's Pulse pages answered 403 and aren't cited.
+
+**Tests changed, none added.** **Checks.** `make check` exited 0: 1891
+passed, 0 failed, 28 ignored, 73 binaries (macOS).
+
+**Open.** It's a design: tasks 2–5 build it, and their entries say where
+the build departs from it.
+
+### 2026-10-21 — M64.2: commitments and open loops (Claude, Opus 5.5)
+
+M64's task 2, in the `autopilot` worktree. Touches M51's Telegram send
+branch and the gateway's channel trait with one added method each, said
+here.
+
+**What changed.**
+- `ferrule-cli/src/proactive/` (new): the store
+  (`<data>/proactive/proactive.db`: commitments, items, the Never list,
+  the owner's messages), `ProactiveDoor` (last interceptor: keeps the
+  owner's plain messages in their private chat and the dashboard's while
+  proactive is on; answers `/commitments` and the buttons'
+  `/proactive do|later|never|useful|undo <id>`), the `commitments` tool
+  (owner sessions only, while on; deferrable), `offer_reminder` (a due
+  commitment's reminder asked at `suggest`, made with a receipt and Undo
+  at `act`), `reminder` (built-in one-offs `ferrule-reminder`, posted as
+  plain text, the job registered always) and `loops::sync` (the owner's
+  tasks' failed or cut-short last runs; closed by a later success).
+- `[proactive]` in the config (the whole block of §9, checked at load;
+  in the example config). `proactive::set_on` at the gateway's start.
+- `ferrule-trust`: `Notifier::post_choices`, `Hub::post_in` (waits,
+  returns the chat and the message id). `ferrule-gateway`:
+  `Channel::send_buttons_with_id` (Telegram returns the id),
+  `post_with_buttons`. `ferrule-cli` `ChannelNotifier` implements it.
+- `TasksAdmin::delete` deletes a reminder (other built-ins stay
+  pause-only). `owner_mode::guest_hidden` hides `<data>/proactive`.
+  `/commitments` is in the menu.
+- Docs: `m64-proactive.md` ("Built: M64.2"), the roadmap.
+
+**Why the extraction isn't here.** Per the design (§1), the pass notes
+commitments from the kept messages in its one call (M64.4); this task
+builds what it writes into and the explicit path (the tool's `add`).
+
+**Tests changed, none added** (the owner's standing rule): the menu
+test's count (23) and its list of doors.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Not run live: the door's keeping, the tool, a reminder's
+delivery, Telegram's message id with buttons. A reminder offered from a
+chat turn doesn't wait for quiet hours (the owner is there).
+
+### 2026-10-21 — M64.3: patterns, offered as scheduled tasks (Claude, Opus 5.5)
+
+M64's task 3, in the `autopilot` worktree.
+
+**What changed.**
+- `proactive/patterns.rs` (new): `words`, `similarity` (Jaccard),
+  `candidates` (the owner's kept messages from 28 days plus their one-off
+  tasks, greedy clusters, 3 texts on 3 days within 90 minutes of the
+  median time; daily, weekdays or one weekday; minus what an owner's
+  recurring task covers, the Never list and what was offered in 30
+  days), `Pattern` (key, cron, the owner's latest wording as the prompt,
+  `action`, a template `question`).
+- `proactive::offer`: the one way an item reaches the owner, by level
+  (noticed / asked with Do it, Not now, Never / done with a receipt and
+  Undo when built on the owner's words); `offer_reminder` uses it.
+- `/proactive patterns`: up to three candidates offered now, always
+  asked.
+- The store reads the kept messages and items since a time again.
+- Docs: `m64-proactive.md` ("Built: M64.3"), the roadmap.
+
+**Cheap by construction.** Counting only; no model call here. The pass
+(M64.4) phrases a candidate in the one call it makes anyway; the
+schedule and prompt stay ferrule's.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Not run live, and the clustering hasn't met real messages: its
+thresholds (0.5, 3 on 3 days, 90 minutes) are guesses to tune. English
+stop words only.
+

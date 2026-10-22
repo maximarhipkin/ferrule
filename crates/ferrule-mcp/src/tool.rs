@@ -173,6 +173,7 @@ pub fn build_tools(client: &Arc<McpClient>, infos: Vec<McpToolInfo>) -> Vec<Arc<
         .filter(|info| cfg.tool_enabled(&info.name))
         .map(|info| {
             let cap = cfg.output_cap(&info.name, usize::MAX);
+            let read_only = info.annotations.read_only && !cfg.write_tools.contains(&info.name);
             Arc::new(McpRemoteTool {
                 cap: (cap != usize::MAX).then_some(cap),
                 client: client.clone(),
@@ -180,7 +181,7 @@ pub fn build_tools(client: &Arc<McpClient>, infos: Vec<McpToolInfo>) -> Vec<Arc<
                 remote_name: info.name,
                 description: info.description,
                 input_schema: hide_properties(info.input_schema, &hidden),
-                read_only: info.annotations.read_only,
+                read_only,
                 timeout,
                 hidden: hidden.clone(),
             }) as Arc<dyn Tool>

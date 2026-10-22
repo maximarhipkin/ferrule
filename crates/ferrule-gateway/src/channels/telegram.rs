@@ -1532,6 +1532,14 @@ impl Channel for TelegramChannel {
             .map(|_| ())
     }
 
+    async fn send_buttons_with_id(
+        &self,
+        msg: OutboundMessage,
+        buttons: &[Button],
+    ) -> Result<Option<String>, GatewayError> {
+        self.deliver_message(&msg, Some(buttons), true).await
+    }
+
     /// `setMessageReaction`: the 👀 receipt (M19b).
     async fn react(
         &self,

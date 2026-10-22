@@ -12,7 +12,40 @@ const BUILT_IN: &str = include_str!("../catalog.toml");
 pub enum AuthKind {
     #[default]
     Oauth,
+    #[serde(alias = "key")]
     ApiKey,
+    /// M63.4: nothing from ferrule (a stdio server that signs in itself).
+    None,
+}
+
+/// M63.4: what a catalog entry adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// A server the vendor hosts, reached at `url`.
+    #[default]
+    Remote,
+    /// A local server from a pinned package, run in the sandbox.
+    Stdio,
+    /// One of ferrule's bundled skills (`skill`).
+    Skill,
+}
+
+/// M63.4: the key a catalog add asks the owner for (`secret_request`)
+/// and where it may be sent. Never taken from the model.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretSpec {
+    /// The `[secrets]` name; a stdio server reads it as this variable.
+    pub name: String,
+    /// The hosts it is bound to.
+    pub hosts: Vec<String>,
+    /// A remote server: the header it goes in, and its value with
+    /// `{key}` where the key goes (`Bearer {key}` when left out).
+    #[serde(default)]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -45,9 +78,48 @@ pub struct Service {
     pub name: String,
     #[serde(default)]
     pub title: String,
+    /// A remote server's address (a native connection's: a label). Empty
+    /// for a stdio server or a skill.
+    #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub auth: AuthKind,
+    /// M63.4: a remote server, a pinned stdio one, or a bundled skill.
+    #[serde(default)]
+    pub kind: Kind,
+    /// M63.4, stdio: the package, pinned exactly (`npm:@scope/name@1.2.3`).
+    #[serde(default)]
+    pub package: Option<String>,
+    /// M63.4, stdio: its arguments, and the ones added when it's read-only.
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub read_only_args: Vec<String>,
+    /// M63.4, stdio: its environment (no keys: `secret` is for that).
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// M63.4: the npm package's integrity as published (`sha512-…`), for
+    /// the record; npx doesn't check it against this.
+    #[serde(default)]
+    pub integrity: Option<String>,
+    /// M63.4: its name in the official MCP Registry. An identity, not a
+    /// vouching: the registry says it does little moderation.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// M63.4: the key a catalog add asks for, and its hosts.
+    #[serde(default)]
+    pub secret: Option<SecretSpec>,
+    /// M63.4: the address used while read-only (the default), when the
+    /// vendor has one.
+    #[serde(default)]
+    pub read_only_url: Option<String>,
+    /// M63.4: tools that change something, whatever their hints say:
+    /// gated as writes.
+    #[serde(default)]
+    pub writes: Vec<String>,
+    /// M63.4, `kind = "skill"`: the bundled skill.
+    #[serde(default)]
+    pub skill: Option<String>,
     #[serde(default)]
     pub client: ClientKind,
     /// `client = "owner"`: `<client_env>_ID` and `<client_env>_SECRET`.
@@ -103,6 +175,11 @@ pub struct Service {
     /// takes a key (Atlassian's API token, next to its sign-in).
     #[serde(default)]
     pub fields: Vec<Field>,
+    /// M63.2: field values the catalog fixes, never asked for and never
+    /// taken from the form (a mail preset's servers): what a native
+    /// connection's credential may be sent to comes from here.
+    #[serde(default)]
+    pub preset: BTreeMap<String, String>,
     /// M37: the Connections page's tile this is an option of (default: its
     /// name), the option's label, and what it covers.
     #[serde(default)]
@@ -211,7 +288,7 @@ impl Service {
         match (self.auth, self.fields.is_empty()) {
             (_, false) => self.fields.clone(),
             (AuthKind::ApiKey, true) => vec![Field::key()],
-            (AuthKind::Oauth, true) => Vec::new(),
+            (AuthKind::Oauth | AuthKind::None, true) => Vec::new(),
         }
     }
 
@@ -241,8 +318,9 @@ impl Service {
     }
 
     pub fn url(&self, write: bool) -> &str {
-        match (&self.write_url, write) {
-            (Some(url), true) => url,
+        match (&self.write_url, &self.read_only_url, write) {
+            (Some(url), _, true) => url,
+            (_, Some(url), false) => url,
             _ => &self.url,
         }
     }
@@ -296,6 +374,17 @@ impl Service {
             title: host.to_string(),
             url: url.to_string(),
             auth: AuthKind::Oauth,
+            kind: Kind::Remote,
+            package: None,
+            args: Vec::new(),
+            read_only_args: Vec::new(),
+            env: BTreeMap::new(),
+            integrity: None,
+            registry: None,
+            secret: None,
+            read_only_url: None,
+            writes: Vec::new(),
+            skill: None,
             client: ClientKind::Dcr,
             client_env: None,
             scopes: Vec::new(),
@@ -316,6 +405,7 @@ impl Service {
             revoke_note: None,
             native: None,
             fields: Vec::new(),
+            preset: BTreeMap::new(),
             tile: None,
             option: None,
             covers: None,
@@ -366,9 +456,20 @@ impl Service {
                 self.name
             );
         }
+        self.check_v2()?;
+        if self.kind != Kind::Remote {
+            return Ok(());
+        }
         let url = url::Url::parse(&self.url).with_context(|| format!("{}: url", self.name))?;
         if url.scheme() != "https" && !is_loopback(&url) {
             bail!("{}: the url must be https", self.name);
+        }
+        if let Some(ro) = &self.read_only_url {
+            let ro =
+                url::Url::parse(ro).with_context(|| format!("{}: read_only_url", self.name))?;
+            if ro.host_str() != url.host_str() {
+                bail!("{}: read_only_url must be on the url's host", self.name);
+            }
         }
         if let Some(n) = &self.native {
             if !crate::native::KINDS.contains(&n.as_str()) {
@@ -380,6 +481,9 @@ impl Service {
             if !seen.insert(f.name.as_str()) {
                 bail!("{}: the field `{}` is there twice", self.name, f.name);
             }
+        }
+        if let Some(k) = self.preset.keys().find(|k| seen.contains(k.as_str())) {
+            bail!("{}: `{k}` is both a preset and a field", self.name);
         }
         match self.auth {
             AuthKind::ApiKey if self.native.is_some() => {}
@@ -404,6 +508,7 @@ impl Service {
                     bail!("{}: header_value needs {{key}}", self.name);
                 }
             }
+            AuthKind::None => {}
             AuthKind::Oauth => {
                 if self.client == ClientKind::Owner
                     && (self.client_env.is_none()
@@ -419,6 +524,110 @@ impl Service {
         }
         Ok(())
     }
+}
+
+impl Service {
+    /// M63.4: what only a catalog v2 entry has, checked: a stdio entry's
+    /// exact pin, a skill entry's skill, a secret's name and hosts.
+    fn check_v2(&self) -> Result<()> {
+        let n = &self.name;
+        match self.kind {
+            Kind::Remote => {}
+            Kind::Stdio => {
+                let pkg = self
+                    .package
+                    .as_deref()
+                    .with_context(|| format!("{n}: a stdio entry needs `package`"))?;
+                pinned(pkg).with_context(|| format!("{n}: package `{pkg}`"))?;
+            }
+            Kind::Skill => {
+                let skill = self.skill.as_deref().unwrap_or_default();
+                if skill.is_empty()
+                    || !skill
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    bail!("{n}: a skill entry names its skill (`skill`)");
+                }
+            }
+        }
+        if let Some(sec) = &self.secret {
+            let good = sec.name.len() >= 2
+                && sec.name.starts_with(|c: char| c.is_ascii_uppercase())
+                && sec
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                && !sec.name.starts_with("FERRULE_");
+            if !good {
+                bail!("{n}: secret name `{}`: capitals, digits and _", sec.name);
+            }
+            if sec.hosts.is_empty()
+                || sec.hosts.iter().any(|h| {
+                    h.contains(['/', ':', ' '])
+                        || !h.contains('.')
+                        || h.starts_with('.')
+                        || h.ends_with('.')
+                })
+            {
+                bail!("{n}: secret hosts are names like api.example.com");
+            }
+            if self.kind == Kind::Remote {
+                let host = url::Url::parse(&self.url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+                if host.is_none_or(|h| !sec.hosts.contains(&h)) {
+                    bail!("{n}: the secret's hosts must include the url's host");
+                }
+                let value = sec.value.as_deref().unwrap_or("Bearer {key}");
+                if !value.contains("{key}") || value.chars().any(char::is_control) {
+                    bail!("{n}: the secret's value needs {{key}}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// M63.4: the header (name, value with `${NAME}`) a catalog add sends,
+    /// or none.
+    pub fn secret_header(&self) -> Option<(String, String)> {
+        let sec = self.secret.as_ref()?;
+        let header = sec.header.clone().unwrap_or_else(|| "Authorization".into());
+        let value = sec
+            .value
+            .clone()
+            .unwrap_or_else(|| "Bearer {key}".into())
+            .replace("{key}", &format!("${{{}}}", sec.name));
+        Some((header, value))
+    }
+}
+
+/// `npm:<name>@<x.y.z>`: one exact version, never a range or a tag.
+fn pinned(pkg: &str) -> Result<()> {
+    let rest = pkg
+        .strip_prefix("npm:")
+        .context("only npm packages (`npm:`) are run")?;
+    let at = rest
+        .rfind('@')
+        .filter(|at| *at > 0)
+        .context("pin an exact version: `npm:name@1.2.3`")?;
+    let (name, version) = (&rest[..at], &rest[at + 1..]);
+    if name.is_empty()
+        || !name.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '@' | '/' | '-' | '_' | '.')
+        })
+    {
+        bail!("`{name}` isn't an npm package name");
+    }
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()))
+    {
+        bail!("`{version}` isn't an exact version like 1.2.3");
+    }
+    Ok(())
 }
 
 /// The field names `template` refers to (`{a}`, `{basic:a:b}`).
@@ -497,8 +706,14 @@ impl Catalog {
         })
     }
 
+    /// The services a connection can be made to (remote ones; M63.4's
+    /// stdio servers and skills are added with `mcp_add`).
     pub fn names(&self) -> Vec<String> {
-        self.services.iter().map(|s| s.name.clone()).collect()
+        self.services
+            .iter()
+            .filter(|s| s.kind == Kind::Remote)
+            .map(|s| s.name.clone())
+            .collect()
     }
 }
 
@@ -520,17 +735,33 @@ mod tests {
                 "atlassian",
                 "attio",
                 "gmail",
+                "icloud_mail",
+                "fastmail_mail",
+                "yahoo_mail",
+                "mail",
+                "icloud_calendar",
+                "fastmail_calendar",
+                "nextcloud_calendar",
+                "caldav",
+                "ics_calendar",
                 "google",
                 "google_oauth",
                 "gmail_mcp",
                 "gdrive_mcp",
+                "gcalendar_mcp",
+                "gdocs_mcp",
+                "gsheets_mcp",
+                "gpeople_mcp",
                 "github",
                 "notion",
                 "linear",
                 "linear_key",
                 "stripe",
                 "huggingface",
-                "sentry"
+                "sentry",
+                "todoist",
+                "google_maps",
+                "mapbox"
             ]
         );
         let gmail = cat.get("gmail_mcp").unwrap();
@@ -553,7 +784,17 @@ mod tests {
         assert_eq!(tile("atlassian"), ["jira", "atlassian_token", "atlassian"]);
         assert_eq!(
             tile("google"),
-            ["gmail", "google", "google_oauth", "gmail_mcp", "gdrive_mcp"]
+            [
+                "gmail",
+                "google",
+                "google_oauth",
+                "gmail_mcp",
+                "gdrive_mcp",
+                "gcalendar_mcp",
+                "gdocs_mcp",
+                "gsheets_mcp",
+                "gpeople_mcp"
+            ]
         );
         let jira = cat.get("jira").unwrap();
         assert_eq!(jira.native.as_deref(), Some("jira"));

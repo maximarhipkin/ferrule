@@ -70,8 +70,10 @@ pub struct TrustConfig {
     /// run that has read content from outside (a web page or search, the
     /// browser, a connected service's read, a fetch from the shell, a
     /// guest's message), a connected service's change, a force push or
-    /// branch deletion, and a DELETE to a bound host still ask. Guarded:
-    /// the bot can't turn it off.
+    /// branch deletion, and a DELETE to a bound host still ask. M64.0: so
+    /// does a POST, PUT or PATCH to a bound host, in every mode (with the
+    /// gates on it is the only thing this adds). Guarded: the bot can't
+    /// turn it off.
     pub untrusted_send_gate: bool,
 }
 

@@ -212,6 +212,11 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "tasks/schedule" | "tasks/model" => task_edit(ctx, path, body),
         "settings/caps" | "mcp/disable" | "mcp/enable" | "mcp/remove" | "skills/disable"
         | "skills/enable" | "hooks/trust" | "hooks/untrust" => settings_op(ctx, path, body).await,
+        // M63.4: an entry of the catalog, in one step.
+        "mcp/catalog" => match extensions_locked() {
+            Some(why) => bad(403, why),
+            None => crate::self_service::catalog::from_page(ctx, body, &by()).await,
+        },
         "eval/estimate" | "eval/start" => eval_op(ctx, path == "eval/start", body).await,
         "eval/cancel" => eval_cancel(ctx, body),
         "notices/dismiss" | "notices/restore" => notices_op(ctx, path, body),
@@ -778,7 +783,12 @@ async fn connections(ctx: &Ctx) -> Answer {
     };
     let relay_live = c.live_relay().await.is_some();
     let mut tiles: Vec<Value> = Vec::new();
-    for svc in c.catalog().services() {
+    for svc in c
+        .catalog()
+        .services()
+        .iter()
+        .filter(|s| s.kind == ferrule_connections::Kind::Remote)
+    {
         let connected = s.connections.iter().any(|x| x.service == svc.name);
         let blocked = c.blocked(svc, relay_live).map(|r| r.text);
         // What the owner may have seen on Google's or Atlassian's page,
@@ -2311,6 +2321,7 @@ fn settings_view(ctx: &Ctx) -> Answer {
         Ok(v) => {
             let mut v = json!(v);
             v["autonomy"] = json!(super::config_page::autonomy(ctx));
+            v["catalog"] = json!(crate::self_service::catalog::listing(ctx));
             ok(v)
         }
         Err(e) => bad(500, format!("{e:#}")),

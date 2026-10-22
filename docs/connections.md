@@ -32,6 +32,10 @@ A few rules hold for every connection:
 | Atlassian's own MCP tools (incl. Compass) | Atlassian → Rovo MCP with an API token | the admin to allow API tokens for Rovo MCP | no |
 | the same, signed in in the browser | Atlassian → Rovo MCP with Atlassian sign-in | the relay, plus the admin to list its domain | **yes** |
 | Gmail: search, read, send | **Google → Gmail with an app password** | 2-Step Verification on the account | no |
+| iCloud, Fastmail or Yahoo mail: search, read, send | **Mail → the provider's tile option** | an app password from the provider | no |
+| any other mailbox over IMAP and SMTP | Mail → Any other mailbox | its servers, and an app password if it has them | no |
+| iCloud, Fastmail, Nextcloud or any CalDAV calendar: read and change events | **Calendar → the provider's option** | an app password | no |
+| a Google calendar (or any published one), read-only, no Cloud project | **Calendar → A calendar's secret address** | the calendar's secret iCal address | no |
 | Drive, Sheets, Docs, Calendar (what you share) | **Google → service account** | a Google Cloud project and a JSON key | no |
 | Drive, Sheets, Docs, Calendar as you (everything you see) | Google → Advanced: your own OAuth app | the relay, plus an OAuth client in Google Cloud | **yes** |
 | Google's own Gmail/Drive MCP servers | Google → Preview | the above, plus preview enrolment | **yes** |
@@ -182,6 +186,96 @@ These are the errors people hit, and what the page tells you for each:
 - "API has not been used": turn the API on.
 - "Your administrator has blocked this app": a Workspace admin must trust
   it, or use a service account.
+
+## Mail from any provider (M63.2)
+
+The **Mail** tile connects a mailbox over IMAP (search, read) and SMTP
+(send, a write that asks you first), the same way as Gmail's app
+password, for any provider:
+
+| option | servers (fixed by the catalog) | the password |
+|---|---|---|
+| iCloud Mail | `imap.mail.me.com:993` (TLS), `smtp.mail.me.com:587` (STARTTLS) | an app-specific password: <https://account.apple.com> → Sign-In and Security → App-Specific Passwords (needs two-factor authentication) |
+| Fastmail | `imap.fastmail.com:993`, `smtp.fastmail.com:465` (TLS) | an app password: Settings → Privacy & Security → Manage app passwords and access (not on the Basic plan) |
+| Yahoo Mail | `imap.mail.yahoo.com:993`, `smtp.mail.yahoo.com:465` (TLS) | an app password: Account Security → Create app password |
+| Any other mailbox | the IMAP and SMTP servers you type, ports 993 and 465 unless you say otherwise | an app password if the provider has them |
+
+- **Encrypted, always.** Ports 143 and 587 use STARTTLS, every other
+  port TLS from the first byte; there is no unencrypted choice. A server
+  that doesn't offer STARTTLS on 143 or 587 is refused with that reason.
+- **Bound to its two servers.** The password is tested by an IMAP login
+  before it's saved, sealed in the connection store like every key on
+  this page, and only ever sent to the IMAP and SMTP hosts it was saved
+  with (a preset's come from the catalog, not from the form).
+- **The tools.** `mail_search` (from, to, subject, text, since, before,
+  unseen, in a mailbox, INBOX by default), `mail_read`, `mail_folders`,
+  and on a connection with "allow changes" `mail_send`. What they read is
+  outside content: a write after it asks you first, even in owner mode
+  (M54.5). Gmail keeps its own tools and Gmail's search syntax.
+- **Outlook.com and Hotmail aren't offered.** Microsoft lists only OAuth2
+  ("Modern Auth") for their IMAP and SMTP, so an app password can't sign
+  in ([Microsoft's settings
+  page](https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040)).
+
+## Calendars over CalDAV, and a secret address (M63.3)
+
+The **Calendar** tile reaches calendars without a Google Cloud project:
+
+| option | address | the password |
+|---|---|---|
+| iCloud Calendar | `https://caldav.icloud.com/` (fixed) | an app-specific password, with your Apple Account email |
+| Fastmail Calendar | `https://caldav.fastmail.com/` (fixed) | an app password with calendar access, with your Fastmail address |
+| Nextcloud | yours, like `https://cloud.example.com/remote.php/dav` | an app password (Settings → Security) |
+| Any other CalDAV server | its CalDAV address (`/.well-known/caldav` is tried) | its password, an app password if it has them |
+| A calendar's secret address | Google Calendar's "Secret address in iCal format", or any `.ics`/`webcal://` address | the address itself is the secret |
+
+- **CalDAV tools.** `calendars_list`; `events_list` (a calendar, from and
+  to dates, a week by default, the server working out repeats); and on a
+  connection with "allow changes" `event_create`, `event_update` and
+  `event_delete`, each a write that asks you first. A start can be a day
+  (all day), a time (that time wherever you are) or a time with its offset
+  (`2026-10-22T09:00+03:00`). Changing or deleting a repeating event changes
+  the whole series.
+- **The secret address is read-only**: `events_list` only, the common
+  repeats (daily, weekly, monthly on a day or a weekday like the third
+  Tuesday, yearly) worked out by ferrule; a rarer rule is shown once, with
+  the rule. The address is a credential (anyone with it reads the
+  calendar), so it's a secret field: sealed, never shown again, hidden from
+  tool results like a password. If it leaks, Reset it in Google Calendar.
+- **Bound to its hosts.** The password or address goes only to the host it
+  was saved with (iCloud also `*.icloud.com`, where its calendars live). A
+  redirect anywhere else is refused, not followed.
+- **What's read is outside content.** An event's title and notes are
+  whoever made it; a write after reading them asks you first (M54.5).
+
+## The catalog: one step to add a vetted server (M63.4)
+
+Some services aren't a sign-in or a key form on this page: a pinned
+local server (Microsoft 365 for an Outlook.com account), a server whose
+key the bot asks you for in a chat, a bundled skill. They're on the
+dashboard's **Extensions** page under **From the catalog**, each with
+**Add**, and the bot can add them for you with `ferrule_admin` `mcp_add`
+and `catalog` (one card to approve; at once in owner mode):
+
+- **Everything comes from the catalog**: the server's address or its
+  pinned package, its arguments, which of its tools are writes, and the
+  key it needs with the sites that key may go to. The bot can't change
+  any of it.
+- **A missing key** is asked for with `secret_request`: you get a link to
+  the Safe with its name and sites filled in, paste the key there, and
+  the server is added the moment it's saved (from the page, Add opens the
+  Safe the same way).
+- **What's added** is started in the sandbox and scanned like any `mcp
+  add`, and marked as from the catalog, so what it reads is outside
+  content and what it changes asks you first.
+
+The entries, each checked against its vendor's docs on 2026-10-21:
+Todoist's hosted server (sign in), Google Maps Grounding Lite and Mapbox
+(a key), Microsoft 365 for a personal account (a pinned package that signs
+in by itself, its sign-in in a hidden folder), Google's Calendar, Docs,
+Sheets and People MCP previews (on the Google tile), and the six bundled
+skills. Why a short curated list and no public plugin hub, and every
+source: `docs/m63-connections-wave-b.md` §4.
 
 ## Any MCP server with a key
 

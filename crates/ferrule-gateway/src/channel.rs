@@ -61,6 +61,26 @@ pub async fn send_with_buttons(
     channel.send(msg).await
 }
 
+/// M64: [`send_with_buttons`], with the id of the message it made when the
+/// channel gives one (a proactive message's 👍/👎 is matched by it).
+pub async fn post_with_buttons(
+    channel: &dyn Channel,
+    mut msg: OutboundMessage,
+    buttons: &[Button],
+) -> Result<Option<String>, GatewayError> {
+    if buttons.is_empty() {
+        return channel.send_with_id(msg).await;
+    }
+    if channel.capabilities().buttons {
+        match channel.send_buttons_with_id(msg.clone(), buttons).await {
+            Ok(id) => return Ok(id),
+            Err(e) => tracing::warn!(error = %e, "buttons were refused; sending them as text"),
+        }
+    }
+    msg.text = buttons_as_text(&msg.text, buttons);
+    channel.send_with_id(msg).await
+}
+
 /// A messaging surface: Telegram, Discord, Slack, a local stdin/loopback
 /// adapter. Implementations must be cheap to clone via `Arc`
 /// (the gateway shares one instance across every session that uses it).
@@ -110,6 +130,16 @@ pub trait Channel: Send + Sync {
         _buttons: &[Button],
     ) -> Result<(), GatewayError> {
         Err(GatewayError::Unsupported("buttons"))
+    }
+
+    /// M64: `send_buttons`, returning the message's id when the channel
+    /// has one. Use [`post_with_buttons`].
+    async fn send_buttons_with_id(
+        &self,
+        msg: OutboundMessage,
+        buttons: &[Button],
+    ) -> Result<Option<String>, GatewayError> {
+        self.send_buttons(msg, buttons).await.map(|()| None)
     }
 
     /// Optional: react to an inbound message (e.g. an emoji ack). Default

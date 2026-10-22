@@ -38,6 +38,7 @@ mod models;
 mod owner_mode;
 mod plan;
 mod plugins_cli;
+mod proactive;
 mod probe;
 mod remote;
 mod screen;
@@ -1994,16 +1995,24 @@ fn hidden_paths(owner: bool) -> Vec<PathBuf> {
         return Vec::new();
     };
     let private = data.join("private");
-    let _ = std::fs::create_dir_all(&private);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
+    // M63.4: made now, so a server's sign-in written there later is
+    // inside something hidden already.
+    let private_mcp = data.join(ferrule_extensions::layout::PRIVATE_MCP);
+    for dir in [&private, &private_mcp] {
+        let _ = std::fs::create_dir_all(dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let mut hidden: Vec<PathBuf> = backup::SECRETS
         .iter()
         // Not `ssh`: known_hosts and the SSH workspaces' anchors, no key in it.
         .filter(|rel| **rel != "ssh")
+        // M63.4: Windows hides a path with a DACL every sandboxed process
+        // shares, so a server would be shut out of its own state there too.
+        .filter(|rel| !(cfg!(windows) && **rel == ferrule_extensions::layout::PRIVATE_MCP))
         .map(|rel| {
             rel.split('/')
                 .fold(data.clone(), |dir, part| dir.join(part))
@@ -3054,6 +3063,13 @@ async fn gateway_factory(
             // default 5 minutes; a scheduled task's run doesn't wait.
             agent.set_cache_ttl(chat_cache_ttl.clone());
         }
+        // M64: the owner's commitments, while proactive is on.
+        if proactive::on() && self_service::offered(&hub, session_id).is_some() {
+            agent.register_tool(Arc::new(proactive::tool::CommitmentsTool::new(
+                hub.clone(),
+                session_id,
+            )));
+        }
         // M48: the owner's own chat can change Ferrule, with the owner's tap;
         // in owner mode, a Telegram group of the owner's too (no cards there).
         if let Some(admin) = &admin {
@@ -3310,6 +3326,10 @@ async fn run_gateway(
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = media::register_poller(&cfg, scheduler, media.clone(), true);
     let scheduler = housekeeping::register(&cfg, scheduler, &workspace, true);
+    // M64: reminders run whether proactive is on or not; the owner's
+    // messages are kept and the tool offered only while it is.
+    let scheduler = proactive::reminder::register(scheduler, hub.clone());
+    proactive::set_on(cfg.proactive.enabled);
     let scheduler = Arc::new(learn::register(
         &cfg,
         scheduler,
@@ -3459,6 +3479,10 @@ async fn run_gateway(
             owner: trust::owner_chat(&cfg),
         }));
     }
+    // M64: last, so what it keeps is a message on its way to the agent.
+    gateway = gateway.with_interceptor(Arc::new(proactive::door::ProactiveDoor {
+        hub: hub.clone(),
+    }));
     gateway = gateway.with_menu(self_service::menu::all(cfg.dashboard.enabled));
     for channel in adapters {
         gateway.add_channel(channel);
@@ -3782,8 +3806,9 @@ fn retirer(lanes: std::sync::Weak<Router>) -> models::Retire {
 fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {
     let paths: Vec<PathBuf> = cfg.paths.iter().map(|p| expand_home(p)).collect();
     let mut roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
-    // M53.3: the learning pass's skills, listed as `learned`.
     if let Ok(data) = config::data_dir() {
+        roots.extend(bundled_skills(cfg, &data));
+        // M53.3: the learning pass's skills, listed as `learned`.
         roots.push(ferrule_skills::SkillRoot {
             dir: data.join(ferrule_learn::skills::DIR),
             scope: ferrule_skills::Scope::Learned,
@@ -3794,6 +3819,26 @@ fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skil
         tracing::debug!(path = %d.path.display(), severity = ?d.severity, "skill: {}", d.message);
     }
     set
+}
+
+/// M63.1: the skills ferrule ships, written from the binary to
+/// `<data>/bundled-skills` first (a failed write is logged, and what is
+/// there is used), or `None` with `[skills] bundled = false`.
+fn bundled_skills(cfg: &config::SkillsConfig, data: &Path) -> Option<ferrule_skills::SkillRoot> {
+    if !cfg.bundled {
+        return None;
+    }
+    let dir = data.join(ferrule_skills::bundled::DIR);
+    if let Err(e) = ferrule_skills::bundled::install(&dir) {
+        tracing::warn!(
+            "bundled skills couldn't be written to {}: {e}",
+            dir.display()
+        );
+    }
+    Some(ferrule_skills::SkillRoot {
+        dir,
+        scope: ferrule_skills::Scope::Bundled,
+    })
 }
 
 fn expand_home(path: &Path) -> PathBuf {
@@ -3852,6 +3897,13 @@ fn skills_cmd(workspace: PathBuf) {
     }
     if set.skills.iter().any(|s| !s.model_invocable) {
         println!("  (hidden = `disable-model-invocation: true`; not in the catalog, no tool can load it)");
+    }
+    if set
+        .skills
+        .iter()
+        .any(|s| s.scope == ferrule_skills::Scope::Bundled)
+    {
+        println!("  (bundled = ships with ferrule, written again at each start; `ferrule skills disable <name>` turns one off, `[skills] bundled = false` all)");
     }
     if !set.diagnostics.is_empty() {
         println!("\n{} note(s):", set.diagnostics.len());

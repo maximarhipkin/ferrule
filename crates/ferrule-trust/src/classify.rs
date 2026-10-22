@@ -20,6 +20,10 @@ pub enum Kind {
     RecursiveDelete,
     ForcePush,
     HttpDelete,
+    /// M64.0: a POST, PUT or PATCH sent to a host with a bound secret (or
+    /// to a host the command line doesn't show). Asked about only once
+    /// the run has read outside content: see [`classify_http_write`].
+    HttpWrite,
     /// M20: a connected service's tool that doesn't say it only reads.
     ConnectedWrite,
     /// M32: a tool that declares every call needs the owner's approval
@@ -33,6 +37,7 @@ impl fmt::Display for Kind {
             Kind::RecursiveDelete => "recursive delete",
             Kind::ForcePush => "force push",
             Kind::HttpDelete => "DELETE request to a host with a bound secret",
+            Kind::HttpWrite => "POST, PUT or PATCH to a host with a bound secret",
             Kind::ConnectedWrite => "change through a connected service",
             Kind::DeclaredApproval => "tool that asks for approval on every call",
         })
@@ -45,7 +50,7 @@ impl Kind {
     pub fn leaves_the_box(self) -> bool {
         matches!(
             self,
-            Kind::ForcePush | Kind::HttpDelete | Kind::ConnectedWrite
+            Kind::ForcePush | Kind::HttpDelete | Kind::HttpWrite | Kind::ConnectedWrite
         )
     }
 }
@@ -241,10 +246,49 @@ pub fn classify_declared(tool: &str, needs_approval: bool) -> Option<Gated> {
 }
 
 pub fn classify_command(command: &str, bound_hosts: &[HostPattern]) -> Option<Gated> {
-    classify_depth(command, bound_hosts, 0)
+    scan(command, 0, &|name, args| match name {
+        "rm" => rm_is_recursive(args).then_some(Kind::RecursiveDelete),
+        "find" => find_deletes(args).then_some(Kind::RecursiveDelete),
+        "rsync" => args
+            .iter()
+            .any(|w| w.starts_with("--delete"))
+            .then_some(Kind::RecursiveDelete),
+        "git" => git(args),
+        _ => request(name, args)
+            .filter(|(method, urls)| method == "DELETE" && reaches(urls, bound_hosts))
+            .map(|_| Kind::HttpDelete),
+    })
 }
 
-fn classify_depth(command: &str, bound: &[HostPattern], depth: usize) -> Option<Gated> {
+/// M64.0: a shell command whose HTTP client sends a POST, PUT or PATCH
+/// (said with `-X`, or implied: curl's `-d`, `--json`, `-F` and `-T`,
+/// wget's `--post-data`, httpie's data items, `gh api` with fields, a
+/// `gh` verb that changes something) to a host a secret is bound to, or
+/// to a host the command line doesn't show. Not a gate by itself: the
+/// guard asks only once the run has read outside content, so the owner's
+/// own API calls (a light turned on, an issue filed) stay untapped.
+pub fn classify_http_write(tool: &str, args: &Value, bound: &[HostPattern]) -> Option<Gated> {
+    if tool != "shell" {
+        return None;
+    }
+    let command = args.get("command")?.as_str()?;
+    scan(command, 0, &|name, args| {
+        request(name, args)
+            .filter(|(method, urls)| {
+                matches!(method.as_str(), "POST" | "PUT" | "PATCH") && reaches(urls, bound)
+            })
+            .map(|_| Kind::HttpWrite)
+    })
+}
+
+/// Each simple command in `command` (and inside `sh -c` and `eval`), its
+/// program's name and its arguments given to `matcher`; the first kind it
+/// names, with that part of the command.
+fn scan(
+    command: &str,
+    depth: usize,
+    matcher: &dyn Fn(&str, &[String]) -> Option<Kind>,
+) -> Option<Gated> {
     if depth > 4 {
         return None;
     }
@@ -264,25 +308,12 @@ fn classify_depth(command: &str, bound: &[HostPattern], depth: usize) -> Option<
             _ => None,
         };
         if let Some(inner) = inner {
-            if let Some(g) = classify_depth(&inner, bound, depth + 1) {
+            if let Some(g) = scan(&inner, depth + 1, matcher) {
                 return Some(g);
             }
             continue;
         }
-        let kind = match name.as_str() {
-            "rm" => rm_is_recursive(&words[1..]).then_some(Kind::RecursiveDelete),
-            "find" => find_deletes(&words[1..]).then_some(Kind::RecursiveDelete),
-            "rsync" => words[1..]
-                .iter()
-                .any(|w| w.starts_with("--delete"))
-                .then_some(Kind::RecursiveDelete),
-            "git" => git(&words[1..]),
-            "curl" | "wget" | "http" | "https" | "xh" | "xhs" | "gh" => {
-                http_delete(&name, &words[1..], bound).then_some(Kind::HttpDelete)
-            }
-            _ => None,
-        };
-        if let Some(kind) = kind {
+        if let Some(kind) = matcher(&name, &words[1..]) {
             return Some(Gated {
                 kind,
                 command: segment.trim().to_string(),
@@ -492,107 +523,392 @@ fn git(args: &[String]) -> Option<Kind> {
     }
 }
 
-/// A DELETE sent by an HTTP client to a host a secret is bound to, or to a
-/// host the command line doesn't show.
-fn http_delete(program: &str, args: &[String], bound: &[HostPattern]) -> bool {
-    let (is_delete, urls) = match program {
-        "curl" => (
-            curl_method(args).is_some_and(|m| m.eq_ignore_ascii_case("delete")),
-            positional_urls(args),
-        ),
-        "wget" => (
-            args.iter().enumerate().any(|(i, a)| {
-                a.eq_ignore_ascii_case("--method=delete")
-                    || (a == "--method"
-                        && args
-                            .get(i + 1)
-                            .is_some_and(|m| m.eq_ignore_ascii_case("delete")))
-            }),
-            positional_urls(args),
-        ),
-        "gh" => {
-            let is_api = args.first().is_some_and(|a| a == "api");
-            let method = args.iter().enumerate().find_map(|(i, a)| match a.as_str() {
-                "-X" | "--method" => args.get(i + 1).cloned(),
-                _ => a
-                    .strip_prefix("--method=")
-                    .or_else(|| a.strip_prefix("-X"))
-                    .filter(|m| !m.is_empty())
-                    .map(str::to_string),
-            });
-            let host = args
-                .iter()
-                .position(|a| a == "--hostname")
-                .and_then(|i| args.get(i + 1).cloned())
-                .unwrap_or_else(|| "api.github.com".into());
-            (
-                is_api && method.is_some_and(|m| m.eq_ignore_ascii_case("delete")),
-                vec![format!("https://{host}/")],
-            )
-        }
-        // httpie and xh: `http [flags] DELETE url`.
-        _ => {
-            let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
-            match pos.first() {
-                Some(m) if m.eq_ignore_ascii_case("delete") => (
-                    true,
-                    pos.get(1).map(|u| vec![u.to_string()]).unwrap_or_default(),
-                ),
-                _ => (false, Vec::new()),
-            }
-        }
-    };
-    if !is_delete {
-        return false;
-    }
-    let hosts: Vec<Option<String>> = urls.iter().map(|u| host_of(u)).collect();
-    // No URL, or one whose host is a variable: can't tell, so ask.
-    hosts.is_empty()
-        || hosts.iter().any(|h| match h {
+/// Whether a request to `urls` may reach a host a secret is bound to: one
+/// of them is, or none was found, or one's host can't be told (a variable
+/// in it). The last two can't be told apart from a bound one, so they ask.
+fn reaches(urls: &[String], bound: &[HostPattern]) -> bool {
+    urls.is_empty()
+        || urls.iter().any(|u| match host_of(u) {
             None => true,
-            Some(h) => bound.iter().any(|p| p.matches(h)),
+            Some(h) => bound.iter().any(|p| p.matches(&h)),
         })
 }
 
-fn curl_method(args: &[String]) -> Option<String> {
-    for (i, a) in args.iter().enumerate() {
-        if a == "--request" || a == "-X" {
-            return args.get(i + 1).cloned();
+/// What an HTTP client's command line sends: its method, upper-cased, and
+/// the URLs it names. `None`: not an HTTP client this reads, or a `gh`
+/// command that only reads.
+fn request(program: &str, args: &[String]) -> Option<(String, Vec<String>)> {
+    match program {
+        "curl" => Some(curl(args)),
+        "wget" => Some(wget(args)),
+        "gh" => gh(args),
+        "http" | "https" | "xh" | "xhs" => Some(httpie(args)),
+        _ => None,
+    }
+}
+
+/// A command line read the getopt way: `--name value`, `--name=value`,
+/// `-x value`, `-xvalue` and clusters (`-sX POST`), where `long` and
+/// `short` list the options that take a value. `seen` gets each option's
+/// name (a long one without its `--`, a short one as its letter) and its
+/// value; the words that aren't options or their values are returned.
+fn options<'a>(
+    args: &'a [String],
+    long: &[&str],
+    short: &str,
+    mut seen: impl FnMut(&str, Option<&'a str>),
+) -> Vec<&'a String> {
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        i += 1;
+        if a == "--" {
+            rest.extend(&args[i..]);
+            break;
         }
-        if let Some(m) = a.strip_prefix("--request=") {
-            return Some(m.to_string());
-        }
-        if a.starts_with('-') && !a.starts_with("--") {
-            if let Some(at) = a.find('X') {
-                let rest = &a[at + 1..];
-                return if rest.is_empty() {
-                    args.get(i + 1).cloned()
-                } else {
-                    Some(rest.to_string())
-                };
+        if let Some(name) = a.strip_prefix("--") {
+            match name.split_once('=') {
+                Some((n, v)) => seen(n, Some(v)),
+                None if long.contains(&name) => {
+                    seen(name, args.get(i).map(String::as_str));
+                    i += 1;
+                }
+                None => seen(name, None),
             }
+        } else if a.len() > 1 && a.starts_with('-') {
+            for (at, c) in a.char_indices().skip(1) {
+                let mut buf = [0u8; 4];
+                let letter = c.encode_utf8(&mut buf);
+                if short.contains(c) {
+                    let tail = &a[at + c.len_utf8()..];
+                    if tail.is_empty() {
+                        seen(letter, args.get(i).map(String::as_str));
+                        i += 1;
+                    } else {
+                        seen(letter, Some(tail));
+                    }
+                    break;
+                }
+                seen(letter, None);
+            }
+        } else {
+            rest.push(a);
         }
     }
-    None
+    rest
 }
 
-/// Arguments that look like URLs: with a scheme, or a dotted host name.
-fn positional_urls(args: &[String]) -> Vec<String> {
-    args.iter()
-        .filter(|a| !a.starts_with('-'))
-        .filter(|a| {
-            a.contains("://")
-                || a.starts_with('$')
-                || a.starts_with("localhost")
-                || a.split(['/', ':']).next().is_some_and(|h| {
-                    h.contains('.')
-                        && h.chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-                        && h.chars().any(|c| c.is_ascii_alphabetic())
-                })
-        })
+/// curl: `-X` names the method; else `-I` is a HEAD, `-G` a GET, `-T` a
+/// PUT and a body (`-d`, `--data…`, `--json`, `-F`, `--form…`) a POST.
+fn curl(args: &[String]) -> (String, Vec<String>) {
+    const LONG: &[&str] = &[
+        "request",
+        "data",
+        "data-raw",
+        "data-binary",
+        "data-ascii",
+        "data-urlencode",
+        "json",
+        "form",
+        "form-string",
+        "header",
+        "proxy-header",
+        "output",
+        "output-dir",
+        "user",
+        "user-agent",
+        "referer",
+        "cookie",
+        "cookie-jar",
+        "proxy",
+        "proxy-user",
+        "preproxy",
+        "upload-file",
+        "write-out",
+        "max-time",
+        "connect-timeout",
+        "config",
+        "resolve",
+        "connect-to",
+        "cacert",
+        "capath",
+        "cert",
+        "key",
+        "pass",
+        "range",
+        "retry",
+        "retry-delay",
+        "retry-max-time",
+        "url",
+        "oauth2-bearer",
+        "unix-socket",
+        "abstract-unix-socket",
+        "dump-header",
+        "trace",
+        "trace-ascii",
+        "stderr",
+        "variable",
+        "aws-sigv4",
+        "limit-rate",
+        "max-filesize",
+        "max-redirs",
+        "interface",
+        "noproxy",
+        "proto",
+        "proto-redir",
+        "request-target",
+        "time-cond",
+        "continue-at",
+        "quote",
+        "speed-limit",
+        "speed-time",
+        "netrc-file",
+        "socks4",
+        "socks4a",
+        "socks5",
+        "socks5-hostname",
+    ];
+    const SHORT: &str = "XdFHouAebcxTwmKrzEUQYyCPtD";
+    let (mut method, mut body, mut upload, mut get, mut head) = (None, false, false, false, false);
+    let mut urls = Vec::new();
+    let rest = options(args, LONG, SHORT, |name, value| match name {
+        "X" | "request" => method = value.map(str::to_uppercase),
+        "d" | "data" | "data-raw" | "data-binary" | "data-ascii" | "data-urlencode" | "json"
+        | "F" | "form" | "form-string" => body = true,
+        "T" | "upload-file" => upload = true,
+        "G" | "get" => get = true,
+        "I" | "head" => head = true,
+        "url" => urls.extend(value.map(str::to_string)),
+        _ => {}
+    });
+    urls.extend(rest.into_iter().filter(|a| looks_like_url(a)).cloned());
+    let implied = match () {
+        _ if head => "HEAD",
+        _ if get => "GET",
+        _ if upload => "PUT",
+        _ if body => "POST",
+        _ => "GET",
+    };
+    (method.unwrap_or_else(|| implied.into()), urls)
+}
+
+/// wget: `--method` names it; else `--post-data` or `--post-file` is a
+/// POST.
+fn wget(args: &[String]) -> (String, Vec<String>) {
+    const LONG: &[&str] = &[
+        "method",
+        "post-data",
+        "post-file",
+        "body-data",
+        "body-file",
+        "header",
+        "output-document",
+        "output-file",
+        "append-output",
+        "user-agent",
+        "user",
+        "password",
+        "http-user",
+        "http-password",
+        "directory-prefix",
+        "input-file",
+        "tries",
+        "timeout",
+        "wait",
+        "quota",
+        "level",
+        "domains",
+        "accept",
+        "reject",
+        "include-directories",
+        "exclude-directories",
+        "referer",
+        "load-cookies",
+        "save-cookies",
+        "ca-certificate",
+        "certificate",
+        "private-key",
+        "execute",
+        "base",
+        "config",
+    ];
+    const SHORT: &str = "OoaiPUeTtwQlDARIXB";
+    let (mut method, mut post) = (None, false);
+    let rest = options(args, LONG, SHORT, |name, value| match name {
+        "method" => method = value.map(str::to_uppercase),
+        "post-data" | "post-file" => post = true,
+        _ => {}
+    });
+    let urls = rest
+        .into_iter()
+        .filter(|a| looks_like_url(a))
         .cloned()
-        .collect()
+        .collect();
+    let implied = if post { "POST" } else { "GET" };
+    (method.unwrap_or_else(|| implied.into()), urls)
+}
+
+/// `gh api`: `-X`/`--method` names it, else a field (`-f`, `-F`,
+/// `--input`) makes it a POST; the host is `--hostname`'s, else
+/// api.github.com. Any other `gh` command is a POST to api.github.com when
+/// its verb changes something (`gh issue create`, `gh pr merge`, `gh
+/// release upload`, `gh secret set`…); `None` when it reads.
+fn gh(args: &[String]) -> Option<(String, Vec<String>)> {
+    let to = |host: Option<&str>| vec![format!("https://{}/", host.unwrap_or("api.github.com"))];
+    if args.first().is_some_and(|a| a == "api") {
+        const LONG: &[&str] = &[
+            "method",
+            "field",
+            "raw-field",
+            "input",
+            "hostname",
+            "header",
+            "jq",
+            "template",
+            "cache",
+            "preview",
+        ];
+        let (mut method, mut fields, mut host) = (None, false, None);
+        options(&args[1..], LONG, "XfFHqtp", |name, value| match name {
+            "X" | "method" => method = value.map(str::to_uppercase),
+            "f" | "F" | "field" | "raw-field" | "input" => fields = true,
+            "hostname" => host = value.map(str::to_string),
+            _ => {}
+        });
+        let implied = if fields { "POST" } else { "GET" };
+        return Some((
+            method.unwrap_or_else(|| implied.into()),
+            to(host.as_deref()),
+        ));
+    }
+    const CHANGES: &[&str] = &[
+        "create",
+        "edit",
+        "delete",
+        "delete-asset",
+        "close",
+        "reopen",
+        "merge",
+        "comment",
+        "review",
+        "ready",
+        "lock",
+        "unlock",
+        "transfer",
+        "pin",
+        "unpin",
+        "archive",
+        "unarchive",
+        "rename",
+        "fork",
+        "sync",
+        "upload",
+        "rerun",
+        "cancel",
+        "enable",
+        "disable",
+        "run",
+        "set",
+        "remove",
+        "add",
+        "revert",
+        "update-branch",
+        "develop",
+        "link",
+        "unlink",
+        "copy",
+    ];
+    let verb = args.get(1)?.as_str();
+    (CHANGES.contains(&verb) || verb.starts_with("item-") || verb.starts_with("field-"))
+        .then(|| ("POST".to_string(), to(None)))
+}
+
+/// httpie and xh: `http [flags] [METHOD] URL [ITEM…]`. Without a method, a
+/// data item (`a=b`, `a:=1`, `a@file`) or `--raw` makes it a POST.
+fn httpie(args: &[String]) -> (String, Vec<String>) {
+    const LONG: &[&str] = &[
+        "auth",
+        "auth-type",
+        "output",
+        "session",
+        "session-read-only",
+        "verify",
+        "cert",
+        "cert-key",
+        "cert-key-pass",
+        "ciphers",
+        "ssl",
+        "timeout",
+        "max-redirects",
+        "default-scheme",
+        "format-options",
+        "pretty",
+        "style",
+        "print",
+        "history-print",
+        "boundary",
+        "raw",
+        "proxy",
+        "response-charset",
+        "response-mime",
+    ];
+    let mut raw = false;
+    let rest = options(args, LONG, "aAospP", |name, _| {
+        if name == "raw" {
+            raw = true;
+        }
+    });
+    let (method, rest) = match rest.split_first() {
+        Some((m, more)) if is_method(m) => (Some(m.to_uppercase()), more),
+        _ => (None, &rest[..]),
+    };
+    // `:3000/x` is httpie's short form for localhost.
+    let url = rest.first().map(|u| match u.strip_prefix(':') {
+        Some(port) => format!("localhost:{port}"),
+        None => u.to_string(),
+    });
+    let implied = if raw || rest.iter().skip(1).any(|i| data_item(i)) {
+        "POST"
+    } else {
+        "GET"
+    };
+    (
+        method.unwrap_or_else(|| implied.into()),
+        url.into_iter().collect(),
+    )
+}
+
+fn is_method(word: &str) -> bool {
+    matches!(
+        word.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
+}
+
+/// An httpie request item that is data (`a=b`, `a:=1`, `a@file`, `a=@f`),
+/// not a header (`a:b`) or a query parameter (`a==b`).
+fn data_item(item: &str) -> bool {
+    let Some(at) = item.find([':', '=', '@']) else {
+        return false;
+    };
+    let sep = &item[at..];
+    sep.starts_with(":=")
+        || (sep.starts_with('=') && !sep.starts_with("=="))
+        || sep.starts_with('@')
+}
+
+/// A word that looks like a URL: with a scheme, a variable, `localhost`,
+/// or a dotted host name.
+fn looks_like_url(a: &str) -> bool {
+    a.contains("://")
+        || a.starts_with('$')
+        || a.starts_with("localhost")
+        || a.split(['/', ':']).next().is_some_and(|h| {
+            h.contains('.')
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+                && h.chars().any(|c| c.is_ascii_alphabetic())
+        })
 }
 
 /// A URL's host, `None` when it can't be told (a variable in it).

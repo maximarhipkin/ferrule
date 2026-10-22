@@ -2308,10 +2308,32 @@
           el("div", { class: "grow" }, el("div", { class: "t", text: m.name }), el("div", { class: "d", text: m.origin === "configured" ? "added in the config" : "from " + m.origin })),
           m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now.",
           button("Add one by its address", { kind: "primary", onclick: () => sections.connect.addressPanel() })),
+        // M63.4: vetted servers and the bundled skills, one step each. A key
+        // the entry needs opens the Safe with its name and sites filled in;
+        // the server is added as soon as it's saved.
+        (x.catalog || []).length ? frag(
+          el("h2", { text: "From the catalog" }),
+          el("p", { class: "muted small m0" }, "Servers ferrule vetted, with their address or pinned package, their key's sites and their writes fixed in the catalog."),
+          el("div", { class: "plain-list" }, x.catalog.map((c) => {
+            const add = el("button", { type: "button", class: "primary", text: "Add" });
+            add.onclick = async () => {
+              const r = await act("mcp/catalog", { id: c.id }, add);
+              if (r && r.needs_key && sections.connect) {
+                show("connect", { focus: false });
+                sections.connect.toolKeyPanel({ name: r.needs_key.name, hosts: r.needs_key.hosts });
+              }
+            };
+            return el("div", { class: "item" },
+              el("div", { class: "grow" },
+                el("div", { class: "t" }, c.title, " ", tag(c.kind)),
+                el("div", { class: "d" }, text(c.covers || ""),
+                  c.key ? frag(" ", el("span", { class: "muted small", text: "Key " + c.key.name + ", sent only to " + c.key.hosts.join(", ") + "." })) : null)),
+              c.added ? tag("added", "ok") : add);
+          }))) : null,
         el("h2", { text: "Skills" }),
         !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
           : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
-            el("div", { class: "grow" }, el("div", { class: "t mono", text: s.name }), el("div", { class: "d" }, text(s.description))),
+            el("div", { class: "grow" }, el("div", { class: "t mono" }, s.name, s.scope === "bundled" ? frag(" ", tag("bundled")) : null), el("div", { class: "d" }, text(s.description))),
             switchFor(s.name, s.disabled, "skills/enable", "skills/disable")))) : empty("No skills found", "A skill is a how-to guide your bot reads when it needs it."),
         x.skills_disabled.length ? el("p", { class: "muted small" }, "Disabled in the config: ",
           x.skills_disabled.map((n, i) => frag(i ? " · " : "", n, " ", btn("Enable", "skills/enable", { name: n })))) : null,

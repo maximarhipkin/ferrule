@@ -1506,6 +1506,95 @@ Current State; numbers are claimed there before anything is built.
     M63, the open follow-ups). Requiring green CI on `main` (M55.7) is
     the owner's repository setting, still off.
 
+- **M63, wave B: connections, skills and the catalog** (one commit per
+  task on `autopilot`; the re-audit's Part 2 and Part 3 #3–#6;
+  `docs/m63-connections-wave-b.md`):
+  - **M63.1, the bundled skills pack**: `weather` (Open-Meteo),
+    `news` (RSS and Atom), `hacker-news` (the official API),
+    `exchange-rates` (Frankfurter), `maps` (Nominatim and FOSSGIS OSRM)
+    and `home-assistant` (its REST API, `HA_TOKEN` through
+    `secret_request`), compiled in and written to `<data>/bundled-skills`
+    at each start as the `bundled` scope, after every other skill but the
+    learned ones; on by default, off one by one (`[skills] disabled`) or
+    all (`[skills] bundled = false`); tagged in `ferrule skills` and on
+    the dashboard; no triggers; network only through the sandboxed shell
+    and the proxy. Not run live.
+  - **M63.2, mail from any provider**: the Gmail app-password connection
+    generalised into `native = "mail"` (IMAP search by RFC 3501 criteria
+    in any mailbox, `mail_read`, `mail_folders`, `mail_send` on a write
+    connection; TLS or STARTTLS, never in the clear), Gmail now its
+    flavour with its own syntax and tool names; catalog presets (a new
+    `preset` table) for iCloud Mail, Fastmail and Yahoo Mail on a Mail
+    tile, plus "any other mailbox"; Outlook.com left out (OAuth2 only).
+    Reads are untrusted, sends connected writes. Not run live.
+  - **M63.3, calendars without a Cloud project**: a native CalDAV
+    connection (RFC 6764 discovery, `calendar-query` with server-side
+    `expand`, `event_create`/`event_update`/`event_delete` as gated
+    writes with `If-None-Match`/`If-Match`) with iCloud, Fastmail and
+    Nextcloud presets and any server; and a read-only secret `.ics`
+    address (Google Calendar's "Secret address in iCal format"), sealed
+    and scrubbed as a secret, its common repeats worked out by ferrule.
+    The credential goes only to the saved hosts; redirects elsewhere are
+    refused. A small XML and iCalendar reader, no new dependency. Not run
+    live.
+  - **M63.4, catalog v2 and one-step add**: `catalog.toml` gains `kind`
+    (remote, stdio, skill), exact npm pins, the MCP Registry name, `auth`
+    none, a `secret` block (the key's name and its only hosts),
+    `read_only_url` and `writes`. `ferrule_admin` `mcp_add` with `catalog`
+    (and the Extensions page's Add) takes everything from the entry, asks
+    for a missing key with `secret_request` and adds the server the moment
+    it's saved; a sign-in entry sends its button, a skill is turned on.
+    An added server is marked `catalog` (a connected service for the
+    gate: untrusted reads, gated writes, `write_tools`); a stdio one keeps
+    its state in `<data>/mcp-private`, hidden from commands (not on
+    Windows). New entries: Todoist, Google Maps Grounding Lite, Mapbox,
+    Microsoft 365 (personal, `@softeria/ms-365-mcp-server@0.170.2`),
+    Google's Calendar, Docs, Sheets and People previews, the bundled
+    skills. The trust model (why curated, no public hub) is in the doc.
+    Not run live.
+
+- **M64, a proactive agent** (one commit per task on `autopilot`;
+  `docs/m64-proactive.md`):
+  - **M64.0, the gate before the agent acts on its own**: a POST, PUT or
+    PATCH from the sandboxed shell (curl, wget, httpie, `xh`, `gh api`
+    and `gh`'s changing verbs) to a host with a bound `[secrets]` key, or
+    one the command line doesn't show, leaves the box (`Kind::HttpWrite`,
+    `classify_http_write`): asked about only once the run has read
+    outside content, in ordinary and owner mode alike, refused when
+    unattended, never under a standing grant. What a run read is taken
+    from before the call, so a fetch doesn't taint itself; a guest's
+    message counts as outside content in every mode. M63.1's Home
+    Assistant POSTs are behind it. `docs/m19-trust-cost.md` §6b. Not run
+    live.
+  - **M64.1, the design**: `docs/m64-proactive.md`. What it learns
+    (commitments, open loops, patterns, M56.4's preferences) from the
+    owner's own messages only; commitments extracted in the heartbeat's
+    one call (no tool round trip, no prefix change, any language); a
+    built-in `ferrule-proactive` task every 3 h that skips the model when
+    nothing changed; levels off, suggest (Do it / Not now / Never) and act
+    (reminders and the owner's own tasks, with Undo); quiet hours, a daily
+    message cap, a gap, a dollar cap, a cheaper model; Never and Not-now
+    feedback; the Proactive page, `/proactive`, `/commitments`; owner-only
+    and inside every gate.
+  - **M64.2, commitments and open loops**: `<data>/proactive/
+    proactive.db` (hidden from guests); a last interceptor that keeps the
+    owner's own messages (their private chat and the dashboard's) while
+    proactive is on; a `commitments` tool (list, add, done, snooze, drop;
+    owner sessions only, deferrable) and `/commitments`; a commitment
+    with a due time gets a reminder offered (suggest: Do it / Not now /
+    Never) or made (act: a receipt with Undo); reminders are built-in
+    one-offs (`ferrule-reminder`) delivered as plain text, no model call;
+    loops from the owner's tasks' failed or cut-short runs; delivery that
+    waits and keeps the message id (`Hub::post_in`). Not run live.
+  - **M64.3, patterns**: the owner's kept messages (28 days) and one-off
+    tasks as word sets, clustered by Jaccard ≥ 0.5; 3 texts on 3 days
+    within 90 minutes of a median time make a candidate, scheduled daily,
+    on weekdays or weekly at that time (rounded down to the quarter
+    hour); left out when an owner's task already answers it, it's on the
+    Never list or was offered in 30 days. `proactive::offer`, the one way
+    an item reaches the owner; Do it adds the owner's task (Undo deletes
+    it); `/proactive patterns` offers the candidates now. Not run live.
+
 **Still open from earlier tracks.**
 
 - **M12 part 6**, named long-lived agents, waits on how a chat

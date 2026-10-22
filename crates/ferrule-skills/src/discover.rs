@@ -23,6 +23,10 @@ const MAX_DIRS: usize = 2000;
 pub enum Scope {
     Project,
     User,
+    /// Shipped with ferrule (M63.1, `<data>/bundled-skills`, written from
+    /// the binary): after every project, user and installed skill, so any
+    /// of theirs with the same name wins.
+    Bundled,
     /// Written by the learning pass (M53.3, `<data>/learned-skills`):
     /// searched last, so a project or user skill of the same name wins,
     /// offered through the catalog only, never by a keyword trigger.
@@ -34,6 +38,7 @@ impl Scope {
         match self {
             Scope::Project => "project",
             Scope::User => "user",
+            Scope::Bundled => "bundled",
             Scope::Learned => "learned",
         }
     }

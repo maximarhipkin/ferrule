@@ -46,6 +46,18 @@ pub trait Notifier: Send + Sync {
     ) -> Result<(), String> {
         self.send_to(chat, text).await
     }
+
+    /// M64: `send_choices`, with the new message's id when the channel
+    /// gives one (a proactive message's 👍/👎 is matched by it). By
+    /// default `send_choices`, and no id.
+    async fn post_choices(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+        choices: &[(String, String)],
+    ) -> Result<Option<String>, String> {
+        self.send_choices(chat, text, choices).await.map(|()| None)
+    }
 }
 
 /// Asks a question at a terminal and reads one line; `None` at end of input.
@@ -893,6 +905,26 @@ impl Hub {
                 tracing::warn!("trust: couldn't tell the owner ({e})");
             }
         });
+    }
+
+    /// M64: sends `text` with buttons to `chat` when it is an owner chat,
+    /// else to the primary owner chat, and waits: the chat it went to and
+    /// the message's id, or why it didn't go.
+    pub async fn post_in(
+        &self,
+        chat: Option<&ChatRef>,
+        text: &str,
+        choices: &[(String, String)],
+    ) -> Result<(ChatRef, Option<String>), String> {
+        let n = self
+            .notifier()
+            .ok_or("no chat channel is running to reach the owner on")?;
+        let chat = match chat.filter(|c| self.owners().contains(c)) {
+            Some(c) => c.clone(),
+            None => self.primary().ok_or("no owner chat is set")?,
+        };
+        let id = n.post_choices(&chat, text, choices).await?;
+        Ok((chat, id))
     }
 
     /// The kill switch on. `by`: who (`ferrule stop`, `telegram chat 42`,

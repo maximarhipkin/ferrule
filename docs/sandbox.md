@@ -41,7 +41,10 @@ so the model gets refused either way. The list has three parts:
 1. **Ferrule's secrets.** These are always denied and can't be opened
    from the config: `<data>/private` (the saved keys, the connections
    store, the hooks trust list, dashboard sessions), `<data>/proxy/keys`,
-   `<data>/claude-code` and the Matrix session file (every credential
+   `<data>/claude-code`, `<data>/mcp-private` (the state of MCP servers
+   that keep their own sign-in, M63.4; each such server reaches its own
+   folder there and no other's; not on Windows, where the hiding DACL
+   would shut the server out too) and the Matrix session file (every credential
    path the backup leaves out, except `ssh`: known_hosts and the SSH
    workspaces' local folders hold no key), `<data>/gateway` (channel
    state, which can hold credentials and messages waiting to be sent),
@@ -411,8 +414,8 @@ and for the sub-agents and tasks you start there, except one (M54.5):
 once a run has read outside content (a web page or search, the browser,
 a connected service's mail or messages, a `curl` from the shell), a
 connected service's change (an email, a message), a force push or
-branch deletion, and a `DELETE` to a host with a bound key ask you
-first. The proxy hands your key to its own host whoever asked, so an
+branch deletion, and a `POST`, `PUT`, `PATCH` or `DELETE` to a host with
+a bound key ask you first (M64.0 added the first three). The proxy hands your key to its own host whoever asked, so an
 injected email could otherwise send mail as you without ever seeing the
 key. A new message starts clean, a shell command offers "Allow for this
 run", and a scheduled task, which has nobody to ask, is refused, unless

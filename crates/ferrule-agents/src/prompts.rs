@@ -102,8 +102,10 @@ task_pause, task_resume, task_delete, task_run_now, channel_restart, config_rest
 package_install, package_remove, update, restart. package_install and package_remove take `packages` (apt names) \
 and run sudo apt-get. mcp_add takes `name` and `command` (a list of words) or `url`, `env` and `headers` \
 (NAME=VALUE), `enabled_tools` and `replace`; it starts the server and scans its tools before adding it. A key goes \
-in a header only as ${NAME} of a key `secrets` lists; for a new key use secret_request. One change per call. Use \
-this rather than asking the owner to type a command. In a turn that has read nothing from outside (no web page, \
+in a header only as ${NAME} of a key `secrets` lists; for a new key use secret_request. mcp_add with `catalog` (an \
+entry of ferrule's vetted catalog, `write` true for changes) takes everything else from the catalog: a missing key \
+is asked for and the server added once it's saved; an unknown name is answered with the list. One change per call. \
+Use this rather than asking the owner to type a command. In a turn that has read nothing from outside (no web page, \
 search, browser, connected service's read or someone else's message), these run at once without a card, and the \
 owner gets a receipt with Undo: task_add, task_schedule, task_pause and task_delete for the owner's own tasks, \
 model_default and model_here to a model that's already connected.";
@@ -133,7 +135,10 @@ package_install, package_remove, update, restart. The answer starts with \"Done:
 package_install and package_remove take `packages` (apt names) and run sudo apt-get. mcp_add takes `name` and \
 `command` (a list of words) or `url`, `env` and `headers` (NAME=VALUE), `enabled_tools` and `replace`; it starts \
 the server and scans its tools before adding it. A key goes in a header only as ${NAME} of a key `secrets` lists; \
-for a new key use secret_request. One change per call. Use this rather than asking the owner to type a command.";
+for a new key use secret_request. mcp_add with `catalog` (an entry of ferrule's vetted catalog, `write` true for \
+changes) takes everything else from the catalog: a missing key is asked for and the server added once it's saved; \
+an unknown name is answered with the list. One change per call. Use this rather than asking the owner to type a \
+command.";
 
 pub const SPAWN_DESCRIPTION: &str = "Start another agent in the background on a task and return its id at once. \
 It runs with the same tools, sandbox and access as you, in its own session.\n\

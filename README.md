@@ -671,7 +671,10 @@ and a dated entry for every session.
   photos, and the images tools return, such as `read_file` on a PNG or a
   browser screenshot).
 - The agent's reach: [`skills.md`](docs/skills.md) (Agent Skills, keyword
-  triggers) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
+  triggers, the bundled ones) ·
+  [`m63-connections-wave-b.md`](docs/m63-connections-wave-b.md) (the
+  bundled skills pack, mail from any provider, CalDAV and secret-address
+  calendars, the vetted catalog and its one-step add) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
   [`m17-mcp-add.md`](docs/m17-mcp-add.md) (add an MCP server without a
   restart) · [`m13-self-extension.md`](docs/m13-self-extension.md) (the
   agent installing vetted extensions itself) ·
@@ -701,6 +704,8 @@ and a dated entry for every session.
   [`instances.md`](docs/instances.md) (several agents on one machine) ·
   [`backup.md`](docs/backup.md) (backup and restore) ·
   [`housekeeping.md`](docs/housekeeping.md) (what the daily pass prunes) ·
+  [`m64-proactive.md`](docs/m64-proactive.md) (a proactive pass, off
+  until you turn it on: commitments, patterns, suggestions with buttons) ·
   [`discord.md`](docs/discord.md) · [`slack.md`](docs/slack.md) ·
   [`m59-channels.md`](docs/m59-channels.md) (personal WhatsApp through
   WAHA, iMessage through BlueBubbles; the risks) ·

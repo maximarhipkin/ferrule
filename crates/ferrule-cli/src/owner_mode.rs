@@ -124,8 +124,8 @@ pub fn openings(cfg: &Config) -> Vec<Opening> {
     if on(cfg) {
         // M54.5: the one gate left, or that it's off too.
         let asks = if cfg.trust.untrusted_send_gate {
-            "only a send, a force-push or a DELETE after it has read outside content asks you \
-             first"
+            "only a send, a force-push, or a POST, PUT, PATCH or DELETE to a host with a bound key, \
+             after it has read outside content, asks you first"
         } else {
             "nothing asks you first, not even a send after it has read outside content ([trust] \
              untrusted_send_gate = false)"
@@ -180,7 +180,8 @@ const GUEST_MEMORY: &str = "guest-memory";
 /// commands and file tools in every mode: [`history`], the owner's
 /// long-term memory (`memory.db` and SQLite's files beside it), the other
 /// chats' memories, the learned skills (the pass keeps some for the
-/// owner's chats), and M61's captures of the owner's screen in
+/// owner's chats), M64's proactive store (the owner's messages and
+/// commitments), and M61's captures of the owner's screen in
 /// `workspace`.
 pub fn guest_hidden(workspace: &Path) -> Vec<PathBuf> {
     let mut hidden = vec![workspace.join(crate::screen::DIR)];
@@ -195,6 +196,7 @@ pub fn guest_hidden(workspace: &Path) -> Vec<PathBuf> {
             "memory.db-shm",
             GUEST_MEMORY,
             "learned-skills",
+            crate::proactive::store::DIR,
         ]
         .map(|rel| data.join(rel)),
     );

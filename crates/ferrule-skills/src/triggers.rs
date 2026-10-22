@@ -170,7 +170,7 @@ impl SkillTriggers {
         let mut found: Vec<(usize, Skill, String)> = set
             .invocable()
             .filter(|s| match s.scope {
-                Scope::User => true,
+                Scope::User | Scope::Bundled => true,
                 Scope::Project => self.opts.project,
                 Scope::Learned => false,
             })

@@ -20,6 +20,8 @@ pub const FORMAT: u32 = 1;
 /// Left out unless `--include-secrets`: keys, sign-ins and credentials.
 pub const SECRETS: &[&str] = &[
     "private",
+    // M63.4: servers that keep their own sign-in (a token cache).
+    "mcp-private",
     "claude-code",
     "ssh",
     "proxy/keys",

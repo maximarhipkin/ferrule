@@ -11,6 +11,7 @@
 //! 3. **Resources** — files the skill bundles, read on demand with
 //!    `read_skill_file`.
 
+pub mod bundled;
 pub mod discover;
 pub mod frontmatter;
 pub mod tool;
