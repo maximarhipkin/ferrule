@@ -2,16 +2,18 @@
 //! interceptors. It records each plain message the owner sends in their
 //! own private chat or the dashboard's chat (with its time, while proactive
 //! is on: the pass extracts commitments from them and counts patterns over
-//! them), and it reads the owner's `/commitments` and the answers the
-//! proactive messages' buttons send (`/proactive do|later|never|useful|
-//! undo <id>`). Everything here is the owner's only.
+//! them), and it reads the owner's `/commitments`, `/proactive` (M64.5:
+//! `status`, `on`, `off`, `level`, `never`, `clear`, `patterns`) and the
+//! answers the proactive messages' buttons send (`/proactive do|later|
+//! never|useful|undo <id>`). Everything here is the owner's only; the chat
+//! model never reaches these settings.
 
 use super::store::{self, Action, Item, Store};
 use super::{audit, reminder, settings, undo_button, when};
 use crate::trust::by_owner;
 use ferrule_gateway::{Button, ButtonAction, InboundMessage};
 use ferrule_trust::Hub;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// How long a suggestion's buttons work.
@@ -22,12 +24,15 @@ const REQUEST_CHARS: usize = 500;
 
 pub struct ProactiveDoor {
     pub hub: Arc<Hub>,
+    /// M64.5: the page's handlers (or the gateway's own context), so
+    /// `/proactive on|off|level` writes the config the way the page does.
+    pub admin: Option<Arc<crate::self_service::Admin>>,
 }
 
 impl ProactiveDoor {
     /// The commands read here.
     #[cfg(test)]
-    pub const HANDLES: &'static [&'static str] = &["commitments"];
+    pub const HANDLES: &'static [&'static str] = &["commitments", "proactive"];
 }
 
 /// `/name` (and `/name@bot`) as the first word, lower-cased.
@@ -79,17 +84,173 @@ impl ProactiveDoor {
 
     async fn proactive(&self, msg: &InboundMessage, args: &[&str]) -> (String, Vec<Button>) {
         if !by_owner(&self.hub, msg) {
-            return plain("Only the owner can answer the proactive agent.");
+            return plain("The proactive agent is the owner's only.");
         }
         match args {
-            [verb @ ("do" | "later" | "never" | "useful" | "undo"), id] => {
-                answer(&self.hub, verb, id).await
-            }
+            [] | ["status"] => status(),
+            ["on"] => self.set(json!({"enabled": true})).await,
+            ["off"] => self.set(json!({"enabled": false})).await,
+            ["level", level] => self.set(json!({"level": level.to_ascii_lowercase()})).await,
+            ["never"] => never_list(),
+            ["never", what] => never(&self.hub, what).await,
+            ["clear"] | ["clear", "all"] => clear(&self.hub, None),
+            ["clear", kind] => clear(&self.hub, Some(kind)),
+            [verb @ ("do" | "later" | "useful" | "undo"), id] => answer(&self.hub, verb, id).await,
             ["patterns"] => patterns(&self.hub, msg).await,
             _ => plain(
-                "`/proactive patterns` offers what you ask for again and again as a scheduled task. The buttons under a proactive message send `/proactive do|later|never|useful|undo <id>`.",
+                "Usage: `/proactive [status]`, `/proactive on|off`, `/proactive level off|suggest|act`, `/proactive never [<kind> or <id>]`, `/proactive clear [<kind>|all]`, `/proactive patterns`. The buttons under a proactive message send `/proactive do|later|never|useful|undo <id>`.",
             ),
         }
+    }
+
+    /// `[proactive]` changed through the page's own handler (checked with
+    /// the real loader, guarded, the file kept as a version), then the
+    /// pass's task made to match. The owner typed it, so it's confirmed.
+    async fn set(&self, mut body: Value) -> (String, Vec<Button>) {
+        let Some(ctx) = self.admin.as_ref().and_then(|a| a.ctx()) else {
+            return plain("Not changed: the settings can't be written from this process.");
+        };
+        body["confirm"] = json!(true);
+        let by = "the owner (/proactive)";
+        match crate::dashboard::api::act(ctx, "proactive/settings", &body, by).await {
+            Some((200, v)) => plain(v["said"].as_str().unwrap_or("Saved.").to_string()),
+            Some((_, v)) => plain(format!(
+                "Not changed: {}",
+                v["error"].as_str().unwrap_or("it failed")
+            )),
+            None => plain("Not changed: the settings aren't available here."),
+        }
+    }
+}
+
+/// `/proactive status`.
+fn status() -> (String, Vec<Button>) {
+    let (cfg, tz) = match settings() {
+        Ok(s) => s,
+        Err(e) => return plain(format!("The settings can't be read: {e:#}")),
+    };
+    match Store::open_default().and_then(|s| super::status::read(&cfg, tz, &s)) {
+        Ok(st) => plain(st.words(tz)),
+        Err(e) => plain(format!("The proactive store can't be read: {e:#}")),
+    }
+}
+
+/// Whether `kind` is something the Never list can hold.
+pub fn known_kind(kind: &str) -> bool {
+    matches!(kind, "reminder" | "loop" | "calendar" | "mail" | "note")
+        || kind
+            .strip_prefix("pattern:")
+            .is_some_and(|k| !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '-'))
+}
+
+/// `/proactive never`: the list, and what's holding off.
+fn never_list() -> (String, Vec<Button>) {
+    let tz = settings().map(|(_, tz)| tz).unwrap_or(chrono_tz::UTC);
+    let read =
+        Store::open_default().and_then(|s| Ok((s.suppressed()?, s.resting_kinds(store::now())?)));
+    let (never, resting) = match read {
+        Ok(r) => r,
+        Err(e) => return plain(format!("The proactive store can't be read: {e:#}")),
+    };
+    let mut lines = Vec::new();
+    if never.is_empty() {
+        lines.push("The Never list is empty.".to_string());
+    } else {
+        lines.push("Never (`/proactive clear <kind>` brings one back, `/proactive clear all` all of them):".into());
+        lines.extend(
+            never.iter().map(|(k, at)| {
+                format!("- {} (`{k}`), since {}", kind_words(k), super::day(*at, tz))
+            }),
+        );
+    }
+    if !resting.is_empty() {
+        lines.push("Holding off after Not now or 👎:".into());
+        lines.extend(
+            resting.iter().map(|(k, until)| {
+                format!("- {} (`{k}`) until {}", kind_words(k), when(*until, tz))
+            }),
+        );
+    }
+    lines.push("Add one: `/proactive never reminder|loop|calendar|mail|note`, `pattern:<key>`, or a message's id.".into());
+    plain(lines.join("\n"))
+}
+
+/// `/proactive never <id or kind>`: an item's id answers it with Never (its
+/// kind goes on the list); a kind goes on the list by itself.
+async fn never(hub: &Hub, what: &str) -> (String, Vec<Button>) {
+    let store = match Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return plain(format!("Not done: the proactive store: {e:#}")),
+    };
+    if matches!(store.item(what), Ok(Some(_))) {
+        return answer(hub, "never", what).await;
+    }
+    let kind = what.to_ascii_lowercase();
+    if !known_kind(&kind) {
+        return plain(format!(
+            "`{what}` isn't a proactive message's id or a kind: reminder, loop, calendar, mail, note or pattern:<key>."
+        ));
+    }
+    if let Err(e) = store.suppress(&kind, None) {
+        return plain(format!("Not done: the proactive store: {e:#}"));
+    }
+    audit(hub, "suppressed", json!({"kind": kind, "by": "command"}));
+    plain(format!(
+        "OK: no more {}. `/proactive clear {kind}` brings them back.",
+        kind_words(&kind)
+    ))
+}
+
+/// Takes `kind` (or, with `None`, everything) off the Never list: what
+/// happened, in words. The page's Clear and `/proactive clear` both.
+pub fn clear_never(
+    hub: Option<&Hub>,
+    store: &Store,
+    kind: Option<&str>,
+    by: &str,
+) -> anyhow::Result<String> {
+    let said = match kind {
+        None => match store.clear_suppressed()? {
+            0 => return Ok("The Never list was empty already.".into()),
+            n => format!("Cleared the Never list ({n} kind(s)); they can come again."),
+        },
+        Some(k) => {
+            if !store.unsuppress(k)? {
+                return Ok(format!("`{k}` isn't on the Never list."));
+            }
+            format!("{} can come again.", capital(&kind_words(k)))
+        }
+    };
+    if let Some(hub) = hub {
+        audit(
+            hub,
+            "cleared",
+            json!({"kind": kind.unwrap_or("all"), "by": by}),
+        );
+    }
+    Ok(said)
+}
+
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// `/proactive clear [kind|all]`.
+fn clear(hub: &Hub, kind: Option<&str>) -> (String, Vec<Button>) {
+    let kind = kind.map(str::to_ascii_lowercase);
+    match Store::open_default().and_then(|s| {
+        clear_never(
+            Some(hub),
+            &s,
+            kind.as_deref(),
+            "the owner (/proactive clear)",
+        )
+    }) {
+        Ok(said) => plain(said),
+        Err(e) => plain(format!("Not done: the proactive store: {e:#}")),
     }
 }
 
@@ -260,7 +421,13 @@ async fn answer(hub: &Hub, verb: &str, id: &str) -> (String, Vec<Button>) {
         );
     };
     match verb {
-        "do" | "later" | "never" if item.outcome.as_deref().is_some_and(|o| o != "useful") => {
+        // A thumb or Useful is feedback, not an answer.
+        "do" | "later" | "never"
+            if item
+                .outcome
+                .as_deref()
+                .is_some_and(|o| !matches!(o, "useful" | "up" | "down")) =>
+        {
             plain(format!(
                 "That one was answered already ({}).",
                 item.outcome
@@ -294,7 +461,17 @@ async fn answer(hub: &Hub, verb: &str, id: &str) -> (String, Vec<Button>) {
         },
         "later" => {
             answered("not_now");
-            plain("OK, not now.")
+            // M64.5: Not now backs the kind off (§7).
+            let _ = store.add_feedback(&item, "not_now");
+            let tz = settings().map(|(_, tz)| tz).unwrap_or(chrono_tz::UTC);
+            match store.resting(&item.kind, store::now()).ok().flatten() {
+                Some(until) => plain(format!(
+                    "OK, not now: no more {} until {}.",
+                    kind_words(&item.kind),
+                    when(until, tz)
+                )),
+                None => plain("OK, not now."),
+            }
         }
         "never" => {
             answered("never");
@@ -313,6 +490,8 @@ async fn answer(hub: &Hub, verb: &str, id: &str) -> (String, Vec<Button>) {
         }
         "useful" => {
             answered("useful");
+            // M64.5: Useful ends a back-off of its kind.
+            let _ = store.add_feedback(&item, "useful");
             plain("Thanks, noted.")
         }
         _ => undo(hub, &store, &item, by),

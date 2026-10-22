@@ -62,6 +62,27 @@ pub fn register(cfg: &Config, scheduler: Scheduler, hub: Arc<Hub>, ensure: bool)
     scheduler.with_builtin(TASK, Arc::new(Job { hub }))
 }
 
+/// M64.5: after `[proactive]` changed (the page, `/proactive on|off`):
+/// this process's switch, and the task made to match at once, so turning
+/// it on or off needs no restart. Where the pass stands now, in words.
+pub fn apply(cfg: &Config) -> Result<String> {
+    super::set_on(cfg.proactive.enabled);
+    let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+    ensure_builtin(&store, TASK, spec(cfg).as_ref(), Utc::now())
+        .map_err(|e| anyhow!("the pass's task couldn't be made to match: {e}"))?;
+    let tz = cfg.proactive.tz(&cfg.trust.timezone)?;
+    Ok(match super::status::task()? {
+        Some(t) if !t.enabled => {
+            "its task is paused on the Tasks page, so no pass runs until it's resumed".into()
+        }
+        Some(t) => match t.next {
+            Some(next) => format!("the next pass is {}", when(next, tz)),
+            None => "its task has no next run".into(),
+        },
+        None => "no pass is scheduled".into(),
+    })
+}
+
 struct Job {
     hub: Arc<Hub>,
 }
@@ -277,6 +298,12 @@ async fn gather(
         .map(|i| json!({"kind": i.kind, "mode": i.mode, "text": ferrule_gateway::health::clip(&i.text, 160), "outcome": i.outcome, "at": iso(i.at)}))
         .collect();
     let never: Vec<String> = store.suppressed()?.into_iter().map(|(k, _)| k).collect();
+    // M64.5: kinds waiting after Not now or 👎.
+    let resting: Vec<String> = store
+        .resting_kinds(now.timestamp())?
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
     let tasks = owner_tasks(hub)?;
     let empty = new_requests.is_empty()
         && open.is_empty()
@@ -304,6 +331,7 @@ async fn gather(
         "owner_tasks": tasks,
         "recent_items": recent,
         "never": never,
+        "resting": resting,
         "calendar": calendar,
         "mail": mail,
     });
@@ -363,7 +391,7 @@ Answer with one JSON object and nothing else:
 Rules:
 - A commitment comes only from the owner's new messages, named by its id: something they said they will do (\"I need to send the deck by Friday\", \"remind me to call the bank\") or left unfinished (kind loop). A question to you or a passing remark is not one. Leave out what is already an open commitment.
 - At most three ideas, the most useful first. For a pattern, the text asks whether to schedule it as offered (\"You ask for the weather most mornings; send it at 08:00 every day?\").
-- Don't repeat an idea from recent_items unless something changed, and respect what the owner waved off (not_now, never) and the kinds in never.
+- Don't repeat an idea from recent_items unless something changed, and respect what the owner waved off (not_now, down, never) and the kinds in never and resting.
 - Every text under 300 characters, in the language the owner writes in.";
 
 #[derive(Debug, Default, Deserialize)]
@@ -498,15 +526,16 @@ pub async fn pass(hub: &Hub) -> Result<String> {
     // What the pass itself sent and the Never list aren't new inputs.
     let mut seen = inputs.json.clone();
     if let Some(o) = seen.as_object_mut() {
-        for key in ["now", "recent_items", "never"] {
+        for key in ["now", "recent_items", "never", "resting"] {
             o.remove(key);
         }
     }
     let digest = format!("{:016x}", ferrule_core::fnv64(seen.to_string().as_bytes()));
     let read = inputs.statuses.join("; ");
     let level = cfg.proactive.level;
-    // At `off` a commitment's reminder is noticed once, when it's noted.
-    let pending = if level == Level::Off {
+    // At `off` a commitment's reminder is noticed once, when it's noted;
+    // after Not now or 👎 on one, reminders wait (M64.5).
+    let pending = if level == Level::Off || store.resting("reminder", now.timestamp())?.is_some() {
         Vec::new()
     } else {
         pending_reminders(&store, &inputs.open, tz)?
@@ -573,6 +602,17 @@ pub async fn pass(hub: &Hub) -> Result<String> {
             ));
         }
     }
+    // M64.5: a kind the owner waved off lately (Not now, 👎) waits.
+    let mut held = 0;
+    let mut kept = Vec::new();
+    for c in candidates {
+        if store.resting(&kind_of(&c), now.timestamp())?.is_some() {
+            held += 1;
+        } else {
+            kept.push(c);
+        }
+    }
+    let candidates = kept;
     let total = candidates.len();
     let mut said = String::from("nothing worth a message");
     let mut delivered = 0;
@@ -601,11 +641,16 @@ pub async fn pass(hub: &Hub) -> Result<String> {
     )?;
     let cost_words = cost.map_or("no prices".to_string(), |c| format!("${c:.4}"));
     let summary = format!(
-        "{} new commitment(s), {} closed; {said}{}; {model}, {cost_words} ({read})",
+        "{} new commitment(s), {} closed; {said}{}{}; {model}, {cost_words} ({read})",
         added.len(),
         closed,
         if left > 0 && level != Level::Off {
             format!("; {left} more for the next pass")
+        } else {
+            String::new()
+        },
+        if held > 0 {
+            format!("; {held} held back after Not now or 👎")
         } else {
             String::new()
         }
@@ -616,9 +661,18 @@ pub async fn pass(hub: &Hub) -> Result<String> {
             "model": model, "cost_usd": cost, "read": read,
             "new_messages": inputs.new_requests.len(), "open": inputs.open.len(),
             "patterns": inputs.patterns.len(), "added": added.len(), "closed": closed,
-            "candidates": total, "sent": delivered, "said": said,
+            "candidates": total, "held": held, "sent": delivered, "said": said,
         }),
     )
+}
+
+/// The kind a candidate goes out as: its Never list and back-off key.
+fn kind_of(c: &Candidate) -> String {
+    match c {
+        Candidate::Reminder(_) => "reminder".into(),
+        Candidate::Item(n, _) => n.kind.clone(),
+        Candidate::Note(..) => "note".into(),
+    }
 }
 
 /// The owner's open commitments with a due time and no reminder yet, that

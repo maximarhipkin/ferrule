@@ -11,10 +11,10 @@ something or do something small, within every gate and cap ferrule
 already has. It is the owner's only, off until the owner turns it on, and
 silent unless it has something worth a message.
 
-Status: designed and built on `autopilot` (2026-10-21), one commit per
-task (M64.0 the gate, M64.1 this design, M64.2 commitments, M64.3
-patterns, M64.4 the heartbeat, M64.5 feedback and the page). Nothing
-here has run against a live bot or model.
+Status: designed and built on `autopilot` (2026-10-21 and 22), one
+commit per task (M64.0 the gate, M64.1 this design, M64.2 commitments,
+M64.3 patterns, M64.4 the heartbeat, M64.5 feedback, `/proactive` and the
+page). Nothing here has run against a live bot or model.
 
 ## What others do
 
@@ -180,8 +180,10 @@ scheduler and the owner's chat. Each pass, in order:
 8. **Audit**: `proactive_pass` (what it read, what it decided, what it
    cost or why it skipped), `proactive_noticed`, `proactive_suggested`,
    `proactive_done`, `proactive_answered`, `proactive_feedback`,
-   `proactive_suppressed`, `proactive_undone`. The model call is a ledger
-   row (`call_kind = "proactive"`), so it counts in every `[trust]` cap.
+   `proactive_suppressed`, `proactive_cleared`, `proactive_undone`,
+   `proactive_settings`, `proactive_said`, `proactive_commitment`. The
+   model call is a ledger row (`call_kind = "proactive"`), so it counts
+   in every `[trust]` cap.
 
 ## 4. Patterns
 
@@ -271,8 +273,10 @@ untrusted-send gate and the caps, exactly as one the owner made.
   pattern's own key (`pattern:weather`), or a kind (`reminder`, `loop`,
   `calendar`, `mail`, `note`). The list is on the page and in
   `/proactive`, each entry clearable.
-- **Not now** (and 👎) slow that kind down: after the n-th in 30 days,
-  the kind waits 2^(n-1) days (at most 16) before it's offered again.
+- **Not now** (and 👎) slow that kind down: after the n-th in 30 days
+  (since the last 👍 or Useful on that kind), the kind waits 2^(n-1) days
+  (at most 16) before the pass offers it again. **👍** and **Useful** end
+  the wait.
 - The pass's prompt shows the last items and their outcomes, so the
   model sees what the owner liked and waved off.
 
@@ -284,8 +288,9 @@ untrusted-send gate and the caps, exactly as one the owner made.
   noticed, suggested and did with each outcome, and the suppression list
   (clear one, clear all). "Run a pass now" asks the scheduler to run it.
 - **`/proactive`**: `status` (the default), `on`, `off`, `level
-  off|suggest|act`, `never` (the list), `clear <kind>|all`; the buttons
-  send `/proactive do|later|never|useful|undo <id>`. The owner only.
+  off|suggest|act`, `never` (the list) or `never <kind or id>` (add one),
+  `clear [<kind>|all]`, `patterns`; the buttons send `/proactive
+  do|later|never|useful|undo <id>`. The owner only.
 - **`/commitments`**: the open ones; `/commitments done|snooze|drop <id>`.
 
 ## 9. Defaults and turning it on
@@ -340,7 +345,14 @@ the door, from the owner, never by the model.
 - Patterns need timestamps, so they count only messages from when
   proactive was turned on, and one-off tasks.
 - 👍/👎 are read on Telegram only (M53.5's limit); the buttons work on
-  every channel with buttons, and as text elsewhere.
+  every channel with buttons, and as text elsewhere. Telegram is asked
+  for reactions when the gateway starts with proactive (or learning) on:
+  turned on later from the page or `/proactive on`, 👍/👎 count from the
+  next restart, and `/proactive status` says so.
+- The page's switch and `/proactive` make the pass's task follow at
+  once; `[proactive]` changed in the Config page's raw editor or in the
+  file is read by each pass, but the task is only added or removed at the
+  next start.
 - Nothing has run live: not against a model, a bot, a calendar or a
   mailbox.
 
@@ -472,6 +484,62 @@ the door, from the owner, never by the model.
 - **Audit**: `proactive_pass` for every pass (skipped and why, what it
   read, the model, the cost, what it sent), plus the item events of §3.
   The last pass is kept in the store (`last_pass`) for the page.
-- Not yet (M64.5): Not now's back-off, 👍/👎, the page, and `/proactive`'s
-  settings.
+
+## Built: M64.5, feedback, `/proactive` and the page
+
+- **The feedback store.** A `feedback` table (item, kind, time, verdict)
+  in `proactive.db`, appended to by Not now (`not_now`), Useful
+  (`useful`) and the owner's 👍/👎 (`up`, `down`). `Store::resting` reads
+  §7's back-off from it (`store::back_off`); an item shows its last
+  thumb beside its outcome. A thumb doesn't overwrite an answer (Do it,
+  Not now, Never, Undo); on an unanswered item it becomes the outcome,
+  and a thumb or Useful never counts as "answered already" for the
+  buttons.
+- **👍/👎** (`proactive/feedback.rs`). One reaction sink for the
+  channels: a reaction on a message a proactive item went out in (its
+  `channel`, `chat` and message id are kept on the item) is the
+  proactive store's; any other goes on to M53.5's learning sink, when
+  learning is on. Only the owner's single 👍 or 👎 counts (both, neither
+  or one taken back: nothing); audited `proactive_feedback` with the
+  kind's new wait. Telegram is asked for reactions when learning or
+  proactive is on at the gateway's start.
+- **The back-off in the pass.** Pending reminders wait while `reminder`
+  rests; every candidate whose kind rests is held back (the run log says
+  how many); the model's input gets `resting` (left out of the digest,
+  like `never`) and the prompt asks it to respect it. `/proactive
+  patterns` and a reminder offered in the chat the owner is typing in
+  aren't held back: the owner asked.
+- **`/proactive`** (the door; `proactive` is in the owner menu, 24
+  commands). `status` (the default): on or off and the level, the
+  interval, zone and quiet hours, the next pass (or that its task is
+  paused), today's messages and spend against `max_messages_per_day`,
+  `min_gap_minutes` and `max_usd_per_day`, the last pass's summary, the
+  Never list, what's holding off and until when, and whether 👍/👎 are
+  read. `on`, `off` and `level off|suggest|act` write `[proactive]`
+  through the page's own handler (`api::act` as "the owner
+  (/proactive)"), so the chat gets the page's checks; the owner typed it,
+  so `act` needs no second yes. `never` lists; `never <id>` answers that
+  item with Never; `never <kind>` (`reminder`, `loop`, `calendar`,
+  `mail`, `note`, `pattern:<key>`) adds the kind. `clear` or `clear all`
+  empties the list, `clear <kind>` takes one off (audited
+  `proactive_cleared`).
+- **The settings write** (`POST /api/proactive/settings`): `enabled`,
+  `level`, `every_hours` (1–24), `quiet_hours`, `max_messages_per_day`
+  (0–50), `min_gap_minutes` (0–1,440), `max_usd_per_day` ($0–100; 0 is no
+  cap of its own). The Config page's path: the `base_hash` of the file
+  the page read (409 when it changed since), the real loader's check
+  (`ProactiveConfig::check` included), the guard, `.prev` and a version
+  in `<data>/config-history/`, `config_saved`, plus `proactive_settings`
+  with each change as `from → to`. Switching to `act` from the page asks
+  first. Then `heartbeat::apply`: this process's switch, and the
+  built-in task added, moved or removed (`ensure_builtin`) at once.
+  No chat op maps to these routes, so the chat model can't reach them.
+- **The Proactive page** (Everyday, a lightbulb): the switch, the level,
+  the last and next pass, today's messages and spend, **Run a pass now**
+  (the Tasks page's `tasks/run` on the built-in task); the settings form;
+  the commitments, open (mark done, snooze a day, drop), snoozed and done
+  lately (`POST /api/proactive/commitment`); the last 30 days of items
+  with their mode, kind, basis, outcome and thumb; the Never list with
+  Clear and Clear all (`POST /api/proactive/clear`, all after a yes) and
+  the kinds holding off. Its words are in `lang-he.js`.
 

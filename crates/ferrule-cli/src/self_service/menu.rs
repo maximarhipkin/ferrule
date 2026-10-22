@@ -115,6 +115,12 @@ pub const COMMANDS: &[Command] = &[
         "the commitments and unfinished things tracked for you (owner)",
     ),
     owner(
+        "proactive",
+        "",
+        "The proactive agent: status, on or off",
+        "the proactive agent: its status, on or off, its level and its Never list (owner)",
+    ),
+    owner(
         "dashboard",
         "",
         "A link to the dashboard",
@@ -159,7 +165,7 @@ mod tests {
             .map(|c| c["command"].as_str().unwrap())
             .collect();
         assert_eq!(in_help, in_menu);
-        assert_eq!(in_menu.len(), 23);
+        assert_eq!(in_menu.len(), 24);
         assert!(in_menu.contains(&"dashboard"), "/dashboard is in the menu");
         assert!(!all(false).iter().any(|c| c.name == "dashboard"));
     }

@@ -20,6 +20,7 @@ pub mod notices;
 #[cfg(test)]
 mod page_tests;
 pub mod panel;
+pub mod proactive_page;
 mod public;
 pub mod runs;
 mod safe;

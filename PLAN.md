@@ -64,8 +64,8 @@ below it is append-only.
   live; each Session Log entry's **Open** says what wasn't.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot`
-  (wave A, task 7): 1891 passed, 0 failed, 28 ignored across 73 test
-  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and
+  (M64.5): 1891 passed, 0 failed, 28 ignored across 73 test binaries
+  (macOS, 2026-10-22). CI runs on Linux, macOS and
   Windows; `release.yml` builds and signs five targets on a `v*` tag.
   Rust stable through rustup, edition 2021. **Branch protection is
   off:** `gh api repos/maximarhipkin/ferrule/branches/main/protection`
@@ -160,13 +160,16 @@ below it is append-only.
   one-step add (`mcp_add` with `catalog`, the Extensions page's Add).
   Built, `make check` green, nothing run live. Design and status:
   `docs/m63-connections-wave-b.md`.
-- **M64, a proactive agent** (2026-10-21, night) on `autopilot`, after
-  wave B, one commit and one Session Log entry per task: M64.0 the HTTP
-  write gate (a POST to a bound host asks after outside content); the
-  design (`docs/m64-proactive.md`); commitments and open loops; pattern
-  suggestions; the heartbeat; feedback, the suppression list and the
-  Proactive page. Owner-only, off by default, every action through the
-  existing gates and caps.
+- **M64, a proactive agent** (2026-10-21, night, to 2026-10-22) on
+  `autopilot`, after wave B, one commit and one Session Log entry per
+  task: M64.0 the HTTP write gate (a POST to a bound host asks after
+  outside content); the design (`docs/m64-proactive.md`); commitments
+  and open loops; pattern suggestions; the heartbeat; feedback (Not now
+  and 👎 back a kind off, 👍 and Useful end it, Never), `/proactive` and
+  the Proactive page. All six built, `make check` green, nothing run
+  live. PR #56 merged M64.0–M64.3 (`main` is its merge, `ea88e4a`);
+  M64.4 and M64.5 wait for the next PR. Owner-only, off by default,
+  every action through the existing gates and caps.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -174,7 +177,8 @@ below it is append-only.
   1. **Nothing has run live**: above all M54 owner mode on Linux and
      M54.4's binding (CI-compiled only), M56.1 steering, M56.5 resume,
      M56.6 buttons, M56.7 Telegram media, M51.4 voice, M53.5 reactions,
-     and all of wave A. The owner's go-ahead is needed (the global "don't
+     all of wave A, and M64 (the proactive pass has never met a model, a
+     bot, a calendar or a mailbox). The owner's go-ahead is needed (the global "don't
      run" rule).
   2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
      M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
@@ -9785,3 +9789,82 @@ are untested), a calendar, a mailbox or a bot. Remote (OAuth MCP)
 calendars and mailboxes aren't read. The model's language follows the
 owner's messages only as the prompt asks.
 
+### 2026-10-22 — M64.5: feedback, `/proactive` and the Proactive page (Claude, Opus 5.5)
+
+M64's last task, in the `autopilot` worktree. `git fetch origin main`
+found one commit `autopilot` lacked, PR #56's merge (`ea88e4a`, whose
+tree is `863613c`'s: PR #56 took M64.0–M64.3); merged signed as
+`a2a22fc`, no file changes, `make check` green (1891 passed, 0 failed,
+28 ignored). PR #56 is merged, so M64.4 and this task need a new PR.
+Touches M53.5's reaction wiring (one combined sink), M52's config page
+(four helpers made `pub(super)`, no behaviour change) and the menu,
+said here.
+
+**What changed.**
+- `proactive/store.rs`: a `feedback` table (item, kind, time, verdict:
+  `not_now`, `down`, `useful`, `up`); `back_off` (the n-th Not now or 👎
+  since the last 👍 or Useful, in 30 days, waits 2^(n-1) days, at most
+  16); `resting`, `resting_kinds`; `item_by_message`; `unsuppress`,
+  `clear_suppressed`; each item reads its last thumb.
+- `proactive/feedback.rs` (new): the channels' one reaction sink. A
+  reaction on a message a proactive item went out in is the proactive
+  store's (the owner's single 👍 or 👎 only; audited
+  `proactive_feedback`); any other goes on to M53.5's learning sink.
+  `main.rs` makes it when `[proactive] enabled` at the start, so
+  Telegram is asked for reactions when learning or proactive is on.
+- `proactive/status.rs` (new): the settings, today's messages and
+  spend against the pass's caps, the last pass, the task and its next
+  run, the Never list and what's resting; `words` for the chat.
+- `heartbeat.rs`: `apply` (this process's switch, `ensure_builtin` at
+  once); pending reminders wait while `reminder` rests; every candidate
+  of a resting kind is held back (counted in the summary); `resting` is
+  an input (left out of the digest) and the prompt asks the model to
+  respect it.
+- `door.rs`: `/proactive` `status` (the default), `on`, `off`, `level`
+  (through the page's handler with `api::act`, "the owner
+  (/proactive)"), `never` (the list, an item's id, or a kind), `clear
+  [kind|all]`, `patterns`, and the buttons. Not now and Useful write
+  feedback; Not now says how long the kind waits; a thumb or Useful
+  isn't "answered already". `proactive` is in the owner menu.
+- `dashboard/proactive_page.rs` (new): `GET /api/proactive`; `POST
+  proactive/settings` (the Config page's `fresh`, `commit`: base hash,
+  loader check, guard, `.prev`, a version; `act` asks first; then
+  `heartbeat::apply`; audited `proactive_settings` with each `from →
+  to`), `proactive/clear` (all after a yes) and
+  `proactive/commitment` (done, dropped, snoozed). No chat op maps to
+  them.
+- `app.js`: the Proactive page (Everyday, after Tasks; a lightbulb from
+  Lucide): the switch and level, the last and next pass, today's
+  messages and spend, Run a pass now (`tasks/run`), the settings form,
+  the commitments, the last 30 days of items with outcome and thumb, the
+  Never list with Clear and Clear all, what's holding off. Its 67 new
+  words are in `lang-he.js`.
+- Docs: `m64-proactive.md` ("Built: M64.5", §3's audit names, §7, §8,
+  §11), `dashboard.md` (the group table, a Proactive paragraph), the
+  roadmap; `learn/thumbs.rs`' comment.
+
+**Choices made while building.** The back-off is read from an
+append-only feedback table, not a counter: a 👍 or Useful resets it
+without losing the history, and a store M64.2–M64.4 made needs no
+migration (a new table, made if missing). A thumb never overwrites an answer
+(Do it, Not now, Never, Undo). The back-off holds back what the pass
+sends by itself, not `/proactive patterns` or a reminder offered in the
+chat the owner is typing in. `/proactive on|off|level` goes through the
+page's handler rather than `edit_config`, so the chat and the page share
+one write path with its version history. Telegram is asked for
+reactions only when proactive (or learning) is on at the start, as
+M53.5 decided for learning; turned on later, 👍/👎 count from the next
+restart, and `status` and the page say so.
+
+**Tests changed, none added** (the owner's standing rule): the menu
+test's count (24); `ProactiveDoor::HANDLES` gains `proactive`.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** Not run live: the sink on a real Telegram reaction, the page
+in a browser, `/proactive` in a chat, the back-off over real days.
+`[proactive]` changed in the Config page's raw editor or the file
+reaches the pass at its next run, but its task only at the next start.
+The page's words for outcomes and modes are the page's; the summaries,
+kinds' words and item texts are the server's, in English.

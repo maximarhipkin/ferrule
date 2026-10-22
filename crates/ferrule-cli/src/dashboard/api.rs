@@ -140,6 +140,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "channels" => super::channels::list(ctx),
             "memory" => super::memory::list(ctx, req).await,
             "backups" => super::backup_page::list(ctx),
+            "proactive" => super::proactive_page::view(ctx),
             _ => None,
         };
     }
@@ -255,6 +256,11 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "gateway/restart" => gateway_restart(ctx, body),
         // The owner's switch (M54 §8): page-only, no chat op maps to it.
         "sandbox/mode" => super::config_page::sandbox_mode(ctx, body),
+        // M64.5: the proactive agent's page; `/proactive on|off|level`
+        // from the owner's chat too. No chat op maps to these.
+        "proactive/settings" => super::proactive_page::settings(ctx, body),
+        "proactive/clear" => super::proactive_page::clear(ctx, body),
+        "proactive/commitment" => super::proactive_page::commitment(ctx, body),
         "update/check" => update_check(ctx, body).await,
         "update/start" => update_start(ctx, body).await,
         _ => None,

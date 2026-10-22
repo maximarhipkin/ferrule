@@ -1606,6 +1606,18 @@ Current State; numbers are claimed there before anything is built.
     goes out); one call to the cheap model otherwise, a JSON decision
     that ferrule checks; one message a pass; `proactive_pass` audited.
     Not run live.
+  - **M64.5, feedback, `/proactive` and the page**: Not now and the
+    owner's 👎 back a kind off 2^(n-1) days (at most 16, counted over 30
+    days), 👍 and Useful end the wait, Never is for good and clearable;
+    👍/👎 on Telegram reach the proactive store through the same reaction
+    sink as M53.5's (a message's id finds its item; the rest goes on to
+    learning). `/proactive` `status`, `on`, `off`, `level`, `never`,
+    `clear`, `patterns` (in the owner menu, 24 commands). The Proactive
+    page: the switch and settings, today's messages and spend against its
+    caps, the last and next pass, Run a pass now, the commitments, the
+    last 30 days of items with outcomes and thumbs, the Never list. A
+    settings write goes the Config page's way (base hash, loader check,
+    guard, version) and the pass's task follows at once. Not run live.
 
 **Still open from earlier tracks.**
 
