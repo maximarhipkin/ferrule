@@ -145,7 +145,14 @@ WRITE_RESTRICTED)`:
 - **Grants**: an inheritable allow ACE (modify rights, no `WRITE_DAC`, no
   `WRITE_OWNER`) for the root's SID, added once. It is idempotent: the
   launcher checks the DACL before writing. It covers the workspace, the
-  temp dirs (`%TEMP%`, `%TMP%`) and `writable_roots`.
+  temp dirs (`%TEMP%`, `%TMP%`) and `writable_roots`. Next to it, the
+  same rights for the user, conditional on Authenticated Users being off
+  (`Not_Member_of {SID(AU)}`), so only sandbox tokens get them. Without
+  that ACE the normal half of the check failed in any root the user
+  writes only through Authenticated Users or Administrators, which are
+  both deny-only in the sandbox token (Administrators through
+  `LUA_TOKEN`). A folder made at the top of `C:\` is one: `C:\` grants
+  Authenticated Users modify and Users only read.
 - **Default DACL** of the token is logon SID `GENERIC_ALL` plus
   OWNER RIGHTS `READ_CONTROL`. The program can open its own objects, and
   one sandboxed tree can't take over another.

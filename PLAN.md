@@ -195,10 +195,12 @@ below it is append-only.
      pass the paste guard, and only Telegram and the dashboard delete.
   7. **DuckDuckGo's parser** has never seen the live page, and keyless
      search has no second fallback.
-  8. **CI hygiene**: branch protection (above); the Windows "workspace
-     write works" flake (run 39632001271) is unexplained, and the
-     self-test now prints the probe's exit code and stderr when it fails
-     (wave A, task 7's entry).
+  8. **CI hygiene**: branch protection (above). The Windows "workspace
+     write works" flake (runs 39632001271, 39738890901) is fixed in the
+     sandbox: roots now grant the user while Authenticated Users is off
+     (2026-10-22 entry). What made the runner's `D:` differ in those two
+     runs is inferred, not shown; on a failure the step now prints
+     `icacls` of the workspace.
 - **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
   session, M55–M58 the gap analysis, **M59 channels** (personal
   WhatsApp and iMessage through bridges the owner runs; built and
@@ -9767,3 +9769,77 @@ macOS and on the same tree on `autopilot`: a flake, not fixed here.
 
 **Open.** The release build (`release.yml`, five targets) runs on the
 tag; nothing here runs the binaries.
+
+### 2026-10-22 — The Windows "workspace write works" flake: roots grant the user too (Claude, Opus 5.5)
+
+Asked from the session that unblocked PR #57 (release 0.14.0) by
+re-running its Windows job. Touches `crates/ferrule-sandbox/src/windows.rs`
+(`grant`), which is **M54's surface**: the smallest change, one function
+and its caller. Also `docs/m26-isolation.md` (the Grants bullet), the CI
+self-test step, and Current State item 8, in place.
+
+**What the failures showed.** Runs 39632001271 and 39738890901 (job
+119691050044): `FAIL workspace write works`, `exit 1: Access is denied.`,
+every other check `ok`. Exit 1 with cmd's own message is a write the
+token refused, not the launcher (which exits 125 and says why). Same
+runner image (`20261007.264.1`) as passing runs; the checks took about
+40 ms each, as when they pass.
+
+**What a probe run showed** (a throwaway branch, `ci.yml` replaced by a
+Windows-only job, dispatched twice; runs 39741671825, 39743427064):
+- UAC is on (`EnableLUA` 1). Inside the sandbox token (`whoami /groups`
+  under the launcher), **Administrators and Authenticated Users are both
+  deny-only**: AU by design (§2.3), Administrators through `LUA_TOKEN`.
+  So the normal half of the write check can use neither.
+- `ferrule sandbox` in 40 fresh dirs each: `$RUNNER_TEMP\wsN` 0/40
+  failed, `C:\wscN` **40/40 failed** with exactly CI's signature (and a
+  second run in the same dir failed too), `%USERPROFILE%\wsuN` 0/40.
+  Same with the whole test suite run first (a second job). So it isn't
+  a race in a run: a root refuses every write when the user can write
+  it only through AU or Administrators. `C:\` grants AU modify; the
+  profile names the user.
+- `D:\a\_temp\ws` was writable only through `BUILTIN\Users:(CI)(WD)` and
+  `(CI)(AD)`, inherited from `D:\`'s root, whose ACL matches a newly
+  formatted volume's default (`D:` is the VM's temp disk, labelled
+  "Temp"). Nothing else on it grants the sandbox token's normal identity
+  a file add.
+- Defender's real-time protection is off and `C:\`, `D:\` are excluded:
+  not AV.
+
+**The cause.** The grant gave each root's capability SID modify rights
+(the restricted half) and relied on the user already having them (the
+normal half). In the sandbox token that half loses everything that comes
+through AU or Administrators. **Inferred, not shown:** the two failing
+VMs' `D:` lacked the `Users` write ACEs (formatted another way), so the
+CI workspace fell into the `C:\` case. Their logs didn't capture the ACL.
+
+**What changed.**
+- `windows.rs` `grant`: two inheritable ACEs per root, each added when
+  the DACL lacks it: the capability SID's (as before) and the user's,
+  same rights, conditional on AU being off
+  (`(XA;OICI;0x1301ff;;;<user>;(Not_Member_of {SID(AU)}))`). Every normal
+  logon token has AU enabled, so only sandbox tokens get it; outside the
+  sandbox nothing changes. Built from SDDL (each ACE parsed and written
+  back, so the check finds it as Windows writes it) instead of
+  `SetEntriesInAclW`, which can't make a conditional ACE. Roots granted
+  before get the user's ACE on their next launch (one more propagation
+  on a big tree, once).
+- CI's "Sandbox self-test": on a failure it prints `icacls .` of the
+  workspace (Windows), so a recurrence says which half refused.
+- `docs/m26-isolation.md`: the Grants bullet says so.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS, which doesn't compile `windows.rs`), clippy clean. On
+the Windows probe run with the change: `ferrule sandbox` 0/40 failed in
+each of `$RUNNER_TEMP`, `C:\` and the profile (`C:\` was 40/40 before);
+`cargo test -p ferrule-sandbox --test windows --test windows_git_bash`
+9 passed (saved keys and denied paths still unreadable, read-only still
+refuses the workspace, writes outside the roots still refused). The PR's
+own CI is the full suite.
+
+**Tests changed, none added** (the owner's standing rule). The probe
+branch `claude/sandbox-flake-probe` is deleted.
+
+**Open.** Whether the failing VMs' `D:` really lacked the `Users` ACEs.
+A `ferrule sandbox` run in a `C:\` folder would guard the fix in CI on
+every run; not added (the no-new-tests rule).
