@@ -30,10 +30,13 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.4** (2026-10-22, PR #64): the owner allows new Telegram
-    groups and people from the chat, with Allow / Ignore buttons. Every
-    crate is at 0.14.4 except `ferrule-plugin-sdk`.
-  - Before it, **v0.14.3** (2026-10-22, PR #62): a system service saves its settings
+  - **v0.14.5** (2026-10-22): releases build with thin LTO and the
+    default codegen units (faster builds, nothing else changes). Every
+    crate is at 0.14.5 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.4** (2026-10-22, PR #64): the owner allows new
+    Telegram groups and people from the chat, with Allow / Ignore
+    buttons.
+  - Before them, **v0.14.3** (2026-10-22, PR #62): a system service saves its settings
     (the config directory is writable to it; an older unit heals itself),
     `update` and the dashboard's Install cover the `claude` CLI, connect any
     MCP URL from the chat, no price warning for plan models.
@@ -10817,3 +10820,26 @@ config change. `v0.14.4` is tagged on `main` after the merge.
 
 **Checks.** `make check` green before the tag; CI on the PR before the
 merge.
+
+### 2026-10-22 — Release 0.14.5: thin LTO for releases (Claude, Sonnet 5.5)
+
+No milestone claimed. On `faster-release-builds`.
+
+**Why.** v0.14.4's five release builds took 7-14 minutes each and the
+release waits for the slowest. The release profile was `lto = "fat"`
+with `codegen-units = 1`, which compiles the final binary on one core.
+
+**What changed.** `[profile.release]` is now `lto = "thin"` with the
+default codegen units (`Cargo.toml`). Every crate goes from 0.14.4 to
+0.14.5 (`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock`, the README
+badge and the `FERRULE_VERSION` examples follow, as in 0.14.4.
+
+**Not done.** Not measured: how much faster the builds get, or how much
+larger or slower the binary is. Compare this release's build times and
+archive sizes with v0.14.4's. `docs/m32-wasm-plugins.md` and
+`docs/m34-ssh-local.md` still say "fat LTO" in the past-tense
+measurements they record; they were left as they were. The release
+workflow has no dependency cache.
+
+**Checks.** `make check` green before the merge (it doesn't build the
+release profile). Merged without waiting for CI, as Max asked.
