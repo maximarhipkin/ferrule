@@ -42,7 +42,11 @@ const WHOLE: &[&str] = &[
 
 /// M56.3: fields inside a [`WHOLE`] section the page and the chat may
 /// change all the same: a switch that runs nothing new and moves no key.
-const OPEN: &[&str] = &["browser.enabled"];
+const OPEN: &[&str] = &["browser.enabled", "plans.claude_code.turn_timeout_minutes"];
+
+/// Whole-number fields the page and the chat keep inside a range: the
+/// key, the least and the most.
+const BOUNDS: &[(&str, i64, i64)] = &[("plans.claude_code.turn_timeout_minutes", 5, 240)];
 
 /// A field the page can't change, by its own name: it names a command,
 /// a path or an environment, loosens a gate, lets someone new in, or
@@ -658,6 +662,15 @@ const FORM: &[Field] = &[
         choices: &[],
         help: "The sub-agents' budget window, in hours",
     },
+    // In `[plans]`, which the page can't change otherwise: a longer limit
+    // runs nothing new. The engine reads it when its driver is built, so
+    // a running gateway keeps the old limit until it restarts.
+    Field {
+        key: "plans.claude_code.turn_timeout_minutes",
+        kind: "int",
+        choices: &[],
+        help: "How long a Claude Code turn may run, in minutes (5–240; after a restart)",
+    },
     Field {
         key: "gateway.telegram_stream",
         kind: "bool",
@@ -1040,15 +1053,29 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
             )
         }
     };
+    if let (Some((_, least, most)), Some(v)) = (
+        BOUNDS.iter().find(|(k, ..)| *k == key),
+        value.as_ref().and_then(toml_edit::Value::as_integer),
+    ) {
+        if !(*least..=*most).contains(&v) {
+            return bad(400, format!("`{key}` takes {least} to {most}"));
+        }
+    }
     let mut new = old.clone();
-    let (section, name) = key.split_once('.').unwrap_or(("", key));
-    let table = new
-        .entry(section)
-        .or_insert_with(toml_edit::table)
-        .as_table_like_mut();
-    let Some(table) = table else {
-        return bad(422, format!("`[{section}]` isn't a table"));
-    };
+    // `plans.claude_code.turn_timeout_minutes` is two tables deep.
+    let (section, name) = key.rsplit_once('.').unwrap_or(("", key));
+    let mut table: &mut dyn toml_edit::TableLike = new.as_table_mut();
+    for seg in section.split('.') {
+        let item = table.entry(seg).or_insert_with(|| {
+            let mut t = toml_edit::Table::new();
+            t.set_implicit(true);
+            Item::Table(t)
+        });
+        let Some(t) = item.as_table_like_mut() else {
+            return bad(422, format!("`[{section}]` isn't a table"));
+        };
+        table = t;
+    }
     match value {
         // Empty: back to the default.
         None => {
@@ -1328,6 +1355,9 @@ mod tests {
             let got = guarded_change(&DocumentMut::new(), &doc(text)).unwrap_or_default();
             assert!(got.starts_with(field), "{text} -> {got}");
         }
+        // The one `[plans]` field the page sets.
+        let timeout = doc("[plans.claude_code]\nturn_timeout_minutes = 60\n");
+        assert_eq!(guarded_change(&DocumentMut::new(), &timeout), None);
     }
 
     #[test]
