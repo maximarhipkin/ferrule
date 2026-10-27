@@ -95,6 +95,9 @@ model = "cheap"
   the tree. When it's spent, each child stops at its next step with an
   answer that says why, and `spawn_agent` refuses. The window is trailing,
   so a gateway chat can keep using agents day after day.
+  `max_tokens` and `budget_window_hours` are also on the Config page, and
+  the owner can change them from a chat through `config_set` (on a card,
+  like every other setting there).
 - **Roles**: `worker` (the default), `planner`, `verifier` and `media`. A
   role without a provider uses the nearest ancestor's role provider, and
   otherwise the root's provider. An unknown role or provider name stops

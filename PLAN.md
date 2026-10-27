@@ -30,10 +30,14 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.6** (2026-10-22, PRs #66 and #67): `watch_video` finds
+  - **v0.14.7** (2026-10-27, PR #68): `[agents] max_tokens` and
+    `budget_window_hours` are Config fields, so the owner can change the
+    sub-agents' budget from the dashboard or a chat (`config_set`, on a
+    card). Every crate is at 0.14.7 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.6** (2026-10-22, PRs #66 and #67): `watch_video` finds
     ffmpeg and ffprobe in `<data>/bin` too, and `[gateway]
     telegram_group_mention_only` lets only an @mention or a reply in from a
-    Telegram group. Every crate is at 0.14.6 except `ferrule-plugin-sdk`.
+    Telegram group.
   - Before it, **v0.14.5** (2026-10-22): releases build with thin LTO and the
     default codegen units (faster builds, nothing else changes).
   - Before it, **v0.14.4** (2026-10-22, PR #64): the owner allows new
@@ -10869,3 +10873,25 @@ the first build. No end-to-end test against a mock Telegram with `getMe`.
 
 **Checks.** CI on the PR (Ubuntu green before the merge); merged on Max's
 go.
+
+### 2026-10-27 — Release 0.14.7: the sub-agents' budget from a chat (Claude, Opus 5.5)
+
+No milestone claimed. On `agents-budget-setting` (PR #68).
+
+**Why.** A long portal job spent the default 2,000,000-token sub-agent
+budget in an hour, and `spawn_agent` refused for the rest of the day. The
+owner runs ferrule only from chat and the dashboard, and `[agents]` wasn't
+on either, so the budget could be raised only by editing `config.toml` on
+the machine.
+
+**What changed.** `agents.max_tokens` and `agents.budget_window_hours` are
+`int` Fields on the Config page, which also makes them `config_get` /
+`config_set` keys. `config_set` asks the owner on a card, as for every other
+field, so an agent still can't raise its own budget alone. `docs/agents.md`
+says so. Every crate goes to 0.14.7 (`ferrule-plugin-sdk` keeps 0.1.0);
+`Cargo.lock`, the README badge and `FERRULE_VERSION` examples follow.
+
+**Not done.** Not built locally (no Rust toolchain on the server); CI is
+the first build.
+
+**Checks.** CI on the PR; merged on Max's go.
