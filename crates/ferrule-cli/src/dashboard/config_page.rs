@@ -644,6 +644,20 @@ const FORM: &[Field] = &[
         choices: &[],
         help: "How long the verify command may run",
     },
+    // The sub-agents' budget. config_set asks the owner on a card like every
+    // other change here, so an agent still can't raise its own budget alone.
+    Field {
+        key: "agents.max_tokens",
+        kind: "int",
+        choices: &[],
+        help: "Tokens all of a chat's sub-agents may use per window",
+    },
+    Field {
+        key: "agents.budget_window_hours",
+        kind: "int",
+        choices: &[],
+        help: "The sub-agents' budget window, in hours",
+    },
     Field {
         key: "gateway.telegram_stream",
         kind: "bool",
