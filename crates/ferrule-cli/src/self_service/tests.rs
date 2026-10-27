@@ -299,6 +299,40 @@ async fn the_tool_writes_the_config_whatever_the_shell_may() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_claude_turn_timeout_is_set_from_a_chat_within_its_range() {
+    // `[plans]` is guarded whole, but its turn timeout runs nothing new:
+    // the owner sets it on a card, two tables deep, between 5 and 240.
+    let rig = Rig::new(long());
+    let key = "plans.claude_code.turn_timeout_minutes";
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": 45}));
+    let card = rig.asked().await;
+    assert!(card.contains(key), "{card}");
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.starts_with("Approved and done:"), "{out}");
+    let text = rig.config_text();
+    assert!(
+        text.contains("[plans.claude_code]\nturn_timeout_minutes = 45"),
+        "{text}"
+    );
+    assert!(!text.contains("[plans]\n"), "{text}");
+    let out = rig
+        .call(json!({"op": "config_get", "key": key}))
+        .await
+        .unwrap();
+    assert_eq!(out, format!("{key} = 45"));
+    for wrong in [2, 241] {
+        rig.told.0.lock().unwrap().clear();
+        let call = rig.start(json!({"op": "config_set", "key": key, "value": wrong}));
+        rig.asked().await;
+        rig.reply("yes");
+        let out = call.await.unwrap().unwrap();
+        assert!(out.contains("takes 5 to 240"), "{wrong}: {out}");
+    }
+    assert!(rig.config_text().contains("turn_timeout_minutes = 45"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_config_read_shows_only_the_form_settings() {
     let rig = Rig::new(long());
     let out = rig

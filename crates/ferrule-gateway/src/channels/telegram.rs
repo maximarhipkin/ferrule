@@ -1179,7 +1179,10 @@ fn addressed_to(m: &Value, id: i64, username: &str) -> bool {
     if m["reply_to_message"]["from"]["id"].as_i64() == Some(id) {
         return true;
     }
-    let text = m["text"].as_str().or_else(|| m["caption"].as_str()).unwrap_or_default();
+    let text = m["text"]
+        .as_str()
+        .or_else(|| m["caption"].as_str())
+        .unwrap_or_default();
     if !username.is_empty() {
         let tag = format!("@{}", username.to_lowercase());
         let lower = text.to_lowercase();
@@ -1187,7 +1190,11 @@ fn addressed_to(m: &Value, id: i64, username: &str) -> bool {
         while let Some(at) = lower[from..].find(&tag) {
             let end = from + at + tag.len();
             // `@bot` but not `@botfriend`.
-            if !lower[end..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            if !lower[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
                 return true;
             }
             from = end;
@@ -1832,11 +1839,17 @@ mod tests {
         assert!(at(json!({"text": "hey @ORIARHBOT."})));
         assert!(at(json!({"text": "/status@oriArhBot"})));
         assert!(at(json!({"caption": "for @oriArhBot"})));
-        assert!(at(json!({"text": "ok", "reply_to_message": {"from": {"id": 42}}})));
-        assert!(at(json!({"text": "you", "entities": [{"type": "text_mention", "user": {"id": 42}}]})));
+        assert!(at(
+            json!({"text": "ok", "reply_to_message": {"from": {"id": 42}}})
+        ));
+        assert!(at(
+            json!({"text": "you", "entities": [{"type": "text_mention", "user": {"id": 42}}]})
+        ));
         assert!(!at(json!({"text": "@KimiArhBot make the video"})));
         assert!(!at(json!({"text": "@oriArhBotx hi"})));
-        assert!(!at(json!({"text": "ok", "reply_to_message": {"from": {"id": 7}}})));
+        assert!(!at(
+            json!({"text": "ok", "reply_to_message": {"from": {"id": 7}}})
+        ));
         assert!(!at(json!({"photo": []})));
     }
 

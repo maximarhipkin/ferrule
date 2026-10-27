@@ -128,6 +128,11 @@ turn_timeout_minutes = 20
 max_output_mb = 16
 ```
 
+`turn_timeout_minutes` is also on the Config page, and the owner can
+change it from a chat through `config_set` (on a card, like every other
+setting there), from 5 to 240 minutes. The engine reads it when ferrule
+starts, so a running gateway keeps the old limit until it restarts.
+
 ### What works on the Claude plan
 
 | ferrule feature | on the Claude plan |

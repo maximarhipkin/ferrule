@@ -3482,7 +3482,9 @@ async fn run_gateway(
         media.as_ref().map(|m| m.store.clone()),
         shared_sandbox(&cfg)
             .ok()
-            .zip(ferrule_gateway::tools::Ffmpeg::find(config::bin_dir().as_deref())),
+            .zip(ferrule_gateway::tools::Ffmpeg::find(
+                config::bin_dir().as_deref(),
+            )),
     ));
     let make_ctx = || dashboard::Ctx {
         live: Some(live.clone()),

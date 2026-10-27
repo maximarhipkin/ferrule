@@ -733,7 +733,10 @@ mod tests {
             name.to_string()
         };
         std::fs::write(dir.path().join(&file), b"").unwrap();
-        assert_eq!(program(name, Some(dir.path())), Some(dir.path().join(&file)));
+        assert_eq!(
+            program(name, Some(dir.path())),
+            Some(dir.path().join(&file))
+        );
         assert_eq!(program(name, None), None);
     }
 }

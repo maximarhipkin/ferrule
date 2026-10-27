@@ -30,10 +30,15 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.7** (2026-10-27, PR #68): `[agents] max_tokens` and
+  - **v0.14.8** (2026-10-27, PR #69): `[plans.claude_code]
+    turn_timeout_minutes` is a Config field (5 to 240), so the owner can
+    change how long a Claude Code turn may run from the dashboard or a chat
+    (`config_set`, on a card); it takes effect after a restart. Every crate
+    is at 0.14.8 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.7** (2026-10-27, PR #68): `[agents] max_tokens` and
     `budget_window_hours` are Config fields, so the owner can change the
     sub-agents' budget from the dashboard or a chat (`config_set`, on a
-    card). Every crate is at 0.14.7 except `ferrule-plugin-sdk`.
+    card).
   - Before it, **v0.14.6** (2026-10-22, PRs #66 and #67): `watch_video` finds
     ffmpeg and ffprobe in `<data>/bin` too, and `[gateway]
     telegram_group_mention_only` lets only an @mention or a reply in from a
@@ -10895,3 +10900,30 @@ says so. Every crate goes to 0.14.7 (`ferrule-plugin-sdk` keeps 0.1.0);
 the first build.
 
 **Checks.** CI on the PR; merged on Max's go.
+
+### 2026-10-27 — Release 0.14.8: the Claude Code turn timeout from a chat (Claude, Opus 5.5)
+
+No milestone claimed. On `plans-turn-timeout-setting` (PR #69).
+
+**Why.** A Claude Code turn is stopped after `turn_timeout_minutes`
+(default 20), and long jobs hit it. `[plans]` is guarded whole on the
+Config page, so the limit could be raised only by editing `config.toml` on
+the machine.
+
+**What changed.** `plans.claude_code.turn_timeout_minutes` is an `int`
+Field on the Config page and in `OPEN`, which makes it a `config_get` /
+`config_set` key; the rest of `[plans]` stays guarded (`binary` still is).
+`config_set` asks the owner on a card. The form and the chat keep it to 5
+to 240 minutes (`BOUNDS`; the loader itself still takes any value, so an
+existing file keeps loading). `config/set` now walks a key two tables deep
+(`[plans.claude_code]`, with `[plans]` left implicit). The default stays
+20. The driver reads the limit when it's built and the gateway keeps its
+drivers, so a running gateway follows a change only after a restart; the
+field's help and `docs/subscriptions.md` say so. `cargo fmt` also tidied
+three files on main. Every crate goes to 0.14.8 (`ferrule-plugin-sdk`
+keeps 0.1.0); `Cargo.lock`, the README badge and `FERRULE_VERSION`
+examples follow.
+
+**Checks.** Built and tested locally for the first time (rustup in
+`tools/rust`, zig as `cc`, as the server has no C compiler): `cargo fmt
+--check` clean, the new tests pass. CI on the PR.
