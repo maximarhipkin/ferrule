@@ -30,11 +30,16 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.8** (2026-10-27, PR #69): `[plans.claude_code]
+  - **v0.14.9** (2026-10-28, PR #70): `[gateway]`'s own switches
+    (`telegram_group_mention_only`, `telegram_stream`, `discord_stream`,
+    `slack_stream`) can be changed on the Config page and with
+    `config_set` again: "gateway" no longer counts as a gate. They take
+    effect after a restart. Every crate is at 0.14.9 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.8** (2026-10-27, PR #69): `[plans.claude_code]
     turn_timeout_minutes` is a Config field (5 to 240), so the owner can
     change how long a Claude Code turn may run from the dashboard or a chat
-    (`config_set`, on a card); it takes effect after a restart. Every crate
-    is at 0.14.8 except `ferrule-plugin-sdk`.
+    (`config_set`, on a card); it takes effect after a restart.
   - Before it, **v0.14.7** (2026-10-27, PR #68): `[agents] max_tokens` and
     `budget_window_hours` are Config fields, so the owner can change the
     sub-agents' budget from the dashboard or a chat (`config_set`, on a
@@ -10927,3 +10932,33 @@ examples follow.
 **Checks.** Built and tested locally for the first time (rustup in
 `tools/rust`, zig as `cc`, as the server has no C compiler): `cargo fmt
 --check` clean, the new tests pass. CI on the PR.
+
+### 2026-10-28 — Release 0.14.9: the gateway isn't a gate (Claude, Opus 5.5)
+
+No milestone claimed. On `gateway-not-a-gate` (PR #70).
+
+**Why.** `guarded_key` refuses a key holding "gate" (M37, for `[trust]
+gates`, `gate_writes` and the like), and `guarded_change` checks every
+dotted segment, so the segment "gateway" refused every `[gateway]` field.
+`telegram_group_mention_only` and the three `*_stream` switches were
+Config fields and `config_set` keys that neither the page nor the chat
+could change; `docs/channels.md` said the first was on the Config page.
+
+**What changed.** The gate rule skips "gateway" (`gate`, `gates`,
+`gate_writes`, `untrusted_send_gate` still match). So that this opens only
+`[gateway]`'s own switches, `channel_key` keeps a channel's table in it
+(`[gateway.email]`, `[gateway.http]`, `[gateway.matrix]` and the rest:
+hosts, ports, accounts, `require_auth_results`, who gets in) and
+`gateway.local` with the Channels page; the allowed lists, URLs and token
+names were and stay guarded by their own names. `config_set` has no list
+of its own: it takes the page's `FORM` keys through the same guard. The
+channels read these switches when they're built, so the four fields' help
+and `docs/channels.md` say a change takes effect after a restart. Every
+crate goes to 0.14.9 (`ferrule-plugin-sdk` keeps 0.1.0); `Cargo.lock`, the
+README badge and `FERRULE_VERSION` examples follow.
+
+**Checks.** Tests: the switches pass the guard; `telegram_allowed_chats`,
+`trust.gates`, `connections.gate_writes`, `gateway.email.imap_host`,
+`gateway.http.port` and `gateway.local` are still refused; from a chat,
+`config_set gateway.telegram_group_mention_only` writes on a yes and
+`telegram_allowed_chats` and `trust.gates` don't. CI on the PR.
