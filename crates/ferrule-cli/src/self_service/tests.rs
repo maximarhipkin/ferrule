@@ -373,6 +373,36 @@ async fn the_telegram_group_switch_is_set_from_a_chat_but_who_gets_in_is_not() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_status_notices_are_turned_off_from_a_chat() {
+    // The busy notice and the stuck-turn message: both on a card, the
+    // watchdog's seconds kept between 0 (off) and a day.
+    let rig = Rig::new(long());
+    for (key, value) in [
+        ("gateway.busy_notices", json!(false)),
+        ("health.watchdog_after_secs", json!(0)),
+    ] {
+        rig.told.0.lock().unwrap().clear();
+        let call = rig.start(json!({"op": "config_set", "key": key, "value": value}));
+        let card = rig.asked().await;
+        assert!(card.contains(key), "{card}");
+        rig.reply("yes");
+        let out = call.await.unwrap().unwrap();
+        assert!(out.starts_with("Approved and done:"), "{key}: {out}");
+    }
+    let text = rig.config_text();
+    assert!(text.contains("busy_notices = false"), "{text}");
+    assert!(text.contains("[health]\nwatchdog_after_secs = 0"), "{text}");
+    rig.told.0.lock().unwrap().clear();
+    let key = "health.watchdog_after_secs";
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": 86_401}));
+    rig.asked().await;
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.contains("takes 0 to 86400"), "{out}");
+    assert!(rig.config_text().contains("watchdog_after_secs = 0"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_config_read_shows_only_the_form_settings() {
     let rig = Rig::new(long());
     let out = rig

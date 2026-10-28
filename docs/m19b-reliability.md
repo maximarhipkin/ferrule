@@ -153,6 +153,13 @@ heartbeat_secs = 60
 poll_stale_secs = 300         # a channel counts as stale after this
 ```
 
+`watchdog_after_secs` is also on the Config page, and the owner can change
+it from a chat through `config_set` (0 to 86400; after a restart). It
+drives the "Stuck on …" message alone: systemd's watchdog pings, the
+heartbeat's "a stuck lane", the dashboard's stuck turns and
+`max_turn_minutes` all keep working at 0, the first on the dispatcher
+and the next two with 600 s in its place.
+
 The unit: `WatchdogSec=120`.
 
 ## Eval stays hermetic

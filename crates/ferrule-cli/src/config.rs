@@ -513,6 +513,10 @@ pub struct GatewayConfig {
     /// your message is queued" (default 30).
     #[serde(default)]
     pub busy_notice_secs: Option<u64>,
+    /// "Busy with … for N; …" to a message sent during a long turn. Unset
+    /// = on; false: the message still reaches the turn, without the notice.
+    #[serde(default)]
+    pub busy_notices: Option<bool>,
     /// M56.1: a message sent while its chat's turn runs reaches that turn
     /// (`"steer"`, the default) or waits for the next (`"queue"`).
     #[serde(default)]
@@ -646,6 +650,11 @@ impl GatewayConfig {
         self.busy_notice_secs
             .map(std::time::Duration::from_secs)
             .unwrap_or(ferrule_gateway::BUSY_NOTICE_AFTER)
+    }
+
+    /// Whether a message sent during a long turn hears it's busy.
+    pub fn busy_notices(&self) -> bool {
+        self.busy_notices.unwrap_or(true)
     }
 }
 
@@ -1737,6 +1746,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # typing = true                             # "typing…" in the chat while a turn runs
 # stop_grace_secs = 20                      # SIGTERM: running turns get this long, then they're stopped
 # busy_notice_secs = 30                     # a turn this old tells a queued message it's busy
+# busy_notices = true                      # false: no "Busy with …" notice at all
 # while_busy = "steer"                      # a message sent mid-turn reaches that turn; "queue": the next
 # cache_ttl = "1h"                          # Anthropic keeps a chat's prompt cache an hour; "5m": its default
 # local = true                              # enable the stdin/stdout channel

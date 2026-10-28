@@ -46,7 +46,10 @@ const OPEN: &[&str] = &["browser.enabled", "plans.claude_code.turn_timeout_minut
 
 /// Whole-number fields the page and the chat keep inside a range: the
 /// key, the least and the most.
-const BOUNDS: &[(&str, i64, i64)] = &[("plans.claude_code.turn_timeout_minutes", 5, 240)];
+const BOUNDS: &[(&str, i64, i64)] = &[
+    ("plans.claude_code.turn_timeout_minutes", 5, 240),
+    ("health.watchdog_after_secs", 0, 86_400),
+];
 
 /// A field the page can't change, by its own name: it names a command,
 /// a path or an environment, loosens a gate, lets someone new in, or
@@ -708,6 +711,20 @@ const FORM: &[Field] = &[
         kind: "bool",
         choices: &[],
         help: "Stream in Slack (after a restart)",
+    },
+    Field {
+        key: "gateway.busy_notices",
+        kind: "bool",
+        choices: &[],
+        help: "Tell a message sent during a long turn that I'm busy (after a restart)",
+    },
+    // The chat notice only: systemd's watchdog and the heartbeat don't
+    // read it (a lane is stuck after 10 min for them when it's 0).
+    Field {
+        key: "health.watchdog_after_secs",
+        kind: "int",
+        choices: &[],
+        help: "A turn with no progress this long: one \"Stuck on …\" message, in seconds (0 = off; after a restart)",
     },
     Field {
         key: "scheduler.tick_interval_secs",
@@ -1386,8 +1403,11 @@ mod tests {
             assert_eq!(got, field, "{text}");
         }
         // The gateway isn't a gate: its own switches are the page's.
-        let switches = doc("[gateway]\ntelegram_group_mention_only = true\ntelegram_stream = false\ndiscord_stream = false\nslack_stream = false\n");
+        let switches = doc("[gateway]\ntelegram_group_mention_only = true\ntelegram_stream = false\ndiscord_stream = false\nslack_stream = false\nbusy_notices = false\n");
         assert_eq!(guarded_change(&DocumentMut::new(), &switches), None);
+        // The stuck-turn message is a notice, not a gate.
+        let watchdog = doc("[health]\nwatchdog_after_secs = 0\n");
+        assert_eq!(guarded_change(&DocumentMut::new(), &watchdog), None);
         // The one `[plans]` field the page sets.
         let timeout = doc("[plans.claude_code]\nturn_timeout_minutes = 60\n");
         assert_eq!(guarded_change(&DocumentMut::new(), &timeout), None);

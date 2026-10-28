@@ -1283,6 +1283,12 @@ turn is about to answer, so it says nothing. The wait, in seconds:
 busy_notice_secs = 30
 ```
 
+`busy_notices = false` in `[gateway]` turns the notice off altogether: the
+message still reaches the running turn (or waits for the next), and the
+chat sees nothing until the answer. It's on the Config page, and the
+owner can change it from a chat through `config_set`; it takes effect
+after a restart.
+
 On Telegram, a shared place or contact reaches the agent as a line of
 text: `[location: 52.52, 13.405]`, `[venue: <name>, <address> (52.52,
 13.405)]`, `[contact: <name>, <phone>]`. A live location is read once, at
