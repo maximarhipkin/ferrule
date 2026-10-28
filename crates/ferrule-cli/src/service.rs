@@ -1082,7 +1082,7 @@ pub fn system_update_unit(spec: &Spec, data: &Path) -> String {
         instance_env(spec),
         env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
         env("FERRULE_DATA_DIR", &data.to_string_lossy()),
-        env("PATH", &spec.path_env),
+        env("PATH", &system_path_env(spec)),
     )
 }
 
@@ -1199,15 +1199,37 @@ pub fn launchd_update_plist(
     )
 }
 
-/// What would stop the system unit from working: `ProtectHome=` hides
-/// /home, /root and /run/user from the service, and a workspace that is a
-/// system directory would be handed to the service's user.
+/// What the system service can't see: `ProtectHome=` hides /home, /root
+/// and /run/user from it.
+pub fn hidden_from_system(p: &Path) -> bool {
+    ["/home", "/root", "/run/user"]
+        .iter()
+        .any(|h| p.starts_with(h))
+}
+
+/// `path` without the directories the system service can't see. The apply
+/// unit runs as root and sees /root, so a `claude` found there (a native
+/// install, `~/.local/bin`) isn't the one the gateway runs, and its updater
+/// can't write there under `ProtectHome=read-only` either.
+pub fn system_path(path: &std::ffi::OsStr) -> std::ffi::OsString {
+    let dirs: Vec<PathBuf> = std::env::split_paths(path)
+        .filter(|d| !hidden_from_system(d))
+        .collect();
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
+/// [`system_path`] for a unit's `PATH=`.
+fn system_path_env(spec: &Spec) -> String {
+    system_path(spec.path_env.as_ref())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// What would stop the system unit from working: [`hidden_from_system`],
+/// and a workspace that is a system directory would be handed to the
+/// service's user.
 pub fn system_problems(spec: &Spec, data: &Path) -> Vec<String> {
-    let hidden = |p: &Path| {
-        ["/home", "/root", "/run/user"]
-            .iter()
-            .any(|h| p.starts_with(h))
-    };
+    let hidden = hidden_from_system;
     let mut problems = Vec::new();
     for (what, path) in [
         ("the ferrule binary", spec.exe.as_path()),
@@ -1335,7 +1357,7 @@ pub fn system_unit(spec: &Spec, data: &Path) -> String {
         instance_env(spec),
         env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
         env("FERRULE_DATA_DIR", &data.to_string_lossy()),
-        env("PATH", &spec.path_env),
+        env("PATH", &system_path_env(spec)),
         path(data),
         path(&spec.workspace),
         // The dashboard and the chat save settings there (`system_problems`
@@ -1639,6 +1661,36 @@ mod tests {
         assert_eq!(
             parse_unit(&unit),
             Some((SYSTEM_CONFIG.into(), SYSTEM_WORKSPACE.into()))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_system_units_look_for_claude_only_where_the_service_sees() {
+        // Root's `PATH` names a native claude under /root that the gateway
+        // (`ProtectHome=yes`) can't run and the apply unit
+        // (`ProtectHome=read-only`) can't update: neither unit is given it.
+        let mut spec = system_spec();
+        spec.path_env =
+            "/root/.local/bin:/home/max/bin:/usr/local/bin:/run/user/0/bin:/usr/bin".into();
+        let path = "Environment=\"PATH=/usr/local/bin:/usr/bin\"";
+        let data = Path::new(SYSTEM_DATA);
+        for unit in [system_unit(&spec, data), system_update_unit(&spec, data)] {
+            assert!(unit.lines().any(|l| l == path), "{unit}");
+        }
+        // A user's own units keep theirs.
+        assert!(user_update_unit(&spec).contains("/root/.local/bin"));
+        // So `claude` resolves to the gateway's.
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude"), "").unwrap();
+        let both = std::env::join_paths([Path::new("/root/.local/bin"), &bin]).unwrap();
+        let path = system_path(&both);
+        assert_eq!(path, bin.as_os_str());
+        assert_eq!(
+            ferrule_plans::claude::cli::find_in(Path::new("claude"), &path),
+            Some(bin.join("claude"))
         );
     }
 

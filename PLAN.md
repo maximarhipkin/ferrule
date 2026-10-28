@@ -30,12 +30,16 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.9** (2026-10-28, PR #70): `[gateway]`'s own switches
+  - **v0.14.10** (2026-10-28, PR #71): a system service's apply unit
+    checks and updates the `claude` the gateway runs, not a root native
+    install under `/root` it can't run (whose update failed with `EROFS`
+    under `ProtectHome=read-only`). Every crate is at 0.14.10 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.9** (2026-10-28, PR #70): `[gateway]`'s own switches
     (`telegram_group_mention_only`, `telegram_stream`, `discord_stream`,
     `slack_stream`) can be changed on the Config page and with
     `config_set` again: "gateway" no longer counts as a gate. They take
-    effect after a restart. Every crate is at 0.14.9 except
-    `ferrule-plugin-sdk`.
+    effect after a restart.
   - Before it, **v0.14.8** (2026-10-27, PR #69): `[plans.claude_code]
     turn_timeout_minutes` is a Config field (5 to 240), so the owner can
     change how long a Claude Code turn may run from the dashboard or a chat
@@ -10962,3 +10966,35 @@ README badge and `FERRULE_VERSION` examples follow.
 `gateway.http.port` and `gateway.local` are still refused; from a chat,
 `config_set gateway.telegram_group_mention_only` writes on a yes and
 `telegram_allowed_chats` and `trust.gates` don't. CI on the PR.
+
+### 2026-10-28 — Release 0.14.10: the system apply unit updates the gateway's claude (Claude, Opus 5.5)
+
+No milestone claimed. On `claude-update-rw` (PR #71).
+
+**Why.** On a system service doctor said "claude 2.1.308: its update
+failed: EROFS: read-only file system, open
+'/root/.local/share/claude/versions/2.1.312'". The units pin root's `PATH`
+from setup, which starts with `/root/.local/bin`. The apply unit (root,
+`ProtectHome=read-only`) found the native install there and ran its
+`claude update`, which can't write under `/root`. The gateway (the
+`ferrule` user, `ProtectHome=yes`) can't see `/root` at all and runs
+`/usr/local/bin/claude` (2.1.280 on that server): the apply unit was
+checking and updating a claude nobody runs.
+
+**What changed.** `service::system_path` drops `/home`, `/root` and
+`/run/user` from a `PATH`; the system gateway and apply units are written
+with it, and `ClaudeCodePlanConfig::binary()` resolves through it when the scope
+is System (root on Linux: the apply unit, setup, doctor), with the new
+`cli::find_in`. The `claude` checked and updated is the gateway's. Nothing
+is loosened: `ProtectHome` stays `yes` and `read-only`; no
+`ReadWritePaths=` for `/root` was added, since a native install there can't
+be the system service's claude anyway. Units written before keep root's
+`PATH` until `setup --refresh-service`; the resolution skips those
+directories either way. `docs/updates.md` says to install `claude`
+system-wide (npm) for a system service. Every crate goes to 0.14.10
+(`ferrule-plugin-sdk` keeps 0.1.0); `Cargo.lock`, the README badge and
+`FERRULE_VERSION` examples follow.
+
+**Checks.** A test: both system units' `PATH=` leave out `/root`, `/home`
+and `/run/user` (a user's unit keeps them), and `claude` resolves through
+`system_path` to the visible one. CI on the PR.

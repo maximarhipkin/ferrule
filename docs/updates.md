@@ -184,10 +184,22 @@ the user who owns the files, with no input and a 5-minute limit:
 `DISABLE_UPDATES=1` in the environment stops it, and doctor says so.
 
 A root-owned `claude` used by a user gateway is updated through the apply
-unit (the gateway asks it and waits up to 5 minutes). The system apply unit
-runs with `ProtectHome=read-only`, so it can't update a `claude` that lives
-under `/home`; a system service can't run one from there anyway (its unit
-hides `/home`), so install `claude` system-wide for a system service.
+unit (the gateway asks it and waits up to 5 minutes). A system service
+can't run a `claude` under `/home` or `/root` (its unit has
+`ProtectHome=yes`), and the system apply unit, with
+`ProtectHome=read-only`, can't update one there: the native installer's
+`/root/.local/share/claude` is read-only to it (`EROFS`). So for a system
+service, ferrule looks for `claude` only where the service sees: the
+system units' `PATH` leaves out `/home`, `/root` and `/run/user`, and the
+apply unit, setup and doctor (as root) skip those directories too. The
+`claude` checked and updated is then the one the gateway runs, never a
+root native install it can't reach. Install `claude` system-wide for a
+system service (`npm install -g @anthropic-ai/claude-code`, which the
+apply unit updates with npm); a copy of the native binary in
+`/usr/local/bin` is an install ferrule doesn't know, so doctor says to
+update it the way it was installed. Units written by an older ferrule keep
+root's `PATH` until `sudo ferrule setup --refresh-service`; the apply unit
+skips those directories either way.
 
 A routine update is quiet; a failed one is told once, until one works.
 Doctor shows the installed and latest versions and how it gets updated.

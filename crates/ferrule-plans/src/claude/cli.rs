@@ -17,10 +17,14 @@ pub const QUICK: Duration = Duration::from_secs(20);
 /// `binary` as a path: itself when it has a directory in it, else the
 /// first match on `PATH` (with `PATHEXT` on Windows).
 pub fn find(binary: &Path) -> Option<PathBuf> {
+    find_in(binary, &std::env::var_os("PATH")?)
+}
+
+/// [`find`] on the `PATH` given instead of this process's.
+pub fn find_in(binary: &Path, path: &std::ffi::OsStr) -> Option<PathBuf> {
     if binary.components().count() > 1 || binary.is_absolute() {
         return binary.is_file().then(|| binary.to_path_buf());
     }
-    let path = std::env::var_os("PATH")?;
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
@@ -31,7 +35,7 @@ pub fn find(binary: &Path) -> Option<PathBuf> {
     } else {
         vec![String::new()]
     };
-    for dir in std::env::split_paths(&path) {
+    for dir in std::env::split_paths(path) {
         for ext in &exts {
             let mut name = binary.as_os_str().to_owned();
             name.push(ext);
