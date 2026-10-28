@@ -30,11 +30,16 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.10** (2026-10-28, PR #71): a system service's apply unit
+  - **v0.14.11** (2026-10-28, PR #72): the busy notice and the
+    stuck-turn message can be turned off on the Config page and with
+    `config_set`: `[gateway] busy_notices` (new, unset = on) and
+    `[health] watchdog_after_secs` (0 = off, 0 to 86400). Both take
+    effect after a restart. Every crate is at 0.14.11 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.10** (2026-10-28, PR #71): a system service's apply unit
     checks and updates the `claude` the gateway runs, not a root native
     install under `/root` it can't run (whose update failed with `EROFS`
-    under `ProtectHome=read-only`). Every crate is at 0.14.10 except
-    `ferrule-plugin-sdk`.
+    under `ProtectHome=read-only`).
   - Before it, **v0.14.9** (2026-10-28, PR #70): `[gateway]`'s own switches
     (`telegram_group_mention_only`, `telegram_stream`, `discord_stream`,
     `slack_stream`) can be changed on the Config page and with
@@ -10998,3 +11003,33 @@ system-wide (npm) for a system service. Every crate goes to 0.14.10
 **Checks.** A test: both system units' `PATH=` leave out `/root`, `/home`
 and `/run/user` (a user's unit keeps them), and `claude` resolves through
 `system_path` to the visible one. CI on the PR.
+
+### 2026-10-28 — Release 0.14.11: status notices can be turned off (Claude, Opus 5.5)
+
+No milestone claimed. On `status-notices-settings` (PR #72).
+
+**Why.** The owner doesn't want the gateway's status notices in his
+chats: "Busy with … for N; I passed your message to the running turn…"
+(M56.1's busy notice) and "Stuck on a model call for N min … — /stop to
+cancel it." (M19b's watchdog). `[health] watchdog_after_secs = 0` already
+turned the second off, but only in the file; the first had no off switch
+(`busy_notice_secs = 0` means at once).
+
+**What changed.** `[gateway] busy_notices` (unset = on): false skips the
+busy notice in every channel (`Gateway::with_busy_notices`); the message
+still reaches the running turn or waits for the next. It and
+`health.watchdog_after_secs` are Config fields and so `config_set` keys;
+the watchdog's seconds are kept between 0 and 86400 (`BOUNDS`). Neither
+name trips the guard. `watchdog_after_secs` drives the chat message alone:
+systemd's `WATCHDOG=1` pings check the dispatcher and the channel polls,
+the heartbeat and the dashboard's stuck turns use 600 s when it's 0, and
+`max_turn_minutes` is the router's own. Both are read when the gateway
+starts, so the help says after a restart. Every crate goes to 0.14.11
+(`ferrule-plugin-sdk` keeps 0.1.0); `Cargo.lock`, the README badge and
+`FERRULE_VERSION` examples follow.
+
+**Checks.** Tests: with busy notices off a mid-turn message is
+acknowledged and reaches the turn with no "Busy" line; from a chat,
+`config_set` writes `gateway.busy_notices = false` and
+`health.watchdog_after_secs = 0` on a yes and refuses 86401; both pass the
+page's guard. The existing watchdog-off test still holds. CI on the PR.
