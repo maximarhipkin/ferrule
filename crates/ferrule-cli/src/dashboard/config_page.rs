@@ -54,7 +54,8 @@ const BOUNDS: &[(&str, i64, i64)] = &[("plans.claude_code.turn_timeout_minutes",
 fn guarded_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
     k.contains("command")
-        || k.contains("gate")
+        // A gate (`[trust] gates`, `gate_writes`), not the gateway.
+        || k.replace("gateway", "").contains("gate")
         || k.contains("hook")
         || k.contains("path")
         || k.contains("allowed")
@@ -200,6 +201,15 @@ fn twice_named(table: &toml_edit::Table, path: &str) -> Option<String> {
     })
 }
 
+/// A channel's own table in `[gateway]` (`[gateway.matrix]`, `[gateway.email]`
+/// and the rest: hosts, accounts, ports, who gets in) or the local channel,
+/// which the Channels page sets; `[gateway]`'s own switches the page sets.
+fn channel_key(segs: &[&str]) -> bool {
+    segs[0] == "gateway"
+        && (segs.get(1) == Some(&"local")
+            || segs.get(2).is_some_and(|s| s.parse::<usize>().is_err()))
+}
+
 /// Why `field` can't be changed here, and where it can.
 fn refusal(field: &str) -> String {
     let telegram = if field.starts_with("gateway.telegram_allowed_chats") {
@@ -234,7 +244,9 @@ pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<Str
             let segs: Vec<&str> = k.split('.').collect();
             !OPEN.contains(&k.as_str())
                 && !follows(k)
-                && (WHOLE.contains(&segs[0]) || segs.iter().any(|s| guarded_key(s)))
+                && (WHOLE.contains(&segs[0])
+                    || channel_key(&segs)
+                    || segs.iter().any(|s| guarded_key(s)))
         })
         .cloned()
 }
@@ -671,29 +683,31 @@ const FORM: &[Field] = &[
         choices: &[],
         help: "How long a Claude Code turn may run, in minutes (5–240; after a restart)",
     },
+    // `[gateway]`'s own switches; the channels read them when they're
+    // built, so a running gateway keeps the old ones until it restarts.
     Field {
         key: "gateway.telegram_stream",
         kind: "bool",
         choices: &[],
-        help: "Stream in Telegram",
+        help: "Stream in Telegram (after a restart)",
     },
     Field {
         key: "gateway.telegram_group_mention_only",
         kind: "bool",
         choices: &[],
-        help: "Telegram groups: answer only an @mention or a reply",
+        help: "Telegram groups: answer only an @mention or a reply (after a restart)",
     },
     Field {
         key: "gateway.discord_stream",
         kind: "bool",
         choices: &[],
-        help: "Stream in Discord",
+        help: "Stream in Discord (after a restart)",
     },
     Field {
         key: "gateway.slack_stream",
         kind: "bool",
         choices: &[],
-        help: "Stream in Slack",
+        help: "Stream in Slack (after a restart)",
     },
     Field {
         key: "scheduler.tick_interval_secs",
@@ -1355,6 +1369,25 @@ mod tests {
             let got = guarded_change(&DocumentMut::new(), &doc(text)).unwrap_or_default();
             assert!(got.starts_with(field), "{text} -> {got}");
         }
+        // `[gateway]`'s channel tables stay with the Channels page.
+        for (text, field) in [
+            (
+                "[gateway.email]\nimap_host = \"x\"\n",
+                "gateway.email.imap_host",
+            ),
+            ("[gateway.http]\nport = 1\n", "gateway.http.port"),
+            ("[gateway]\nlocal = true\n", "gateway.local"),
+            (
+                "[connections]\ngate_writes = false\n",
+                "connections.gate_writes",
+            ),
+        ] {
+            let got = guarded_change(&DocumentMut::new(), &doc(text)).unwrap_or_default();
+            assert_eq!(got, field, "{text}");
+        }
+        // The gateway isn't a gate: its own switches are the page's.
+        let switches = doc("[gateway]\ntelegram_group_mention_only = true\ntelegram_stream = false\ndiscord_stream = false\nslack_stream = false\n");
+        assert_eq!(guarded_change(&DocumentMut::new(), &switches), None);
         // The one `[plans]` field the page sets.
         let timeout = doc("[plans.claude_code]\nturn_timeout_minutes = 60\n");
         assert_eq!(guarded_change(&DocumentMut::new(), &timeout), None);
