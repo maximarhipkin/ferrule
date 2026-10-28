@@ -333,6 +333,46 @@ async fn the_claude_turn_timeout_is_set_from_a_chat_within_its_range() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_telegram_group_switch_is_set_from_a_chat_but_who_gets_in_is_not() {
+    // "gateway" holds "gate", which once refused every `[gateway]` field.
+    let rig = Rig::new(long());
+    let key = "gateway.telegram_group_mention_only";
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": true}));
+    let card = rig.asked().await;
+    assert!(card.contains(key), "{card}");
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.starts_with("Approved and done:"), "{out}");
+    let text = rig.config_text();
+    assert!(
+        text.contains("[gateway]\ntelegram_group_mention_only = true"),
+        "{text}"
+    );
+    // Who gets in, and the gates, aren't settings the chat may change: it
+    // says so before the owner is asked.
+    for (key, value) in [
+        ("gateway.telegram_allowed_chats", json!([1])),
+        ("trust.gates", json!(false)),
+    ] {
+        rig.told.0.lock().unwrap().clear();
+        let out = rig
+            .call(json!({"op": "config_set", "key": key, "value": value}))
+            .await
+            .unwrap_or_else(|e| e);
+        assert!(
+            out.contains("isn't a setting I can change here"),
+            "{key}: {out}"
+        );
+        assert!(rig.told.0.lock().unwrap().is_empty(), "{key}");
+    }
+    let text = rig.config_text();
+    assert!(
+        !text.contains("allowed_chats") && !text.contains("gates"),
+        "{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_config_read_shows_only_the_form_settings() {
     let rig = Rig::new(long());
     let out = rig
