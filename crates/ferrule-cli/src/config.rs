@@ -157,13 +157,21 @@ impl ClaudeCodePlanConfig {
     }
 
     /// `binary` found on `PATH`, else as written (so "not found" names it).
+    /// For a system service (root: the apply unit, setup, doctor) only where
+    /// the service sees: a `claude` under /root isn't the gateway's.
     pub fn binary(&self) -> PathBuf {
         let raw = PathBuf::from(if self.binary.trim().is_empty() {
             "claude"
         } else {
             self.binary.trim()
         });
-        ferrule_plans::claude::cli::find(&raw).unwrap_or(raw)
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path = if crate::service::scope() == crate::service::Scope::System {
+            crate::service::system_path(&path)
+        } else {
+            path
+        };
+        ferrule_plans::claude::cli::find_in(&raw, &path).unwrap_or(raw)
     }
 }
 
