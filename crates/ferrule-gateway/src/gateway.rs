@@ -26,6 +26,8 @@ pub struct Gateway {
     router: Arc<Router>,
     interceptors: Vec<Arc<dyn Interceptor>>,
     busy_notice_after: Duration,
+    /// `[gateway] busy_notices = false` turns the busy notice off everywhere.
+    busy_notices: bool,
     redactor: Arc<Redactor>,
     health: Option<Arc<Health>>,
     restarts: Arc<ChannelRestarts>,
@@ -133,6 +135,7 @@ impl Gateway {
             router,
             interceptors: Vec::new(),
             busy_notice_after: BUSY_NOTICE_AFTER,
+            busy_notices: true,
             redactor: Arc::new(Redactor::default()),
             health: None,
             restarts: Arc::default(),
@@ -177,6 +180,13 @@ impl Gateway {
     /// gets the busy notice.
     pub fn with_busy_notice_after(mut self, after: Duration) -> Self {
         self.busy_notice_after = after;
+        self
+    }
+
+    /// Whether a message sent during a long turn gets the busy notice at
+    /// all (on by default); a channel can still turn it off for itself.
+    pub fn with_busy_notices(mut self, on: bool) -> Self {
+        self.busy_notices = on;
         self
     }
 
@@ -337,7 +347,8 @@ impl Gateway {
         self.acknowledge(&msg).await;
         // M56.1: into the running turn, when the chat steers.
         let steered = self.router.steer(&msg);
-        let busy_notices = self.channel(&msg.channel).is_none_or(|c| c.busy_notices());
+        let busy_notices =
+            self.busy_notices && self.channel(&msg.channel).is_none_or(|c| c.busy_notices());
         if let Some(lane) = busy_notices
             .then(|| self.router.claim_busy_notice(&msg, self.busy_notice_after))
             .flatten()
@@ -1284,6 +1295,34 @@ mod tests {
                 "send to 3: echo: second\n\nthird"
             ]
         );
+    }
+
+    /// `[gateway] busy_notices = false`: a message sent mid-turn still
+    /// reaches the turn, without "Busy with …" in the chat.
+    #[tokio::test]
+    async fn busy_notices_turned_off_say_nothing_in_the_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let script = numbered(&["first", "second"]);
+        let (channel, router) = held_gateway(dir.path(), script, &log, &release);
+        let mut gateway = Gateway::new(router)
+            .with_busy_notice_after(Duration::ZERO)
+            .with_busy_notices(false);
+        gateway.add_channel(channel);
+        tokio::time::timeout(Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        wait_for_log(&log, 3).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["react 👀 to 1", "turn: first", "react 👀 to 2"]
+        );
+        release.add_permits(1);
+        wait_for_log(&log, 6).await;
+        assert!(log.lock().unwrap().iter().all(|l| !l.contains("Busy")));
     }
 
     /// A channel that skips busy notices (the HTTP API) gets none, and is
