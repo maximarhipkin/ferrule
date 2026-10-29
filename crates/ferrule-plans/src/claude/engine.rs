@@ -431,6 +431,7 @@ impl ClaudeCode {
             _dir: dir,
             stderr_tail,
             pending: HashMap::new(),
+            reads: HashMap::new(),
             queued: Vec::new(),
             session_id: resume.clone(),
             resumed: resume.is_some(),
@@ -525,6 +526,22 @@ impl ClaudeCode {
                         Some(Event::Progress) => {
                             if let Some(sink) = &req.stream {
                                 sink.send(Delta::Progress);
+                            }
+                        }
+                        Some(Event::ToolUses(uses)) => {
+                            for (id, name, input) in uses {
+                                if let Some(path) = read_path(&name, &input, ctx, &self.config.workspace) {
+                                    turn.reads.insert(id, path);
+                                }
+                            }
+                        }
+                        Some(Event::ToolResults(results)) => {
+                            for (id, is_error) in results {
+                                if let Some(path) = turn.reads.remove(&id) {
+                                    if !is_error {
+                                        opened(ctx, &path);
+                                    }
+                                }
                             }
                         }
                         Some(Event::RateLimit(limit)) => {
@@ -649,6 +666,11 @@ impl Provider for ClaudeCode {
         Some(guest)
     }
 
+    /// claude's `Read` shows it an image file's pixels.
+    fn opens_images(&self) -> bool {
+        true
+    }
+
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let ctx = call_context();
         self.reap();
@@ -682,11 +704,9 @@ impl Provider for ClaudeCode {
                 .and_then(|id| turn.pending.remove(id))
             {
                 // M65 §0: a tool's images go as what the vision helper
-                // said, or a note; claude's own turn can't take pixels.
-                let _ = reply.send(Reply::ok(ferrule_core::vision::text_with_notes(
-                    m,
-                    ferrule_core::vision::NoteWhy::TextOnly,
-                )));
+                // said, or where the file is: an MCP result here carries
+                // no pixels, but claude's `Read` opens the file.
+                let _ = reply.send(Reply::ok(with_notes(m)));
             }
         }
         for (_, reply) in turn.pending.drain() {
@@ -726,6 +746,8 @@ struct Turn {
     stderr_tail: Arc<Mutex<String>>,
     /// Bridged calls handed to the agent, by tool call id.
     pending: HashMap<String, tokio::sync::oneshot::Sender<Reply>>,
+    /// M65 §4: claude's `Read` calls not answered yet, by tool use id.
+    reads: HashMap<String, PathBuf>,
     queued: Vec<BridgeCall>,
     session_id: Option<String>,
     resumed: bool,
@@ -876,6 +898,32 @@ pub fn ferrule_call(tool: &str, input: &Value) -> (String, Value, bool) {
     }
 }
 
+/// M65 §4: the file a call to claude's `Read` opens, resolved against the
+/// run's workspace.
+fn read_path(tool: &str, input: &Value, ctx: &CallContext, workspace: &Path) -> Option<PathBuf> {
+    if tool != "Read" {
+        return None;
+    }
+    let path = Path::new(input["file_path"].as_str()?);
+    Some(ctx.workspace.as_deref().unwrap_or(workspace).join(path))
+}
+
+/// M65 §4: claude's `Read` of `path` came back: an image it read is one
+/// its model has seen (Claude Code shows it the pixels), for `send_file`.
+fn opened(ctx: &CallContext, path: &Path) {
+    let Some(looked) = &ctx.looked else {
+        return;
+    };
+    let head = std::fs::File::open(path).and_then(|f| {
+        use std::io::Read;
+        let mut head = Vec::new();
+        f.take(16).read_to_end(&mut head).map(|_| head)
+    });
+    if head.is_ok_and(|h| ferrule_core::vision::sniff(&h).is_some()) {
+        looked.opened(path);
+    }
+}
+
 /// The permission prompt's answer for `args` (`{tool_name, input}`).
 pub async fn approve(guard: Option<&Arc<dyn Guard>>, args: &Value) -> Value {
     let tool = args["tool_name"].as_str().unwrap_or("");
@@ -917,6 +965,27 @@ pub fn resume_id(messages: &[Message]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A message's words and a line for each of its images: what the vision
+/// helper said of it, else where it is saved for claude's `Read`, which
+/// shows claude the pixels (a note saying the model can't see would be
+/// wrong here).
+pub fn with_notes(msg: &Message) -> String {
+    let mut text = msg.content.clone().unwrap_or_default();
+    for img in &msg.images {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&match &img.described {
+            Some(described) => described.clone(),
+            None => format!(
+                "[An image, saved at {}: open it with Read to see it.]",
+                img.path
+            ),
+        });
+    }
+    text
+}
+
 /// What goes on claude's stdin: with a session to resume, what came after
 /// its last answer (the new message); without, a recap and the message.
 pub fn prompt(messages: &[Message], resuming: bool) -> String {
@@ -930,17 +999,10 @@ pub fn prompt(messages: &[Message], resuming: bool) -> String {
     let parts: Vec<String> = messages[last..]
         .iter()
         .filter_map(|m| match m.role {
-            Role::User => Some(ferrule_core::vision::text_with_notes(
-                m,
-                ferrule_core::vision::NoteWhy::TextOnly,
-            ))
-            .filter(|t| !t.is_empty()),
-            Role::Tool => Some(ferrule_core::vision::text_with_notes(
-                m,
-                ferrule_core::vision::NoteWhy::TextOnly,
-            ))
-            .filter(|c| !c.is_empty())
-            .map(|c| format!("(A tool result from before: {})", clip(&c, 2000))),
+            Role::User => Some(with_notes(m)).filter(|t| !t.is_empty()),
+            Role::Tool => Some(with_notes(m))
+                .filter(|c| !c.is_empty())
+                .map(|c| format!("(A tool result from before: {})", clip(&c, 2000))),
             _ => None,
         })
         .collect();
@@ -953,10 +1015,7 @@ pub fn prompt_fresh(messages: &[Message]) -> String {
     let Some(last_user) = messages.iter().rposition(|m| m.role == Role::User) else {
         return String::new();
     };
-    let new = ferrule_core::vision::text_with_notes(
-        &messages[last_user],
-        ferrule_core::vision::NoteWhy::TextOnly,
-    );
+    let new = with_notes(&messages[last_user]);
     let mut lines: Vec<String> = messages[..last_user]
         .iter()
         .filter_map(|m| {
@@ -1024,7 +1083,8 @@ mod tests {
         for text in [prompt(&msgs, true), prompt(&msgs, false)] {
             assert!(text.contains("what is this?"), "{text}");
             assert!(
-                text.contains("can't see images") && text.contains("cat.jpg"),
+                text.contains("saved at /w/inbox/cat.jpg: open it with Read")
+                    && !text.contains("can't see"),
                 "{text}"
             );
         }

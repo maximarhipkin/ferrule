@@ -30,12 +30,16 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.11** (2026-10-28, PR #72): the busy notice and the
+  - **v0.14.12** (2026-10-29, PR #73): on the Claude Code engine a
+    built-in `Read` of an image counts as looked at for `send_file` (same
+    freshness check as `read_file`), so files the model viewed go out
+    without `unchecked`; no "can't see images" wording on engines that
+    can. Every crate is at 0.14.12 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.11** (2026-10-28, PR #72): the busy notice and the
     stuck-turn message can be turned off on the Config page and with
     `config_set`: `[gateway] busy_notices` (new, unset = on) and
     `[health] watchdog_after_secs` (0 = off, 0 to 86400). Both take
-    effect after a restart. Every crate is at 0.14.11 except
-    `ferrule-plugin-sdk`.
+    effect after a restart.
   - Before it, **v0.14.10** (2026-10-28, PR #71): a system service's apply unit
     checks and updates the `claude` the gateway runs, not a root native
     install under `/root` it can't run (whose update failed with `EROFS`

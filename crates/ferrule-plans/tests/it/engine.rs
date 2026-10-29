@@ -281,6 +281,38 @@ async fn claudes_permission_prompt_asks_the_runs_guard() {
 }
 
 #[tokio::test]
+async fn an_image_claudes_read_opened_counts_as_looked_at() {
+    let s = setup(|_| {});
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str, bytes: &[u8]| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    };
+    let png = file("out.png", b"\x89PNG\r\n\x1a\n made");
+    let missing = file("gone.png", b"\x89PNG\r\n\x1a\n gone");
+    let notes = file("notes.txt", b"just words");
+    let looked = ferrule_core::vision::Looked::default();
+    let ctx = CallContext {
+        looked: Some(looked.clone()),
+        ..Default::default()
+    };
+    let prompt = format!(
+        "[read] read:{} readfail:{} read:{}",
+        png.display(),
+        missing.display(),
+        notes.display()
+    );
+    let r = with_call_context(ctx, s.engine.complete(req(vec![Message::user(prompt)])))
+        .await
+        .unwrap();
+    assert_eq!(r.message.content.as_deref(), Some("read them"));
+    assert!(looked.has_seen(&png), "an image Read opened is seen");
+    assert!(!looked.has_seen(&missing), "a failed Read isn't");
+    assert!(!looked.has_seen(&notes), "a file that is no image isn't");
+}
+
+#[tokio::test]
 async fn a_bridged_ferrule_tool_pauses_the_turn_until_the_agent_has_run_it() {
     let s = setup(|_| {});
     let mut first = req(vec![Message::user("[tool]")]);

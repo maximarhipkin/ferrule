@@ -663,6 +663,17 @@ impl Models {
             .unwrap_or(false)
     }
 
+    /// Whether the model `scope` asks for opens image files with its own
+    /// engine's tools (Claude Code's `Read`).
+    pub fn wanted_opens_images(&self, scope: &Scope) -> bool {
+        let mut st = self.state.lock().unwrap();
+        self.refresh(&mut st);
+        self.refresh_pins(&mut st);
+        self.pick(&mut st, scope)
+            .map(|e| e.plan == Some(crate::config::Plan::ClaudeCode))
+            .unwrap_or(false)
+    }
+
     fn pick(&self, st: &mut State, scope: &Scope) -> Result<Entry, String> {
         self.pick_floor(st, scope).map(|(e, _)| e)
     }
@@ -1062,6 +1073,10 @@ impl Provider for RoutedProvider {
     fn sees_images(&self) -> bool {
         // Advisory: the model that serves a call decides for itself.
         self.models.wanted_sees_images(&self.scope)
+    }
+
+    fn opens_images(&self) -> bool {
+        self.models.wanted_opens_images(&self.scope)
     }
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {

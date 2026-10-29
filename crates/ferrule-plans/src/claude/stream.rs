@@ -1,6 +1,6 @@
 //! Claude Code's `--output-format stream-json` events, as far as the
-//! engine needs them: the session id, the streamed text, the rate-limit
-//! reading and the final result. Unknown events and fields are ignored, so
+//! engine needs them: the session id, the streamed text, claude's own tool
+//! calls and their results, the rate-limit reading and the final result. Unknown events and fields are ignored, so
 //! a newer claude that adds some still works.
 
 use crate::usage::{Reading, Window};
@@ -20,9 +20,23 @@ pub enum Event {
     Text(String),
     /// Thinking or tool arguments streaming: the model is alive.
     Progress,
+    /// An `assistant` message's calls to claude's own tools: `(id, name,
+    /// input)`. Bridged ferrule tools come here too; the bridge serves them.
+    ToolUses(Vec<(String, String, Value)>),
+    /// A `user` message's tool results: `(tool_use_id, is_error)`.
+    ToolResults(Vec<(String, bool)>),
     RateLimit(RateLimit),
     Result(TurnResult),
     Other,
+}
+
+/// The content blocks of `v`'s message whose `type` is `kind`.
+fn blocks<'a>(v: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
+    v["message"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(move |b| b["type"] == kind)
 }
 
 /// A `rate_limit_event`'s `rate_limit_info`.
@@ -114,6 +128,27 @@ pub fn parse(line: &str) -> Option<Event> {
                 _ => Event::Other,
             }
         }
+        "assistant" => Event::ToolUses(
+            blocks(&v, "tool_use")
+                .filter_map(|b| {
+                    Some((
+                        b["id"].as_str()?.to_string(),
+                        b["name"].as_str()?.to_string(),
+                        b["input"].clone(),
+                    ))
+                })
+                .collect(),
+        ),
+        "user" => Event::ToolResults(
+            blocks(&v, "tool_result")
+                .filter_map(|b| {
+                    Some((
+                        b["tool_use_id"].as_str()?.to_string(),
+                        b["is_error"].as_bool().unwrap_or(false),
+                    ))
+                })
+                .collect(),
+        ),
         "rate_limit_event" => {
             let info = &v["rate_limit_info"];
             let mut windows: Vec<(String, f64, Option<u64>)> = info["unifiedWindows"]
@@ -310,6 +345,27 @@ mod tests {
         assert_eq!(r.usage.output_tokens, 42);
         assert_eq!(r.model.as_deref(), Some("claude-haiku-4-5-20251001"));
         assert!(result_error(&r, Some(&l), 0).is_none());
+    }
+
+    #[test]
+    fn claude_own_tool_calls_and_results_parse() {
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/w/out.png"}}]},"session_id":"183a"}"#;
+        assert_eq!(
+            parse(call),
+            Some(Event::ToolUses(vec![(
+                "toolu_1".into(),
+                "Read".into(),
+                serde_json::json!({"file_path": "/w/out.png"})
+            )]))
+        );
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}}]},{"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"File does not exist."}]}}"#;
+        assert_eq!(
+            parse(result),
+            Some(Event::ToolResults(vec![
+                ("toolu_1".into(), false),
+                ("toolu_2".into(), true)
+            ]))
+        );
     }
 
     #[test]

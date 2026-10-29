@@ -324,6 +324,26 @@ fn main() {
             json!({"tool_name": "mcp__ferrule__remember", "input": {}, "tool_use_id": "t3"}),
         );
         say(&format!("ls={ls} rm={rm} ours={ours}"));
+    } else if prompt.contains("[read]") {
+        // claude's own `Read`: a call and its result per `read:<path>`
+        // word, failed for `readfail:<path>`.
+        for (i, word) in prompt.split_whitespace().enumerate() {
+            let (path, failed) = match word.split_once(':') {
+                Some(("read", p)) => (p, false),
+                Some(("readfail", p)) => (p, true),
+                _ => continue,
+            };
+            let id = format!("toolu_{i}");
+            out(json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": id, "name": "Read", "input": {"file_path": path}}
+            ]}}));
+            out(
+                json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": id, "is_error": failed, "content": "…"}
+                ]}}),
+            );
+        }
+        say("read them");
     } else if prompt.contains("[tool]") {
         let mut mcp = Mcp::connect(&arg(&args, "--mcp-config").expect("--mcp-config"));
         let listed = mcp.request("tools/list", json!({}));
