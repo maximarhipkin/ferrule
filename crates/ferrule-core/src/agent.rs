@@ -571,6 +571,12 @@ impl Agent {
         self.sees_images() || self.looker.is_some()
     }
 
+    /// Whether the model can open an image file and see it with a tool of
+    /// its own engine (Claude Code's `Read`).
+    pub fn opens_images(&self) -> bool {
+        self.provider.opens_images()
+    }
+
     /// M65 §0: `msg`'s images in the vision helper's words, when the model
     /// can't see them and there is a helper. A check the tool asked for
     /// (a generated image against its request) is made instead of a plain
@@ -624,6 +630,10 @@ impl Agent {
             let had = self.describe_images(&mut msg).await;
             if let (Some(looked), Role::Tool) = (&self.looked, &msg.role) {
                 for (img, had) in msg.images.iter().zip(had) {
+                    if let Some(video) = &img.shows {
+                        looked
+                            .sheet_of(std::path::Path::new(&img.path), std::path::Path::new(video));
+                    }
                     let files = std::iter::once(img.path.as_str()).chain(img.shows.as_deref());
                     for file in files.map(std::path::Path::new) {
                         if had {
@@ -993,6 +1003,7 @@ impl Agent {
                 effort_floor: self.effort_floor(call_kind),
                 // A summary's request is flattened and never sent again.
                 cache_ttl: self.cache_ttl.clone().filter(|_| call_kind != "compaction"),
+                looked: self.looked.clone(),
             };
             let (served, result) =
                 crate::provider::with_call_context(ctx, provider.complete_routed(req)).await;

@@ -319,6 +319,10 @@ impl Provider for Tiered {
         self.tiers[self.level()].provider.sees_images()
     }
 
+    fn opens_images(&self) -> bool {
+        self.tiers[self.level()].provider.opens_images()
+    }
+
     fn routes(&self) -> bool {
         true
     }

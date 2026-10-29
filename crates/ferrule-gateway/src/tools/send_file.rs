@@ -6,11 +6,14 @@
 //! M65 §4: an image or video the agent made or changed goes only once this
 //! session's model has looked at it since it last changed
 //! ([`ferrule_core::vision::Looked`]): `watch_video`, `read_file` or
-//! `generate_image` showed it the pixels, or the vision helper's words.
-//! What the owner provided (`uploads/`, `inbox/`) and screen captures
-//! (`media/screen/`) pass as they are. When looking can't be done here,
-//! `unchecked` says why and the file goes marked as unchecked; a video the
-//! owner was told about unchecked (the poller's note) goes when asked.
+//! `generate_image` showed it the pixels, or the vision helper's words, or
+//! (the Claude Code engine) claude's own `Read` opened the image, or the
+//! video's contact sheet. What the owner provided (`uploads/`, `inbox/`)
+//! and screen captures (`media/screen/`) pass as they are. When this
+//! session has no way to look (no images reach its model, no
+//! `watch_video`), `unchecked` says why and the file goes marked as
+//! unchecked; a video the owner was told about unchecked (the poller's
+//! note) goes when asked.
 
 use crate::channels::files;
 use crate::message::{Attachment, OutboundMessage};
@@ -103,6 +106,9 @@ struct SendCheck {
     looked: Looked,
     /// This session's model takes images in: pixels, or the helper's words.
     sees_images: bool,
+    /// It opens image files with its engine's own tool (Claude Code's
+    /// `Read`), whatever a tool's image reaches it as.
+    opens_images: bool,
     /// `watch_video` is offered here.
     watches_video: bool,
 }
@@ -119,10 +125,17 @@ impl SendFileTool {
 
     /// M65 §4: refuse an image or video the agent made that this session
     /// hasn't looked at since it last changed (see the module's doc).
-    pub fn checking(mut self, looked: Looked, sees_images: bool, watches_video: bool) -> Self {
+    pub fn checking(
+        mut self,
+        looked: Looked,
+        sees_images: bool,
+        opens_images: bool,
+        watches_video: bool,
+    ) -> Self {
         self.check = Some(SendCheck {
             looked,
             sees_images,
+            opens_images,
             watches_video,
         });
         self
@@ -158,7 +171,14 @@ impl Tool for SendFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "send_file".into(),
-            description: "Send a file from the workspace to the person you're chatting with, in this chat (an image, a PDF, a report you wrote). It goes only to this chat. An image or video you made or edited goes only after you've looked at it (watch_video, read_file, or generate_image's result) since it last changed.".into(),
+            description: format!(
+                "Send a file from the workspace to the person you're chatting with, in this chat (an image, a PDF, a report you wrote). It goes only to this chat. An image or video you made or edited goes only after you've looked at it since it last changed: {}.",
+                if self.check.as_ref().is_some_and(|c| c.opens_images) {
+                    "open the image with Read; for a video, watch_video, then open the contact sheet it saved with Read"
+                } else {
+                    "watch_video, read_file, or generate_image's result"
+                }
+            ),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -226,20 +246,31 @@ impl Tool for SendFileTool {
             .filter(|_| !passes_as_is(&ctx.workspace, &path))
             .filter(|c| !c.looked.has_seen(&path))
         {
-            let how = if video {
-                "Watch it with watch_video"
-            } else {
-                "Look at it with read_file"
+            let how = match (video, check.opens_images) {
+                (true, true) => {
+                    "Watch it with watch_video, then open the contact sheet it saved with Read"
+                }
+                (true, false) => "Watch it with watch_video",
+                (false, true) => "Open it with Read",
+                (false, false) => "Look at it with read_file",
             };
             let unchecked = args["unchecked"]
                 .as_str()
                 .map(str::trim)
                 .filter(|w| !w.is_empty());
-            let can_look = if video {
-                check.watches_video && check.sees_images
+            // Why this session can't look, if it can't. claude's `Read`
+            // can always be tried again, whatever a tool's image became.
+            let sees = check.sees_images || check.opens_images;
+            let cannot = if video && !check.watches_video {
+                Some("watch_video isn't available in this session")
+            } else if !sees {
+                Some("no images reach this session's model and there's no vision helper")
+            } else if !check.opens_images && check.looked.could_not(&path) {
+                Some("the last try to look at it failed")
             } else {
-                check.sees_images
-            } && !check.looked.could_not(&path);
+                None
+            };
+            let can_look = cannot.is_none();
             let owner_asked = self
                 .out
                 .unsent_as(&ctx.workspace, &path)
@@ -250,17 +281,18 @@ impl Tool for SendFileTool {
                 (false, Some(why)) if !can_look => why.to_string(),
                 (false, Some(_)) => {
                     return Err(failed(format!(
-                        "{name} can be looked at here: {} and compare it with what was asked, then send it. `unchecked` is only for when looking can't be done",
+                        "{name} can be looked at here: {} and compare it with what was asked, then send it. `unchecked` is only for when this session has no way to look",
                         how.to_lowercase()
                     )))
                 }
                 (false, None) => {
                     return Err(failed(format!(
                         "{name} hasn't been looked at since it last changed. {how} and compare it with what was asked, then send it.{}",
-                        if can_look {
-                            ""
-                        } else {
-                            " Looking can't be done here: pass `unchecked` with why, and it goes marked as not checked"
+                        match cannot {
+                            None => String::new(),
+                            Some(why) => format!(
+                                " If you can't ({why}), pass `unchecked` with why, and it goes marked as not checked"
+                            ),
                         }
                     )))
                 }

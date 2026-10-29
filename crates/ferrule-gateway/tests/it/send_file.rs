@@ -1,10 +1,13 @@
 //! M39 §2: `send_file` sends a workspace file to the session's own chat,
 //! and only there; a path out of the workspace or under a hidden one, and
 //! a channel without attachments, are refused in words the model reads.
+//! M65 §4: on the Claude Code engine, an image claude's `Read` opened
+//! goes as checked, until it changes.
 
 use async_trait::async_trait;
 use ferrule_core::provider::{CompletionRequest, CompletionResponse};
 use ferrule_core::tool::ToolContext;
+use ferrule_core::vision::Looked;
 use ferrule_core::{
     Agent, AgentConfig, CoreError, HarnessProfile, Message, Provider, ToolCall, ToolRegistry, Usage,
 };
@@ -81,14 +84,16 @@ impl Provider for Caller {
     }
 }
 
-fn factory(args: Value, ws: PathBuf, out: Arc<FileOut>) -> AgentFactory {
+/// `check`: the session's looks, checked the way the Claude Code engine's
+/// are (no images in its messages, but `Read` opens them; `watch_video`).
+fn factory(args: Value, ws: PathBuf, out: Arc<FileOut>, check: Option<Looked>) -> AgentFactory {
     Arc::new(move |sid, transcript| {
         let mut tools = ToolRegistry::new();
-        tools.register(Arc::new(SendFileTool::new(
-            out.clone(),
-            sid,
-            vec![ws.join(".hidden")],
-        )));
+        let mut send = SendFileTool::new(out.clone(), sid, vec![ws.join(".hidden")]);
+        if let Some(looked) = &check {
+            send = send.checking(looked.clone(), false, true, true);
+        }
+        tools.register(Arc::new(send));
         Ok(Agent::new(
             Arc::new(Caller {
                 args: args.clone(),
@@ -110,6 +115,15 @@ fn factory(args: Value, ws: PathBuf, out: Arc<FileOut>) -> AgentFactory {
 /// One turn in chat `c7` on a `Recorder`; what the model was told, and
 /// what the chat got.
 async fn turn(ws: &Path, files: bool, args: Value) -> (String, Vec<OutboundMessage>) {
+    turn_checked(ws, files, args, None).await
+}
+
+async fn turn_checked(
+    ws: &Path,
+    files: bool,
+    args: Value,
+    check: Option<Looked>,
+) -> (String, Vec<OutboundMessage>) {
     let sessions = tempfile::tempdir().unwrap();
     let rec = Arc::new(Recorder {
         files,
@@ -119,7 +133,7 @@ async fn turn(ws: &Path, files: bool, args: Value) -> (String, Vec<OutboundMessa
     let out = Arc::new(FileOut::default());
     let router = Arc::new(Router::new(
         sessions.path(),
-        factory(args, ws.to_path_buf(), out.clone()),
+        factory(args, ws.to_path_buf(), out.clone(), check),
         channels,
     ));
     out.bind(&router);
@@ -192,4 +206,86 @@ async fn a_channel_without_files_is_said_so() {
     let (told, sent) = turn(ws.path(), false, json!({"path": "report.pdf"})).await;
     assert!(told.contains("can't send files"), "{told}");
     assert!(sent.iter().all(|m| m.attachments.is_empty()));
+}
+
+/// A PNG the agent made, at `out.png`.
+fn made_image(ws: &Path) -> PathBuf {
+    let path = ws.join("out.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\n made").unwrap();
+    path
+}
+
+#[tokio::test]
+async fn an_image_claude_read_goes_as_checked() {
+    let ws = workspace();
+    let image = made_image(ws.path());
+    let looked = Looked::default();
+    looked.opened(&image);
+    let (told, sent) = turn_checked(
+        ws.path(),
+        true,
+        json!({"path": "out.png", "caption": "the poster"}),
+        Some(looked),
+    )
+    .await;
+    assert!(told.contains("Sent out.png"), "{told}");
+    let files: Vec<_> = sent.iter().filter(|m| !m.attachments.is_empty()).collect();
+    assert_eq!(files.len(), 1, "{sent:?}");
+    assert_eq!(files[0].text, "the poster", "not marked as unchecked");
+}
+
+#[tokio::test]
+async fn an_image_changed_after_claude_read_it_needs_a_new_look() {
+    let ws = workspace();
+    let image = made_image(ws.path());
+    let looked = Looked::default();
+    looked.opened(&image);
+    let later =
+        std::fs::metadata(&image).unwrap().modified().unwrap() + std::time::Duration::from_secs(10);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&image)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let (told, sent) = turn_checked(
+        ws.path(),
+        true,
+        json!({"path": "out.png"}),
+        Some(looked.clone()),
+    )
+    .await;
+    assert!(sent.iter().all(|m| m.attachments.is_empty()), "{sent:?}");
+    assert!(
+        told.contains("hasn't been looked at") && told.contains("Open it with Read"),
+        "{told}"
+    );
+    assert!(
+        !told.contains("can't"),
+        "it can look, so no `unchecked` offer: {told}"
+    );
+    // Nor may it skip the look.
+    let (told, sent) = turn_checked(
+        ws.path(),
+        true,
+        json!({"path": "out.png", "unchecked": "can't see images"}),
+        Some(looked),
+    )
+    .await;
+    assert!(sent.iter().all(|m| m.attachments.is_empty()), "{sent:?}");
+    assert!(told.contains("can be looked at here"), "{told}");
+}
+
+#[tokio::test]
+async fn a_file_that_is_no_image_goes_without_a_look() {
+    let ws = workspace();
+    let (told, sent) = turn_checked(
+        ws.path(),
+        true,
+        json!({"path": "report.pdf"}),
+        Some(Looked::default()),
+    )
+    .await;
+    assert!(told.contains("Sent report.pdf"), "{told}");
+    assert_eq!(sent.iter().filter(|m| !m.attachments.is_empty()).count(), 1);
 }

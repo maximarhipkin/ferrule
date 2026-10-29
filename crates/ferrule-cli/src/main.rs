@@ -3080,7 +3080,12 @@ async fn gateway_factory(
                     session_id,
                     session_hidden(owner, owners, &workspace),
                 )
-                .checking(looked, agent.understands_images(), video.is_some()),
+                .checking(
+                    looked,
+                    agent.understands_images(),
+                    agent.opens_images(),
+                    video.is_some(),
+                ),
             ));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {

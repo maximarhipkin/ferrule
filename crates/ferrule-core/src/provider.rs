@@ -143,6 +143,14 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether the model can open an image file with a tool of its own
+    /// engine and see it (Claude Code's `Read`), though a tool's image
+    /// reaches it only as a note. Such an engine records what it opened in
+    /// [`CallContext::looked`].
+    fn opens_images(&self) -> bool {
+        false
+    }
+
     /// The tier the last call went to, for its ledger row.
     fn route_tag(&self) -> Option<crate::routing::RouteTag> {
         None
@@ -183,6 +191,9 @@ pub struct CallContext {
     /// (`"1h"` on a gateway chat lane). `None`: the provider's default (5
     /// minutes on Anthropic). Only the Anthropic driver reads it.
     pub cache_ttl: Option<String>,
+    /// M65 §4: what the run's model has looked at, for `send_file`. An
+    /// engine whose own tools open images records those here.
+    pub looked: Option<crate::vision::Looked>,
 }
 
 impl CallContext {
@@ -227,6 +238,7 @@ impl std::fmt::Debug for CallContext {
             .field("effort", &self.effort)
             .field("effort_floor", &self.effort_floor)
             .field("cache_ttl", &self.cache_ttl)
+            .field("looked", &self.looked.is_some())
             .finish()
     }
 }

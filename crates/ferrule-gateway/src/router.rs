@@ -1182,7 +1182,9 @@ async fn run_lane(
             })
             .collect();
         if !photos.is_empty() {
-            if !told_no_vision && !agent.understands_images() {
+            // claude's `Read` opens a saved photo, so the Claude Code
+            // engine sees it though no pixels go in the message.
+            if !told_no_vision && !agent.understands_images() && !agent.opens_images() {
                 told_no_vision = true;
                 if let Some(ch) = &channel {
                     let msg = OutboundMessage {

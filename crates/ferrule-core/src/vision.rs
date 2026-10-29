@@ -36,15 +36,31 @@ pub trait Looker: Send + Sync {
 
 /// M65 §4: what this session's model has looked at: a tool returned the
 /// file's pixels to a model that sees, or the vision helper's description
-/// of them to one that doesn't (a contact sheet counts for its video). The
-/// agent records it as a tool's result is added; `send_file` asks it
+/// of them to one that doesn't (a contact sheet counts for its video), or
+/// the model opened the file with its engine's own tool (Claude Code's
+/// `Read`, recorded by that engine as the read comes back). The agent
+/// records the rest as a tool's result is added; `send_file` asks it
 /// before an image or video the agent made goes out. Keyed by the file's
 /// real path, with its modification time then: a file changed since it
 /// was looked at counts as unseen.
 #[derive(Clone, Default)]
-pub struct Looked(
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Look>>>,
-);
+pub struct Looked(std::sync::Arc<std::sync::Mutex<LookedState>>);
+
+#[derive(Default)]
+struct LookedState {
+    looks: std::collections::HashMap<std::path::PathBuf, Look>,
+    /// A contact sheet's video: the sheet's modification time when it was
+    /// made, the video's then. Opening the sheet later (Claude Code's
+    /// `Read`) is looking at the video as it was then.
+    sheets: std::collections::HashMap<std::path::PathBuf, Sheet>,
+}
+
+#[derive(Clone, Debug)]
+struct Sheet {
+    at: Option<std::time::SystemTime>,
+    video: std::path::PathBuf,
+    video_at: Option<std::time::SystemTime>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Look {
@@ -66,7 +82,7 @@ impl Looked {
     /// `path` was looked at, as it is now.
     pub fn seen(&self, path: &Path) {
         let look = Look::Seen(Self::modified(path));
-        self.0.lock().unwrap().insert(Self::key(path), look);
+        self.0.lock().unwrap().looks.insert(Self::key(path), look);
     }
 
     /// Looking at `path` was tried and couldn't be done. A look that
@@ -75,14 +91,43 @@ impl Looked {
         self.0
             .lock()
             .unwrap()
+            .looks
             .entry(Self::key(path))
             .or_insert(Look::Failed);
+    }
+
+    /// `sheet` is a contact sheet of `video`, both as they are now.
+    pub fn sheet_of(&self, sheet: &Path, video: &Path) {
+        let entry = Sheet {
+            at: Self::modified(sheet),
+            video: Self::key(video),
+            video_at: Self::modified(video),
+        };
+        self.0
+            .lock()
+            .unwrap()
+            .sheets
+            .insert(Self::key(sheet), entry);
+    }
+
+    /// The model opened the image at `path` with a tool of its own engine
+    /// (Claude Code's `Read`) and saw it: [`Looked::seen`], and when it is
+    /// a contact sheet not remade since, its video as it was then.
+    pub fn opened(&self, path: &Path) {
+        self.seen(path);
+        let now = Self::modified(path);
+        let mut st = self.0.lock().unwrap();
+        if let Some(sheet) = st.sheets.get(&Self::key(path)).cloned() {
+            if sheet.at == now {
+                st.looks.insert(sheet.video, Look::Seen(sheet.video_at));
+            }
+        }
     }
 
     /// Whether `path` was looked at since it last changed.
     pub fn has_seen(&self, path: &Path) -> bool {
         matches!(
-            self.0.lock().unwrap().get(&Self::key(path)),
+            self.0.lock().unwrap().looks.get(&Self::key(path)),
             Some(Look::Seen(at)) if *at == Self::modified(path)
         )
     }
@@ -90,7 +135,7 @@ impl Looked {
     /// Whether the last try to look at `path` couldn't be made.
     pub fn could_not(&self, path: &Path) -> bool {
         matches!(
-            self.0.lock().unwrap().get(&Self::key(path)),
+            self.0.lock().unwrap().looks.get(&Self::key(path)),
             Some(Look::Failed)
         )
     }
@@ -296,6 +341,42 @@ mod tests {
         assert!(set.contains(&(0, 1)) && set.contains(&(2, 0)) && set.contains(&(2, 2)));
         assert_eq!(est_tokens(&msgs), 4 * IMAGE_TOKENS);
         assert!(pixel_set(&[Message::user("hi")]).is_empty());
+    }
+
+    #[test]
+    fn an_opened_contact_sheet_counts_for_its_video_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let (video, sheet) = (dir.path().join("v.mp4"), dir.path().join("v-sheet.jpg"));
+        std::fs::write(&video, b"video").unwrap();
+        std::fs::write(&sheet, b"sheet").unwrap();
+        let bump = |p: &Path| {
+            let t = std::fs::metadata(p).unwrap().modified().unwrap()
+                + std::time::Duration::from_secs(10);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        let looked = Looked::default();
+        looked.sheet_of(&sheet, &video);
+        looked.failed(&video);
+        assert!(!looked.has_seen(&video) && looked.could_not(&video));
+        looked.opened(&sheet);
+        assert!(looked.has_seen(&sheet) && looked.has_seen(&video));
+        // The video remade after its sheet: unseen again.
+        bump(&video);
+        assert!(!looked.has_seen(&video));
+        // An old sheet opened again doesn't vouch for the new video, nor
+        // does a sheet remade without the agent knowing which video.
+        looked.opened(&sheet);
+        assert!(!looked.has_seen(&video));
+        let other = Looked::default();
+        other.sheet_of(&sheet, &video);
+        bump(&sheet);
+        other.opened(&sheet);
+        assert!(other.has_seen(&sheet) && !other.has_seen(&video));
     }
 
     #[test]
