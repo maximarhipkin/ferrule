@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-core"
-version = "0.14.11"
+version = "0.14.12"
 edition = "2021"
 description = "Agent loop, provider trait, harness profiles, transcripts"
 license = "MIT OR Apache-2.0"
