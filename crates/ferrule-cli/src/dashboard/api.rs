@@ -1237,7 +1237,10 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
                 .unwrap_or_else(|_| toml_edit::DocumentMut::new())
         };
         let (old, new) = (doc(&now), doc(&good));
-        if let Some(field) = crate::dashboard::config_page::guarded_change(&old, &new) {
+        // A gate the chat may loosen goes through its own card (config_set).
+        if let Some(field) = crate::dashboard::config_page::guarded_change(&old, &new)
+            .or_else(|| crate::dashboard::config_page::carded_change(&old, &new))
+        {
             return bad(
                 403,
                 format!(

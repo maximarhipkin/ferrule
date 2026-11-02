@@ -344,10 +344,16 @@ as the bot's output, not as a message from the sender. Everything else
 (another address, a chat that isn't the owner's, a document edit, a
 force push, a `DELETE`) stays refused in an unattended run.
 
-`[trust] untrusted_send_gate = false` turns it off. It is guarded config:
-neither the chat (`config_set`, `config_restore`) nor the Config page can
-change it; only the file on the machine. Outside owner mode it does
-nothing: there `gates` decides.
+`[trust] untrusted_send_gate = false` turns it off. It is set in the file,
+on the Config page, or from the chat with `config_set`, and from the chat
+only on the owner's card, in owner mode too (where other changes run
+without one); `config_restore` won't bring it back from the last good
+copy. Off, HTTP writes through bound keys no longer ask after outside
+content; recursive deletes, force pushes and `DELETE`s still follow
+`[trust] gates`. The trust hub reads `[trust]` once, so it takes effect
+after a restart. `gates` itself stays guarded: only the file on the
+machine. Outside owner mode it does nothing but the HTTP writes: there
+`gates` decides the rest.
 
 **Not covered.** Content a command fetches some other way (`python -c`,
 `git clone` of someone's repo), a forwarded message the owner sends, and
@@ -405,7 +411,7 @@ per-run grant ("Allow for this run") still covers the exact same
 command again in that run.
 
 `[trust] untrusted_send_gate = false` lets HTTP writes through in every
-mode (guarded, as above). **What it can't see:** a POST from `python`,
+mode (on the owner's card from the chat, as above). **What it can't see:** a POST from `python`,
 `node` or a script file, a request to a host that has no bound key (the
 key is what the deputy would misuse), and an unrecognised client
 (`aria2c`, `nc`). A `gh` verb is matched against a list of words that

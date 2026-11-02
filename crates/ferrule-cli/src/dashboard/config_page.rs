@@ -42,7 +42,15 @@ const WHOLE: &[&str] = &[
 
 /// M56.3: fields inside a [`WHOLE`] section the page and the chat may
 /// change all the same: a switch that runs nothing new and moves no key.
-const OPEN: &[&str] = &["browser.enabled", "plans.claude_code.turn_timeout_minutes"];
+const OPEN: &[&str] = &[
+    "browser.enabled",
+    "plans.claude_code.turn_timeout_minutes",
+    "trust.untrusted_send_gate",
+];
+
+/// Fields in [`OPEN`] that loosen a gate: the chat changes them only on the
+/// owner's card, in owner mode too, and never by restoring a copy.
+pub(crate) const CARDED: &[&str] = &["trust.untrusted_send_gate"];
 
 /// Whole-number fields the page and the chat keep inside a range: the
 /// key, the least and the most.
@@ -252,6 +260,15 @@ pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<Str
                     || segs.iter().any(|s| guarded_key(s)))
         })
         .cloned()
+}
+
+/// The first [`CARDED`] field `new` changes.
+pub(crate) fn carded_change(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
+    let (a, b) = (leaves(old), leaves(new));
+    CARDED
+        .iter()
+        .find(|k| a.get(**k) != b.get(**k))
+        .map(|k| k.to_string())
 }
 
 /// M56.3: the first key `new` would send to a host `old` doesn't send it
@@ -717,6 +734,14 @@ const FORM: &[Field] = &[
         kind: "bool",
         choices: &[],
         help: "Tell a message sent during a long turn that I'm busy (after a restart)",
+    },
+    // Loosens the one gate after outside content (docs/m19-trust-cost.md
+    // §6b); `trust.gates` stays guarded. The hub reads `[trust]` once.
+    Field {
+        key: "trust.untrusted_send_gate",
+        kind: "bool",
+        choices: &[],
+        help: "Ask before a POST, PUT or PATCH through a saved key after the run read outside content (a guest's message, a web page). Off: HTTP writes through bound keys no longer ask after outside content; recursive deletes, force pushes and DELETEs still follow [trust] gates (after a restart)",
     },
     // The chat notice only: systemd's watchdog and the heartbeat don't
     // read it (a lane is stuck after 10 min for them when it's 0).
@@ -1411,6 +1436,19 @@ mod tests {
         // The one `[plans]` field the page sets.
         let timeout = doc("[plans.claude_code]\nturn_timeout_minutes = 60\n");
         assert_eq!(guarded_change(&DocumentMut::new(), &timeout), None);
+        // The send gate is the page's (and the chat's, on a card); the
+        // gates beside it aren't.
+        let send = doc("[trust]\nuntrusted_send_gate = false\n");
+        assert_eq!(guarded_change(&DocumentMut::new(), &send), None);
+        assert_eq!(
+            carded_change(&DocumentMut::new(), &send).as_deref(),
+            Some("trust.untrusted_send_gate")
+        );
+        let both = doc("[trust]\nuntrusted_send_gate = false\ngates = false\n");
+        assert_eq!(
+            guarded_change(&DocumentMut::new(), &both).as_deref(),
+            Some("trust.gates")
+        );
     }
 
     #[test]
