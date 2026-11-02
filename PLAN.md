@@ -30,11 +30,18 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.12** (2026-10-29, PR #73): on the Claude Code engine a
+  - **v0.14.13** (2026-11-02, PR #74): `[trust] untrusted_send_gate` is
+    on the Config page and in `config_set`, from the chat only on the
+    owner's card (owner mode too) and never by a chat `config_restore`.
+    Off, HTTP writes through bound keys no longer ask after outside
+    content; recursive deletes, force pushes and DELETEs still follow
+    `[trust] gates`, which stays guarded. Takes effect after a restart.
+    Every crate is at 0.14.13 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.12** (2026-10-29, PR #73): on the Claude Code engine a
     built-in `Read` of an image counts as looked at for `send_file` (same
     freshness check as `read_file`), so files the model viewed go out
     without `unchecked`; no "can't see images" wording on engines that
-    can. Every crate is at 0.14.12 except `ferrule-plugin-sdk`.
+    can.
   - Before it, **v0.14.11** (2026-10-28, PR #72): the busy notice and the
     stuck-turn message can be turned off on the Config page and with
     `config_set`: `[gateway] busy_notices` (new, unset = on) and
