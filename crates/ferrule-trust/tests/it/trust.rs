@@ -948,6 +948,59 @@ async fn gates_off_asks_nobody() {
 }
 
 #[tokio::test]
+async fn the_send_gate_off_lets_a_post_through_after_a_guest_and_a_delete_still_asks() {
+    // `gates = true`, a guest's message read: a POST to a bound host asks.
+    let post = "curl -X POST https://api.github.com/repos/o/r/issues";
+    let w = World::new(caps());
+    w.owner.replies.lock().unwrap().push("no");
+    let guest = |w: &World| TrustGuard::root(w.hub.clone(), "s1", telegram()).guest_input(true);
+    let r = w
+        .run_with(guest(&w), vec![shell(post)], 10, Duration::ZERO)
+        .await;
+    assert!(r.ran.is_empty());
+    assert!(w.owner.sent()[0].contains(post), "{:?}", w.owner.sent());
+
+    // `untrusted_send_gate = false`: the POST runs without a question; a
+    // recursive delete, a force push and a DELETE still ask.
+    let w = World::new(TrustConfig {
+        untrusted_send_gate: false,
+        ..caps()
+    });
+    w.owner.replies.lock().unwrap().extend(["yes", "no", "no"]);
+    let delete = "curl -X DELETE https://api.github.com/repos/o/r";
+    let r = w
+        .run_with(
+            guest(&w),
+            vec![
+                shell(post),
+                shell("rm -rf build"),
+                shell("git push --force origin main"),
+                shell(delete),
+            ],
+            10,
+            Duration::ZERO,
+        )
+        .await;
+    assert_eq!(
+        r.ran,
+        [format!("shell: {post}"), "shell: rm -rf build".into()]
+    );
+    let sent = w.owner.sent();
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    assert!(
+        sent[0].contains("`rm -rf build` — recursive delete"),
+        "{}",
+        sent[0]
+    );
+    assert!(
+        sent[1].contains("git push --force origin main"),
+        "{}",
+        sent[1]
+    );
+    assert!(sent[2].contains(delete), "{}", sent[2]);
+}
+
+#[tokio::test]
 async fn a_sub_agent_of_an_unattended_run_is_unattended_too() {
     let w = World::new(caps());
     let parent = TrustGuard::root(w.hub.clone(), "scheduler__t", unattended());

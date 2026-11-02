@@ -547,6 +547,19 @@ impl Admin {
         })
     }
 
+    /// The same in owner mode.
+    #[cfg(test)]
+    pub fn autonomous_with_timeout(hub: Arc<Hub>, ask_for: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            hub,
+            bound: OnceLock::new(),
+            ask_for,
+            router: OnceLock::new(),
+            updater: OnceLock::new(),
+            autonomous: true,
+        })
+    }
+
     #[cfg(test)]
     pub fn set_updater(&self, f: Updater) {
         let _ = self.updater.set(f);

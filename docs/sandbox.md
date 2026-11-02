@@ -421,7 +421,8 @@ key. A new message starts clean, a shell command offers "Allow for this
 run", and a scheduled task, which has nobody to ask, is refused, unless
 it sends to you alone (every addressee one of your own chats or the
 connections' own mail accounts, so a morning briefing can email you).
-`[trust] untrusted_send_gate = false`, set on the machine, turns it off
+`[trust] untrusted_send_gate = false` turns it off: in the file, on the
+Config page, or with `config_set` on your own card (after a restart)
 ([m19-trust-cost.md](m19-trust-cost.md) §6b). The new ops:
 
 | Op | What it does |

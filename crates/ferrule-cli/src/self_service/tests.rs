@@ -45,6 +45,15 @@ struct Rig {
 
 impl Rig {
     fn new(ask_for: Duration) -> Self {
+        Self::build(ask_for, false)
+    }
+
+    /// Owner mode: change ops run without a card.
+    fn owner_mode(ask_for: Duration) -> Self {
+        Self::build(ask_for, true)
+    }
+
+    fn build(ask_for: Duration, autonomous: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         std::fs::create_dir_all(&data).unwrap();
@@ -78,7 +87,11 @@ impl Rig {
             Some(data.join("pins.json")),
             &cfg,
         )));
-        let admin = Admin::with_timeout(hub.clone(), ask_for);
+        let admin = if autonomous {
+            Admin::autonomous_with_timeout(hub.clone(), ask_for)
+        } else {
+            Admin::with_timeout(hub.clone(), ask_for)
+        };
         admin.bind_own(ctx);
         Self {
             _dir: dir,
@@ -370,6 +383,70 @@ async fn the_telegram_group_switch_is_set_from_a_chat_but_who_gets_in_is_not() {
         !text.contains("allowed_chats") && !text.contains("gates"),
         "{text}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_send_gate_is_turned_off_from_a_chat_only_on_the_owners_card() {
+    // The one gate the chat may loosen: on a card, written after the yes.
+    let key = "trust.untrusted_send_gate";
+    let rig = Rig::new(long());
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": false}));
+    let card = rig.asked().await;
+    assert!(card.contains(key), "{card}");
+    assert!(!rig.config_text().contains("untrusted_send_gate"));
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.starts_with("Approved and done:"), "{out}");
+    assert!(
+        rig.config_text()
+            .contains("[trust]\nuntrusted_send_gate = false"),
+        "{}",
+        rig.config_text()
+    );
+    // Anything but yes leaves it as it is.
+    rig.told.0.lock().unwrap().clear();
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": true}));
+    rig.asked().await;
+    rig.reply("no");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.contains("nothing changed"), "{out}");
+    assert!(rig.config_text().contains("untrusted_send_gate = false"));
+    // `trust.gates` itself stays the file's: refused before anyone is asked.
+    rig.told.0.lock().unwrap().clear();
+    let out = rig
+        .call(json!({"op": "config_set", "key": "trust.gates", "value": false}))
+        .await
+        .unwrap_or_else(|e| e);
+    assert!(out.contains("isn't a setting I can change here"), "{out}");
+    assert!(rig.told.0.lock().unwrap().is_empty());
+    assert!(!rig.config_text().contains("gates ="));
+
+    // Nor does a restore bring it back from the last good copy.
+    let rig = Rig::new(long());
+    let good = crate::last_good::path(&rig._dir.path().join("data"));
+    std::fs::create_dir_all(good.parent().unwrap()).unwrap();
+    std::fs::write(
+        &good,
+        format!("{CONFIG}\n[trust]\nuntrusted_send_gate = false\n"),
+    )
+    .unwrap();
+    let call = rig.start(json!({"op": "config_restore"}));
+    rig.asked().await;
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.contains("`trust.untrusted_send_gate` differs"), "{out}");
+    assert!(!rig.config_text().contains("untrusted_send_gate"));
+
+    // Owner mode runs changes without a card, but not this one.
+    let rig = Rig::owner_mode(long());
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": false}));
+    let card = rig.asked().await;
+    assert!(card.contains(key), "{card}");
+    assert!(!rig.config_text().contains("untrusted_send_gate"));
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.starts_with("Approved and done:"), "{out}");
+    assert!(rig.config_text().contains("untrusted_send_gate = false"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

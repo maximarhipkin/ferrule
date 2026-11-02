@@ -191,7 +191,11 @@ pub(super) async fn ask_and_run(
         return Err(STARTING.into());
     };
     let hub = &admin.hub;
-    let auto = admin.autonomous();
+    // A gate the chat may loosen (`trust.untrusted_send_gate`) keeps its
+    // card in owner mode too: only the owner's tap turns it off.
+    let carded = matches!(&op, Op::ConfigSet { key, .. }
+        if crate::dashboard::config_page::CARDED.contains(&key.as_str()));
+    let auto = admin.autonomous() && !carded;
     // What a check that stops the op says first: nothing was asked in the
     // default mode, nothing was done in owner mode.
     let lead = if auto { "Not done" } else { "Not asked" };

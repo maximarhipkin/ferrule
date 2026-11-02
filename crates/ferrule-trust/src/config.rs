@@ -72,8 +72,8 @@ pub struct TrustConfig {
     /// guest's message), a connected service's change, a force push or
     /// branch deletion, and a DELETE to a bound host still ask. M64.0: so
     /// does a POST, PUT or PATCH to a bound host, in every mode (with the
-    /// gates on it is the only thing this adds). Guarded: the bot can't
-    /// turn it off.
+    /// gates on it is the only thing this adds). The bot can't turn it
+    /// off by itself: from the chat only on the owner's card.
     pub untrusted_send_gate: bool,
 }
 
