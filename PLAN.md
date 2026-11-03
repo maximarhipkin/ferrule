@@ -30,7 +30,24 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.14** (2026-11-03, PR #75): silent turns. A turn that ends
+  - **v0.14.15** (2026-11-04, PR #76): M66 and the native Gemini plan.
+    `plan = "gemini-cli"` signs in to a Google / Antigravity plan over
+    HTTPS with no `agy` or `gemini` on the host (the native client is the
+    default; a logout sticks); the OAuth client isn't shipped, the owner
+    puts `FERRULE_GEMINI_CLIENT_ID` / `_SECRET` in the secrets file. The
+    dashboard is regrouped (Everyday, Agent, Setup, Advanced) and gets a
+    Control page (kill switch, lanes, live steps, plans, sessions, scoped
+    approvals), chat controls (modes, a model pin, slash commands, 👍/👎
+    with a correction, questions and approvals in the page), an
+    Instructions editor, a grouped Config, a readable Activity log and a
+    Google sign-in card with a paste-back.
+    The learning loop can be seen and switched on from a Learning page:
+    feedback from every surface, failure notes kept after a failed run,
+    changes it couldn't prove listed for the owner, a measure of whether
+    a lesson or skill helped, routing that remembers per scope, memory
+    upkeep and a weekly check. Every crate is at 0.14.15 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.14** (2026-11-03, PR #75): silent turns. A turn that ends
     with exactly `NO_REPLY` posts nothing in any chat, and one that ends
     with no text posts nothing in a group (Telegram, Signal, personal
     WhatsApp); a private chat still gets the empty-answer notice. A
@@ -38,8 +55,7 @@ below it is append-only.
     nothing from it. A streamed preview holds back while the text could
     be `NO_REPLY` and a silent turn deletes what it posted; a scheduled
     run that is silent delivers nothing; the transcript gets a
-    `silent_turn` event. Every crate is at 0.14.14 except
-    `ferrule-plugin-sdk`.
+    `silent_turn` event.
   - Before it, **v0.14.13** (2026-11-02, PR #74): `[trust] untrusted_send_gate` is
     on the Config page and in `config_set`, from the chat only on the
     owner's card (owner mode too) and never by a chat `config_restore`.
