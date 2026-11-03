@@ -737,6 +737,9 @@ pub(super) async fn gemini_start(ctx: &Ctx) -> Answer {
         }
     }
     let plan = crate::subscription::gemini::plan_at(&private, &data, "");
+    if let Err(e) = plan.issuer().client() {
+        return bad(400, format!("{e:#}"));
+    }
     let cb = ferrule_plans::gemini::auth::Callback::bind(plan.issuer())
         .await
         .ok();
@@ -750,7 +753,10 @@ pub(super) async fn gemini_start(ctx: &Ctx) -> Answer {
     let pkce = ferrule_plans::gemini::auth::Pkce::new();
     let state = ferrule_plans::gemini::auth::new_state();
     let authorize_url =
-        ferrule_plans::gemini::auth::authorize_url(plan.issuer(), &redirect, &pkce, &state);
+        match ferrule_plans::gemini::auth::authorize_url(plan.issuer(), &redirect, &pkce, &state) {
+            Ok(url) => url,
+            Err(e) => return bad(400, format!("{e:#}")),
+        };
     let outcome: Arc<Mutex<Option<Result<String, String>>>> = Arc::default();
 
     let task = cb.map(|cb| {

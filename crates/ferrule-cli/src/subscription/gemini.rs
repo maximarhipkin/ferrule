@@ -336,6 +336,7 @@ fn lower_first(s: &str) -> String {
 
 async fn gemini_tokens(plan: &GeminiPlan, flow: Flow) -> Result<Tokens> {
     let (http, issuer) = (plan.http(), plan.issuer());
+    issuer.client()?;
     let callback = match flow {
         Flow::Paste => None,
         _ => match Callback::bind(issuer).await {
@@ -357,7 +358,7 @@ async fn gemini_tokens(plan: &GeminiPlan, flow: Flow) -> Result<Tokens> {
     let state = auth::new_state();
     println!(
         "Open this address in a browser and sign in with your Google account:\n\n{}\n",
-        auth::authorize_url(issuer, &redirect, &pkce, &state)
+        auth::authorize_url(issuer, &redirect, &pkce, &state)?
     );
     let code = match callback {
         Some(cb) => {

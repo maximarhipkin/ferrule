@@ -199,6 +199,22 @@ and the dashboard show each plan's windows and when they reset.
 
 ## Gemini plan
 
+Ferrule doesn't ship a Google OAuth client. Put the client's id and
+secret in `private/secrets.env` (or export them) before signing in:
+
+```sh
+FERRULE_GEMINI_CLIENT_ID=...apps.googleusercontent.com
+FERRULE_GEMINI_CLIENT_SECRET=...
+```
+
+The gateway reads the file when it starts, so restart it after adding
+them. They aren't a tool key: don't add them with the Safe's **Add a
+key**, which would let the agent's commands send them to the hosts you
+name. Without them, `ferrule login gemini` and the **Models** page's
+Google sign-in say so and send nothing to Google, and an existing
+sign-in is kept: its refresh fails with the same sentence until the
+client is back.
+
 ```sh
 ferrule login gemini            # a browser on this machine comes back to localhost
 ferrule login gemini --paste    # sign in anywhere, paste back the address it lands on

@@ -15,6 +15,11 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+/// The OAuth client the tests sign in with (the real one is the owner's,
+/// from the secrets file).
+const TEST_CLIENT_ID: &str = "test-client.apps.example";
+const TEST_CLIENT_SECRET: &str = "test-client-secret";
+
 #[derive(Default)]
 struct MockGoogle {
     fail_first_generate_401: bool,
@@ -97,6 +102,11 @@ async fn serve_mock_google(state: Arc<Mutex<MockGoogle>>) -> String {
                 let (_method, path, body) = read_http(&mut sock).await;
                 let resp = match path.as_str() {
                     "/token" => {
+                        assert!(
+                            body.contains(&format!("client_id={TEST_CLIENT_ID}"))
+                                && body.contains(&format!("client_secret={TEST_CLIENT_SECRET}")),
+                            "the token request carries the issuer's client"
+                        );
                         let is_refresh = body.contains("grant_type=refresh_token");
                         let refuse = is_refresh && {
                             let mut st = state.lock().unwrap();
@@ -302,6 +312,8 @@ async fn native_gemini_pkce_sign_in_seals_tokens_and_cloudcode_provider_streams_
     let base_url = serve_mock_google(state.clone()).await;
     let mut iss = Issuer::new(&base_url);
     iss.ports = vec![0];
+    iss.client_id = TEST_CLIENT_ID.into();
+    iss.client_secret = TEST_CLIENT_SECRET.into();
 
     let tmp = tempfile::tempdir().unwrap();
     let private = tmp.path().join("private");
@@ -316,7 +328,8 @@ async fn native_gemini_pkce_sign_in_seals_tokens_and_cloudcode_provider_streams_
     let st = auth::new_state();
     let cb = auth::Callback::bind(&iss).await.unwrap();
     let redirect = cb.redirect.clone();
-    let auth_url = auth::authorize_url(&iss, &redirect, &pkce, &st);
+    let auth_url = auth::authorize_url(&iss, &redirect, &pkce, &st).unwrap();
+    assert!(auth_url.contains(&format!("client_id={TEST_CLIENT_ID}")));
     assert!(auth_url.contains("code_challenge_method=S256"));
     assert!(auth_url.contains("access_type=offline"));
 
@@ -472,6 +485,8 @@ async fn native_gemini_pkce_sign_in_seals_tokens_and_cloudcode_provider_streams_
 fn plan_for(base_url: &str, tmp: &std::path::Path) -> (Arc<GeminiPlan>, Issuer) {
     let mut iss = Issuer::new(base_url);
     iss.ports = vec![0];
+    iss.client_id = TEST_CLIENT_ID.into();
+    iss.client_secret = TEST_CLIENT_SECRET.into();
     iss.onboard_poll = Duration::from_millis(10);
     let private = tmp.join("private");
     let data = tmp.join("data");
@@ -647,4 +662,45 @@ async fn a_refused_refresh_reads_as_the_google_sign_in_not_an_api_key() {
         ferrule_core::failure::Kind::GeminiSignin
     );
     assert_eq!(state.lock().unwrap().refreshes, 1);
+}
+
+#[tokio::test]
+async fn with_no_oauth_client_sign_in_says_so_and_a_refresh_keeps_the_sign_in() {
+    // No client on the issuer and none in the secrets file: nothing goes
+    // to Google.
+    assert!(std::env::var_os(auth::CLIENT_ID_VAR).is_none());
+    let iss = Issuer {
+        ports: vec![0],
+        ..Issuer::new("http://127.0.0.1:9")
+    };
+    let err = iss.client().unwrap_err().to_string();
+    assert_eq!(err, auth::NO_CLIENT);
+    assert!(err.contains(auth::CLIENT_ID_VAR) && err.contains(auth::CLIENT_SECRET_VAR));
+    let pkce = Pkce::new();
+    let url = auth::authorize_url(&iss, "http://localhost:1/auth/callback", &pkce, "s");
+    assert_eq!(url.unwrap_err().to_string(), auth::NO_CLIENT);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let ex = auth::exchange(&http, &iss, "code", &pkce.verifier, "http://localhost:1/cb").await;
+    assert_eq!(ex.unwrap_err().to_string(), auth::NO_CLIENT);
+    // A missing client isn't a refused refresh: the record isn't signed out.
+    match auth::refresh(&http, &iss, "1//refresh").await {
+        Err(ferrule_connections::oauth::TokenError::Transient(why)) => {
+            assert_eq!(why, auth::NO_CLIENT)
+        }
+        other => panic!("expected a transient error, got {:?}", other.map(|_| ())),
+    }
+    // Only one half set is no client either.
+    let half = Issuer {
+        client_id: TEST_CLIENT_ID.into(),
+        ..iss.clone()
+    };
+    assert!(half.client().is_err());
+    let both = Issuer {
+        client_secret: TEST_CLIENT_SECRET.into(),
+        ..half
+    };
+    assert_eq!(
+        both.client().unwrap(),
+        (TEST_CLIENT_ID.to_string(), TEST_CLIENT_SECRET.to_string())
+    );
 }

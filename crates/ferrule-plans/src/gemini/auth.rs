@@ -20,14 +20,22 @@ pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 pub const API_BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
-pub const CLIENT_ID: &str = "";
-pub const CLIENT_SECRET: &str = "";
+/// Where the OAuth client the sign-in uses comes from. It isn't in the
+/// source: the owner puts it in the secrets file (`private/secrets.env`)
+/// or the environment, and it's read each time a sign-in or a refresh
+/// needs it.
+pub const CLIENT_ID_VAR: &str = "FERRULE_GEMINI_CLIENT_ID";
+pub const CLIENT_SECRET_VAR: &str = "FERRULE_GEMINI_CLIENT_SECRET";
+/// What a sign-in or a refresh says when there's no client.
+pub const NO_CLIENT: &str = "Google sign-in needs an OAuth client first: put FERRULE_GEMINI_CLIENT_ID and FERRULE_GEMINI_CLIENT_SECRET in private/secrets.env or the environment, then try again";
 const SCOPE: &str = "openid email profile https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email";
 pub const PORTS: [u16; 3] = [51121, 8085, 0];
 const CALLBACK_PATH: &str = "/auth/callback";
 
-/// Who signs in: the Google OAuth endpoints, Cloud Code API base, client ID,
+/// Who signs in: the Google OAuth endpoints, Cloud Code API base, client,
 /// loopback ports, and how onboarding is waited for (tests move all of them).
+/// An empty `client_id` / `client_secret` means "the secrets file's", read
+/// when it's needed ([`Issuer::client`]), not when the plan is made.
 #[derive(Debug, Clone)]
 pub struct Issuer {
     pub auth_url: String,
@@ -63,8 +71,8 @@ impl Issuer {
                 token_url: TOKEN_URL.into(),
                 revoke_url: REVOKE_URL.into(),
                 api_base: API_BASE.into(),
-                client_id: CLIENT_ID.into(),
-                client_secret: CLIENT_SECRET.into(),
+                client_id: String::new(),
+                client_secret: String::new(),
                 ports: PORTS.to_vec(),
                 onboard_poll: ONBOARD_POLL,
                 onboard_limit: ONBOARD_LIMIT,
@@ -75,12 +83,32 @@ impl Issuer {
                 token_url: format!("{base}/token"),
                 revoke_url: format!("{base}/revoke"),
                 api_base: base.to_string(),
-                client_id: CLIENT_ID.into(),
-                client_secret: CLIENT_SECRET.into(),
+                client_id: String::new(),
+                client_secret: String::new(),
                 ports: PORTS.to_vec(),
                 onboard_poll: ONBOARD_POLL,
                 onboard_limit: ONBOARD_LIMIT,
             }
+        }
+    }
+
+    /// The client id and secret: the issuer's own when set (tests), else
+    /// [`CLIENT_ID_VAR`] and [`CLIENT_SECRET_VAR`]. Both or [`NO_CLIENT`].
+    pub fn client(&self) -> Result<(String, String)> {
+        let pick = |own: &str, var: &str| {
+            Some(own.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .or_else(|| {
+                    ferrule_sandbox::secret_env::non_empty(var).map(|v| v.trim().to_string())
+                })
+                .filter(|v| !v.is_empty())
+        };
+        match (
+            pick(&self.client_id, CLIENT_ID_VAR),
+            pick(&self.client_secret, CLIENT_SECRET_VAR),
+        ) {
+            (Some(id), Some(secret)) => Ok((id, secret)),
+            _ => bail!(NO_CLIENT),
         }
     }
 }
@@ -132,11 +160,13 @@ pub fn new_state() -> String {
 }
 
 /// The Google OAuth 2.0 browser sign-in URL with PKCE and offline access.
-pub fn authorize_url(issuer: &Issuer, redirect: &str, pkce: &Pkce, state: &str) -> String {
+/// [`NO_CLIENT`] when there's no OAuth client to sign in with.
+pub fn authorize_url(issuer: &Issuer, redirect: &str, pkce: &Pkce, state: &str) -> Result<String> {
+    let (client_id, _) = issuer.client()?;
     let mut url = url::Url::parse(&issuer.auth_url).expect("a valid Google OAuth URL");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", &issuer.client_id)
+        .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", redirect)
         .append_pair("code_challenge", &pkce.challenge)
         .append_pair("code_challenge_method", "S256")
@@ -144,7 +174,7 @@ pub fn authorize_url(issuer: &Issuer, redirect: &str, pkce: &Pkce, state: &str) 
         .append_pair("scope", SCOPE)
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent");
-    url.into()
+    Ok(url.into())
 }
 
 fn oauth_code(doc: &Value) -> Option<String> {
@@ -169,12 +199,13 @@ pub async fn exchange(
     verifier: &str,
     redirect: &str,
 ) -> Result<Tokens> {
+    let (client_id, client_secret) = issuer.client()?;
     let form = [
         ("grant_type", "authorization_code"),
         ("code", code),
         ("redirect_uri", redirect),
-        ("client_id", &issuer.client_id),
-        ("client_secret", &issuer.client_secret),
+        ("client_id", &client_id),
+        ("client_secret", &client_secret),
         ("code_verifier", verifier),
     ];
     let resp = http
@@ -204,9 +235,14 @@ pub async fn refresh(
     issuer: &Issuer,
     refresh_token: &str,
 ) -> Result<Tokens, TokenError> {
+    // No client is the owner's setup, not a refused refresh: the sign-in
+    // stays, and works again once the client is back.
+    let (client_id, client_secret) = issuer
+        .client()
+        .map_err(|_| TokenError::Transient(NO_CLIENT.into()))?;
     let form = [
-        ("client_id", issuer.client_id.as_str()),
-        ("client_secret", issuer.client_secret.as_str()),
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
     ];

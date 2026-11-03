@@ -11323,3 +11323,35 @@ still can't ask. The weekly check and the learning pass haven't run
 against a real model. The Gemini plan presents itself as the Antigravity
 client (its OAuth client id, `ideType`, User-Agent): a terms-of-service
 risk for the owner's Google account that the docs don't state yet.
+
+### 2026-11-04 — Gemini plan: the OAuth client comes from the secrets file, not the source (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** GitHub's push protection refused the branch: the Gemini plan's
+commits carried a Google OAuth client id and secret in
+`ferrule-plans/src/gemini/auth.rs`. The client isn't the owner's (it's
+the Antigravity app's), and the repository is public. The owner chose to
+take it out of the code.
+
+**What changed.**
+- The branch's history was rewritten so no commit holds the two values
+  (the constants were emptied in every commit; nothing else moved).
+- `Issuer::client()`: the issuer's own client when set (tests), else
+  `FERRULE_GEMINI_CLIENT_ID` and `FERRULE_GEMINI_CLIENT_SECRET` from the
+  secrets file or the environment, read when a sign-in or a refresh
+  needs them. Neither, or only one, is `NO_CLIENT`: `ferrule login
+  gemini` and the dashboard's start say so and send nothing to Google;
+  a refresh with no client is a transient error, so a sign-in isn't
+  marked signed out over the owner's setup.
+- `docs/subscriptions.md` says where the two go, and that they aren't
+  a tool key for the Safe's **Add a key**.
+
+**Checks.** `cargo test -p ferrule-plans`: the sign-in test sends the
+issuer's client in the URL and both token requests; a new test covers
+no client, half a client, and the refresh staying signed in. The full
+`make check` set ran on the release tree.
+
+**Open.** Sign-in needs the owner to supply a client now. Unchanged from
+before: presenting as the Antigravity client is a terms-of-service risk
+for the owner's Google account.
