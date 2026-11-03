@@ -11371,3 +11371,22 @@ no client, half a client, and the refresh staying signed in. The full
 **Open.** Sign-in needs the owner to supply a client now. Unchanged from
 before: presenting as the Antigravity client is a terms-of-service risk
 for the owner's Google account.
+
+### 2026-11-04 — Dashboard: the CI browser check passes again (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** CI's `scripts/dashboard_browser_check.mjs` failed on the M66
+branch, a check I hadn't run locally: Home's redesigned checklist had
+dropped its `progressbar`, the model step's button is now "Choose a
+brain", and on a phone the Setup pages' tabs were 38 px high and the
+Models page's "model id" field shrank to 35 px.
+
+**What changed.** The checklist has its segmented progress bar again
+(under the heading); `.subtabs a` is at least `--tap` high; a growing
+input in a `.row` keeps 12ch before the row wraps; the check clicks
+"Choose a brain".
+
+**Checks.** The browser check, 27 of 27, against a fresh build; the
+dashboard tests; `tests_e2e/setup_wizard.py` (as a regular user; as root,
+setup writes to `/var/lib/ferrule`, as before) and `tests_e2e/hidden_keys.py`.

@@ -396,6 +396,7 @@ label.cb{display:inline-flex;align-items:center;gap:var(--sp-2);font-size:var(--
 .lock{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-sm)}
 .lock .ico{width:14px;height:14px}
 .grow{flex:1;min-width:0}
+.row > input.grow{min-width:min(12ch,100%)}
 .mt0{margin-top:0}
 .m0{margin:0}
 .mt{margin-top:10px}
@@ -825,7 +826,7 @@ button.ghost.danger{color:var(--bad)}
 
 /* ---------- M66: control, live steps, chat tools, learning ---------- */
 .subtabs{display:flex;gap:var(--sp-1);margin:0 0 var(--sp-4);border-bottom:var(--hair);overflow-x:auto}
-.subtabs a{padding:var(--sp-2) var(--sp-3);margin-bottom:-1px;border-bottom:2px solid transparent;color:var(--muted);text-decoration:none;font-size:var(--fs-sm);font-weight:var(--fw-medium);white-space:nowrap}
+.subtabs a{display:inline-flex;align-items:center;min-height:var(--tap);padding:var(--sp-2) var(--sp-3);margin-bottom:-1px;border-bottom:2px solid transparent;color:var(--muted);text-decoration:none;font-size:var(--fs-sm);font-weight:var(--fw-medium);white-space:nowrap}
 .subtabs a:hover{color:var(--ink)}
 .subtabs a.on{color:var(--ink);border-bottom-color:var(--accent)}
 

@@ -1019,6 +1019,8 @@
         el("h2", { id: "setup-h", text: "Get started" }),
         el("span", { class: "muted small", text: n + " of " + steps.length + " done" }),
         button("Hide this", { kind: "ghost", onclick: () => { home.hide(); sections.health.draw(); } })),
+      el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(n), "aria-label": "Setup progress" },
+        steps.map((x) => el("span", { class: x.done ? "seg on" : "seg" }))),
       el("ol", { class: "steps cards" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") + (x === next ? " next" : "") + (locked(x) ? " locked" : "") },
         el("div", { class: "step-top" },
           el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)), when(x)),
