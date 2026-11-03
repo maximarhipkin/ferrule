@@ -823,7 +823,7 @@ const PRESETS: &[Preset] = &[
         name: "gemini",
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
         key_env: "GEMINI_API_KEY",
-        profile: "generic",
+        profile: "gemini",
         model: "gemini-2.5-flash",
         key_url: "https://aistudio.google.com/apikey",
     },
@@ -955,16 +955,17 @@ async fn provider_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
     }
 }
 
-/// M35: the four ways to a model, each with its trade-off in a line.
-const MODEL_WAYS: [&str; 4] = [
+/// M35: the ways to reach a model, each with its trade-off in a line.
+const MODEL_WAYS: [&str; 5] = [
     "ChatGPT plan · your ChatGPT Plus/Pro/Business plan, no API bill; runs in ferrule's own loop (OpenAI tolerates this, it isn't a contract)",
     "Claude plan · your Claude Pro/Max plan, through the claude CLI; some ferrule features don't apply",
+    "Gemini plan · your Google One AI Pro / Code Assist account, through the gemini CLI; some ferrule features don't apply",
     "API key · any provider, pay per token, every ferrule feature",
     "Local model · Ollama, llama.cpp, LM Studio or vLLM on this machine or your LAN",
 ];
 
 async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
-    // A way that can't finish (the Claude plan without the claude CLI)
+    // A way that can't finish (the Claude or Gemini plan without its CLI)
     // says so, and the picker comes back instead of saving nothing.
     loop {
         let way = Select::new("How should ferrule reach a model?", MODEL_WAYS.to_vec())
@@ -973,7 +974,8 @@ async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
         let done = match way {
             0 => chatgpt_plan_step(t).await.map(|_| true)?,
             1 => crate::subscription::claude_setup_step(t).await?,
-            2 => add_keyed_provider(t, http, false).await.map(|_| true)?,
+            2 => crate::subscription::gemini_setup_step(t).await?,
+            3 => add_keyed_provider(t, http, false).await.map(|_| true)?,
             _ => add_keyed_provider(t, http, true).await.map(|_| true)?,
         };
         if done {
@@ -1027,6 +1029,10 @@ async fn plan_models(cfg: &config::Config, p: &config::ProviderConfig) -> Result
             interruptible(crate::subscription::chatgpt_models(&issuer)).await?
         }
         Some(Plan::ClaudeCode) => crate::subscription::CLAUDE_CODE_MODELS
+            .iter()
+            .map(|m| m.to_string())
+            .collect(),
+        Some(Plan::GeminiCli) => crate::subscription::GEMINI_CLI_MODELS
             .iter()
             .map(|m| m.to_string())
             .collect(),

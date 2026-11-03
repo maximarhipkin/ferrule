@@ -83,7 +83,7 @@ pub(super) fn choices(ctx: &Ctx) -> Answer {
             "key_url": Some(x.key_url).filter(|u| !u.is_empty()),
         }));
     }
-    for plan in [Plan::Chatgpt, Plan::ClaudeCode] {
+    for plan in [Plan::Chatgpt, Plan::ClaudeCode, Plan::GeminiCli] {
         let on = cfg
             .as_ref()
             .is_some_and(|c| c.providers.values().any(|p| p.plan == Some(plan)));
@@ -111,6 +111,7 @@ fn plan_title(plan: Plan) -> &'static str {
     match plan {
         Plan::Chatgpt => "ChatGPT plan (Plus, Pro, Business)",
         Plan::ClaudeCode => "Claude plan (Pro, Max)",
+        Plan::GeminiCli => "Gemini plan (Google One AI Pro, Code Assist)",
     }
 }
 
@@ -197,7 +198,7 @@ fn wanted(cfg: &Config, name: &str, base_url: Option<&str>) -> Result<Wanted, St
             new: true,
         });
     }
-    if let Some(plan) = [Plan::Chatgpt, Plan::ClaudeCode]
+    if let Some(plan) = [Plan::Chatgpt, Plan::ClaudeCode, Plan::GeminiCli]
         .into_iter()
         .find(|p| p.as_str() == name)
     {
@@ -431,6 +432,7 @@ pub(super) async fn provider_list(ctx: &Ctx, req: &super::http::Request) -> Answ
                 let issuer = cfg.plans.chatgpt.issuer.clone().unwrap_or_default();
                 crate::subscription::chatgpt_models(&issuer).await
             }
+            Some(Plan::GeminiCli) => crate::subscription::gemini_models("").await,
             _ => crate::subscription::CLAUDE_CODE_MODELS
                 .iter()
                 .map(|m| m.to_string())
@@ -481,10 +483,24 @@ struct Flow {
     task: tokio::task::AbortHandle,
 }
 
-/// The page's plan sign-ins, one ChatGPT flow at a time.
+/// A Gemini OAuth PKCE sign-in started from the page: the Google authorize URL,
+/// the PKCE verifier & state (for a pasted redirect URL from a remote browser),
+/// and an optional loopback listener task (when the browser is on the same host).
+struct GeminiFlow {
+    authorize_url: String,
+    redirect: String,
+    verifier: String,
+    state: String,
+    started: Instant,
+    outcome: Arc<Mutex<Option<Result<String, String>>>>,
+    task: Option<tokio::task::AbortHandle>,
+}
+
+/// The page's plan sign-ins, one ChatGPT flow and one Gemini flow at a time.
 #[derive(Default)]
 pub struct PlanFlows {
     chatgpt: Mutex<Option<Flow>>,
+    gemini: Mutex<Option<GeminiFlow>>,
 }
 
 /// A device code is good for this long (OpenAI's 15 minutes).
@@ -655,4 +671,219 @@ pub(super) fn claude_token(ctx: &Ctx, body: &Value) -> Answer {
         _ => {}
     }
     ok(json!({ "ok": true, "said": said }))
+}
+
+type RetireFn = Arc<dyn Fn(Option<&str>) + Send + Sync>;
+
+fn finish_gemini_meta(
+    meta: ferrule_plans::gemini::store::Meta,
+    config_path: Option<&std::path::Path>,
+    retire_all: Option<&RetireFn>,
+) -> String {
+    let who = crate::subscription::SignIn::In {
+        email: meta.email,
+        plan: meta.plan,
+    }
+    .word();
+    let added = config_path.map(|p| {
+        crate::subscription::login::add_provider_at(
+            p,
+            Plan::GeminiCli,
+            crate::subscription::gemini::MODEL,
+        )
+    });
+    if let Some(r) = retire_all {
+        r(None);
+    }
+    match added {
+        Some(Ok(Some(_))) => format!(
+            "{who} on the Gemini plan; `gemini-cli/{}` is connected.",
+            crate::subscription::gemini::MODEL
+        ),
+        Some(Err(e)) => format!(
+            "{who} on the Gemini plan, but `gemini-cli/{}` couldn't be added to the config: {e:#}.",
+            crate::subscription::gemini::MODEL
+        ),
+        _ => format!("{who} on the Gemini plan."),
+    }
+}
+
+/// `POST plans/gemini/start`: starts a Google OAuth 2.0 PKCE flow for the
+/// Gemini / Antigravity plan. Works both locally (loopback listener) and on
+/// a remote server (the user opens `authorize_url` in their browser and pastes
+/// the redirect URL to `POST plans/gemini/complete`).
+pub(super) async fn gemini_start(ctx: &Ctx) -> Answer {
+    let (private, data) = need!(private_and_data(ctx));
+    {
+        let flow = ctx.plans.gemini.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = flow.as_ref() {
+            let waiting = f.outcome.lock().unwrap().is_none();
+            if waiting && f.started.elapsed() < DEVICE_LIMIT {
+                return ok(json!({
+                    "authorize_url": f.authorize_url,
+                    "state": "waiting",
+                }));
+            }
+        }
+    }
+    let plan = crate::subscription::gemini::plan_at(&private, &data, "");
+    let cb = ferrule_plans::gemini::auth::Callback::bind(plan.issuer())
+        .await
+        .ok();
+    let redirect = match &cb {
+        Some(c) => c.redirect.clone(),
+        None => format!(
+            "http://localhost:{}/auth/callback",
+            plan.issuer().ports.first().copied().unwrap_or(51121)
+        ),
+    };
+    let pkce = ferrule_plans::gemini::auth::Pkce::new();
+    let state = ferrule_plans::gemini::auth::new_state();
+    let authorize_url =
+        ferrule_plans::gemini::auth::authorize_url(plan.issuer(), &redirect, &pkce, &state);
+    let outcome: Arc<Mutex<Option<Result<String, String>>>> = Arc::default();
+
+    let task = cb.map(|cb| {
+        let outcome = outcome.clone();
+        let state = state.clone();
+        let verifier = pkce.verifier.clone();
+        let redirect = redirect.clone();
+        let config_path = ctx.config_path.clone();
+        let retire_all = ctx.live.as_ref().map(|l| l.retire.clone());
+        tokio::spawn(async move {
+            let said = match cb.wait(&state, DEVICE_LIMIT).await {
+                Ok(code) => match ferrule_plans::gemini::auth::exchange(
+                    plan.http(),
+                    plan.issuer(),
+                    &code,
+                    &verifier,
+                    &redirect,
+                )
+                .await
+                {
+                    Ok(tokens) => match plan.sign_in(tokens).await {
+                        Ok(meta) => Ok(finish_gemini_meta(
+                            meta,
+                            config_path.as_deref(),
+                            retire_all.as_ref(),
+                        )),
+                        Err(e) => Err(format!(
+                            "The sign-in came back but couldn't be stored: {e:#}"
+                        )),
+                    },
+                    Err(e) => Err(format!("The Gemini sign-in didn't complete: {e:#}.")),
+                },
+                Err(e) => Err(format!("The Gemini sign-in didn't complete: {e:#}.")),
+            };
+            *outcome.lock().unwrap() = Some(said);
+        })
+        .abort_handle()
+    });
+
+    let mut flow = ctx.plans.gemini.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(old) = flow.take() {
+        if let Some(t) = old.task {
+            t.abort();
+        }
+    }
+    *flow = Some(GeminiFlow {
+        authorize_url: authorize_url.clone(),
+        redirect,
+        verifier: pkce.verifier,
+        state,
+        started: Instant::now(),
+        outcome,
+        task,
+    });
+    ok(json!({
+        "authorize_url": authorize_url,
+        "state": "waiting",
+    }))
+}
+
+/// `POST plans/gemini/complete {redirect}`: completes a waiting Gemini PKCE
+/// sign-in using the redirect URL pasted from the user's browser (for remote
+/// headless servers).
+pub(super) async fn gemini_complete(ctx: &Ctx, body: &Value) -> Answer {
+    let (private, data) = need!(private_and_data(ctx));
+    let pasted = need!(arg(body, "redirect")).trim().to_string();
+    let (redirect, verifier, state) = {
+        let flow = ctx.plans.gemini.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(f) = flow.as_ref() else {
+            return bad(
+                400,
+                "No Gemini sign-in is waiting; press Sign in first to get a fresh link.",
+            );
+        };
+        (f.redirect.clone(), f.verifier.clone(), f.state.clone())
+    };
+    let code = match ferrule_plans::gemini::auth::code_from_redirect(&pasted, &state) {
+        Ok(c) => c,
+        Err(e) => {
+            return bad(
+                400,
+                format!("{e:#}. Copy the full http://localhost:…/auth/callback?code=… address from the browser's address bar."),
+            )
+        }
+    };
+    let plan = crate::subscription::gemini::plan_at(&private, &data, "");
+    let tokens = match ferrule_plans::gemini::auth::exchange(
+        plan.http(),
+        plan.issuer(),
+        &code,
+        &verifier,
+        &redirect,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    let meta = match plan.sign_in(tokens).await {
+        Ok(m) => m,
+        Err(e) => return bad(500, format!("The sign-in couldn't be stored: {e:#}")),
+    };
+    let retire_all = ctx.live.as_ref().map(|l| l.retire.clone());
+    let said = finish_gemini_meta(meta, ctx.config_path.as_deref(), retire_all.as_ref());
+    {
+        let mut flow = ctx.plans.gemini.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = flow.take() {
+            if let Some(t) = old.task {
+                t.abort();
+            }
+        }
+    }
+    ok(json!({ "ok": true, "said": said }))
+}
+
+/// `GET plans/gemini/poll`: `none`, `waiting`, `done` or `failed`.
+pub(super) fn gemini_poll(ctx: &Ctx) -> Answer {
+    let flow = ctx.plans.gemini.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(f) = flow.as_ref() else {
+        return ok(json!({ "state": "none" }));
+    };
+    let outcome = f.outcome.lock().unwrap().clone();
+    ok(match outcome {
+        None if f.started.elapsed() >= DEVICE_LIMIT => json!({
+            "state": "failed",
+            "said": "The sign-in link expired (15 minutes); press Sign in for a new one.",
+        }),
+        None => json!({ "state": "waiting", "authorize_url": f.authorize_url }),
+        Some(Ok(said)) => json!({ "state": "done", "said": said }),
+        Some(Err(said)) => json!({ "state": "failed", "said": said }),
+    })
+}
+
+/// `POST plans/gemini/cancel`: cancels a waiting Gemini sign-in.
+pub(super) fn gemini_cancel(ctx: &Ctx) -> Answer {
+    let mut flow = ctx.plans.gemini.lock().unwrap_or_else(|e| e.into_inner());
+    let had = flow
+        .take()
+        .inspect(|f| {
+            if let Some(t) = &f.task {
+                t.abort();
+            }
+        })
+        .is_some();
+    ok(json!({ "ok": had }))
 }

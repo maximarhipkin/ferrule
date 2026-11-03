@@ -85,6 +85,8 @@ impl Check {
                             crate::config::Plan::Chatgpt => "/login chatgpt here",
                             crate::config::Plan::ClaudeCode =>
                                 "sign in again on the dashboard's Models page (/dashboard sends the link)",
+                            crate::config::Plan::GeminiCli =>
+                                "run `ferrule login gemini` on the server",
                         }
                     ),
                 );

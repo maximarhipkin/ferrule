@@ -90,6 +90,23 @@ impl HarnessProfile {
         }
     }
 
+    /// Google Gemini (2.5 Pro/Flash, 3.x): 1M token context window, native
+    /// thinking/reasoning retention, and strong multi-step tool use.
+    pub fn gemini() -> Self {
+        Self {
+            name: "gemini".into(),
+            context_window: 1_000_000,
+            output_reserve: 64_000,
+            compaction_threshold: 0.72,
+            retain_reasoning: true,
+            system_directive: "You are Gemini working inside an autonomous agent runtime. \
+                               Use tools directly to inspect and verify before concluding, \
+                               and keep final responses concise and grounded in evidence."
+                .into(),
+            max_effort: Some("high".into()),
+        }
+    }
+
     /// Conservative generic fallback for unknown OpenAI-compatible endpoints.
     pub fn generic() -> Self {
         Self {
@@ -124,6 +141,7 @@ impl HarnessProfile {
             "kimi" => Self::kimi(),
             "openai" => Self::openai(),
             "anthropic" => Self::anthropic_compatible(),
+            "gemini" => Self::gemini(),
             _ => Self::generic(),
         }
     }
@@ -213,5 +231,9 @@ mod tests {
     fn unknown_profile_falls_back_to_generic() {
         assert_eq!(HarnessProfile::by_name("whatever").name, "generic");
         assert_eq!(HarnessProfile::by_name("kimi").name, "kimi");
+        let gemini = HarnessProfile::by_name("gemini");
+        assert_eq!(gemini.name, "gemini");
+        assert_eq!(gemini.context_window, 1_000_000);
+        assert!(gemini.retain_reasoning);
     }
 }

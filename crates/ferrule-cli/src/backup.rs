@@ -23,6 +23,7 @@ pub const SECRETS: &[&str] = &[
     // M63.4: servers that keep their own sign-in (a token cache).
     "mcp-private",
     "claude-code",
+    "gemini-cli",
     "ssh",
     "proxy/keys",
     "gateway/matrix/session.json",

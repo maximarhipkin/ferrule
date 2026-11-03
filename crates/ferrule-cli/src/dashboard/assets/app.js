@@ -490,7 +490,7 @@
     points.forEach((p, i) => {
       const bh = Math.max((p.v / max) * (h - 14), p.v > 0 ? 1.5 : 0);
       const x = pad + i * bw + bw * 0.16, wid = bw * 0.68;
-      svg.append(el("rect", { x, y: h - bh, width: wid, height: bh, class: p.dim ? "dim" : null },
+      svg.append(el("rect", { x, y: h - bh, width: wid, height: bh, rx: 3, class: p.dim ? "dim" : null },
         el("title", { text: p.k + ": " + fmt(p.v) })));
       if (points.length <= 12 || i % Math.ceil(points.length / 10) === 0)
         svg.append(el("text", { x: x + wid / 2, y: h + 12, "text-anchor": "middle", text: p.k }));
@@ -935,6 +935,7 @@
   // hundreds of models, and Claude.
   const BRAINS = [
     ["chatgpt", "No key: sign in with the ChatGPT plan you already pay for."],
+    ["gemini", "Google Gemini: free or paid AI Studio key, 1M context window."],
     ["openrouter", "One key, hundreds of models, pay as you go."],
     ["anthropic", "Claude, with a key from Anthropic's console."],
   ];
@@ -1058,9 +1059,10 @@
       ].filter(Boolean);
       const showList = setup && !setup.done && !home.hidden();
       const tgOpen = setup && setup.done && !(setup.steps.find((x) => x.id === "telegram") || {}).done;
+      const heroTone = level.startsWith("bad") ? " bad" : level.startsWith("warn") ? " warn" : "";
       setKids(this.box,
         el("h1", { class: "sr", text: title("health") }),
-        el("section", { class: "card hero", "aria-label": "Status" },
+        el("section", { class: "card hero" + heroTone, "aria-label": "Status" },
           el("div", { class: "row" }, led(level),
             el("p", { class: "lead grow", role: "status", text: said }),
             btn("Run doctor", "doctor/run", {}),
@@ -1271,15 +1273,24 @@
           ]})))
           : el("div", { class: "empty", text: "no chat is pinned" }),
         el("h2", { text: "Pin a chat, add a model by id" }),
-        el("div", { class: "card" },
-          el("div", { class: "row" }, where, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value, channel: where.value }))),
+        el("div", { class: "grid2" },
+          el("div", { class: "card stack" },
+            el("h4", { class: "m0", text: "Pin a chat to a model" }),
+            el("p", { class: "muted small m0", text: "Fix one conversation to a specific model regardless of the default." }),
+            el("div", { class: "row" }, where, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value, channel: where.value })))),
           (() => {
-            const p = el("input", { placeholder: "provider", size: 10 });
-            const id = el("input", { placeholder: "model id", dir: "auto" });
-            const a = el("input", { placeholder: "alias (optional)", size: 10 });
-            const b = el("button", { text: "Add" });
+            const conn = ((this.choices && this.choices.providers) || []).filter((x) => x.connected);
+            const p = conn.length
+              ? el("select", { "aria-label": "provider" }, conn.map((x) => el("option", { value: x.name, text: x.name })))
+              : el("input", { placeholder: "provider", size: 10 });
+            const id = el("input", { class: "grow", placeholder: "model id", dir: "auto" });
+            const a = el("input", { placeholder: "alias (optional)", size: 12 });
+            const b = el("button", { class: "primary", text: "Add" });
             b.onclick = () => act("models/add", { provider: p.value, model: id.value, alias: a.value }, b);
-            return el("div", { class: "row" }, p, id, a, b);
+            return el("div", { class: "card stack" },
+              el("h4", { class: "m0", text: "Add a model by ID" }),
+              el("p", { class: "muted small m0", text: "Connect any model slug offered by an active provider." }),
+              el("div", { class: "row" }, p, id, a, b));
           })()));
     },
     addButtons(row) {
@@ -1444,6 +1455,44 @@
           el("div", { class: "row key-row" }, t, b));
         return box;
       }
+      if (p.plan === "gemini-cli" && (!p.connected || !p.ready)) {
+        const f = this.gemini;
+        box.append(el("p", { class: "muted small", text: "Sign in directly with your Google / Antigravity subscription (no external CLI needed on the server)." }));
+        if (f && f.state === "waiting") {
+          const inp = el("input", { type: "text", placeholder: "http://localhost:51121/auth/callback?code=…", class: "mono" });
+          const sub = el("button", { class: "primary", text: "Complete sign-in" });
+          sub.onclick = async () => {
+            const v = inp.value.trim();
+            if (!v) return;
+            sub.disabled = true;
+            try {
+              const r = await api("/api/plans/gemini/complete", { redirect: v });
+              toast(r.said || "Signed in to the Gemini plan.");
+              this.gemini = null;
+              refresh();
+              this.loadChoices();
+            } catch (e) {
+              sayFor(sub, e.message, true);
+              sub.disabled = false;
+            }
+          };
+          box.append(
+            el("p", { class: "small" }, "1. ", el("a", { href: f.authorize_url, target: "_blank", rel: "noopener", text: "Open Google sign-in in a new tab" })),
+            el("p", { class: "muted small", text: "2. If ferrule is on a remote server, copy the localhost redirect URL from your browser's address bar after signing in and paste it below:" }),
+            el("div", { class: "row key-row" }, inp, sub),
+            el("div", { class: "row mt" }, btn("Cancel", "plans/gemini/cancel", {}, "danger"))
+          );
+        } else {
+          if (f && f.state === "failed") box.append(el("div", { class: "said bad msg", dir: "auto", text: f.said }));
+          const b = el("button", { class: "primary", text: "Sign in with Google" });
+          b.onclick = async () => {
+            b.disabled = true;
+            try { this.gemini = await api("/api/plans/gemini/start", {}); this.pollGemini(); this.drawChoices(); } catch (e) { sayFor(b, e.message, true); b.disabled = false; }
+          };
+          box.append(el("div", { class: "row" }, b));
+        }
+        return box;
+      }
       if (p.needs_key) {
         const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "paste a new key" : "paste the key", "data-secret": "1" });
         const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
@@ -1478,6 +1527,14 @@
         await new Promise((r) => setTimeout(r, 3000));
         try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
         if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); if (this.home) this.loadChoices(); break; }
+        if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
+      }
+    },
+    async pollGemini() {
+      while (this.gemini && this.gemini.state === "waiting") {
+        await new Promise((r) => setTimeout(r, 3000));
+        try { this.gemini = await api("/api/plans/gemini/poll"); } catch (_) { break; }
+        if (this.gemini.state === "done") { toast(this.gemini.said); this.gemini = null; refresh(); if (this.home) this.loadChoices(); break; }
         if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
       }
     },
@@ -4138,7 +4195,7 @@
     // bar, which a reload reads as a login token.
     document.querySelector(".skip").onclick = (e) => { e.preventDefault(); document.getElementById("main").focus(); };
     const find = document.getElementById("find");
-    find.append(icon("search"));
+    find.append(icon("search"), el("span", { class: "find-lbl", text: "Search" }), el("kbd", { class: "find-kbd", "aria-hidden": "true", text: "/" }));
     document.getElementById("logout").append(icon("power"));
     find.onclick = () => palette();
   }

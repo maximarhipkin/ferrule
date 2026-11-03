@@ -96,6 +96,10 @@ impl std::fmt::Debug for ChildSpec {
 }
 
 impl ChildSpec {
+    pub fn from_parts(args: Vec<String>, remove: Vec<String>, set: Vec<(String, String)>) -> Self {
+        Self { args, remove, set }
+    }
+
     /// The variables set in the child, the token's value blanked: what a
     /// log or a test may look at.
     pub fn set_redacted(&self) -> Vec<(String, String)> {

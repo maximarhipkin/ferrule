@@ -621,8 +621,16 @@ pub async fn test_entry_with(e: &Entry, key: Option<String>) -> TestOutcome {
         ok: false,
         said,
     };
-    let Some(key) = key.filter(|k| !k.is_empty()) else {
-        return fail(e.no_key());
+    let key = if e.plan.is_some() {
+        if !e.ready() {
+            return fail(e.no_key());
+        }
+        String::new()
+    } else {
+        let Some(key) = key.filter(|k| !k.is_empty()) else {
+            return fail(e.no_key());
+        };
+        key
     };
     let client = e.client(key);
     let req = CompletionRequest {
@@ -684,6 +692,9 @@ pub fn explain(e: &Entry, err: &CoreError) -> String {
                 |p| match p {
                     crate::config::Plan::Chatgpt => "/login chatgpt in a chat, or the dashboard's Models page",
                     crate::config::Plan::ClaudeCode => "the dashboard's Models page",
+                    crate::config::Plan::GeminiCli => {
+                        "`ferrule login gemini`, or the dashboard's Models page"
+                    }
                 },
             )
         ),

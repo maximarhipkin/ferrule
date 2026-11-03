@@ -1995,6 +1995,22 @@ fn completed_policy(
             policy.hidden.push(home.join(".claude.json"));
         }
     }
+    if cfg.uses_gemini_cli() {
+        if let Some(home) = dirs::home_dir() {
+            let dot = home.join(".gemini");
+            if let Ok(dir) = subscription::gemini::config_dir(&cfg.plans.gemini_cli) {
+                if dir != dot {
+                    policy.hidden.push(dir);
+                }
+            }
+            policy
+                .hidden
+                .push(dot.join("antigravity-cli").join("antigravity-oauth-token"));
+            policy.hidden.push(dot.join("oauth_creds.json"));
+        } else if let Ok(dir) = subscription::gemini::config_dir(&cfg.plans.gemini_cli) {
+            policy.hidden.push(dir);
+        }
+    }
     policy.state_dir = config::data_dir().ok().map(|d| d.join("sandbox"));
     policy.hidden.extend(managed::hidden_for(managed::state()));
     policy
@@ -2138,23 +2154,24 @@ pub(crate) fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
 /// lets Anthropic's hosts through when a claude-code provider exists. The
 /// engine adds the config dir as writable itself.
 pub(crate) fn engine_sandbox(cfg: &config::Config, config_dir: &Path) -> Result<Sandbox> {
-    static SANDBOX: OnceLock<Sandbox> = OnceLock::new();
-    if let Some(sandbox) = SANDBOX.get() {
-        return Ok(sandbox.clone());
-    }
     let mut policy = sandbox_policy(cfg);
     let home_claude = dirs::home_dir().map(|h| (h.join(".claude"), h.join(".claude.json")));
+    let home_gemini = dirs::home_dir().map(|h| h.join(".gemini"));
     policy.hidden.retain(|p| {
         p != config_dir
+            && !p.starts_with(config_dir)
             && !home_claude
                 .as_ref()
                 .is_some_and(|(d, f)| config_dir == d && (p == d || p == f))
+            && !home_gemini
+                .as_ref()
+                .is_some_and(|g| config_dir.starts_with(g) && p.starts_with(g))
     });
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     if let Some(broker) = shared_broker(cfg)? {
         sandbox = proxied(sandbox, broker)?;
     }
-    Ok(SANDBOX.get_or_init(|| sandbox).clone())
+    Ok(sandbox)
 }
 
 /// `sandbox` pointed at the credential proxy: its settings in commands'

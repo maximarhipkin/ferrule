@@ -1,4 +1,4 @@
-# Subscriptions: a ChatGPT plan or a Claude plan
+# Subscriptions: ChatGPT, Claude, or Gemini plans
 
 Ferrule can run on a plan you already pay for, instead of an API key:
 
@@ -9,6 +9,12 @@ Ferrule can run on a plan you already pay for, instead of an API key:
   by the unmodified `claude` binary (Claude Code). Ferrule never calls the
   Anthropic API with your plan. Some ferrule features work differently
   (table below).
+- **Gemini plan** (Google One AI Pro / Ultra, Gemini Code Assist, or Google's
+  Antigravity subscription): ferrule signs in to your Google account via
+  OAuth 2.0 PKCE (`ferrule login gemini` or the dashboard's **Models** page),
+  seals the token in `<data>/private/plans/gemini.json`, and calls Google's
+  Cloud Code backend directly from ferrule's own loop. No `agy` or `gemini`
+  binary is required on the server, and every ferrule feature works.
 
 A plan turn costs **$0** on the ledger. What it spends is the plan's usage
 window. The design and the reasons behind it are in

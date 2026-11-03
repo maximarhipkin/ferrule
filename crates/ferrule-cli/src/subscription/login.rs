@@ -25,6 +25,8 @@ pub enum Which {
     Chatgpt,
     /// The Claude plan, through the unmodified `claude` binary
     Claude,
+    /// The Gemini plan, through the unmodified `gemini` binary
+    Gemini,
 }
 
 /// How `ferrule login chatgpt` signs in.
@@ -65,6 +67,7 @@ pub async fn login(which: Which, flow: Flow, paste_token: bool) -> Result<()> {
             Ok(())
         }
         Which::Claude => super::claude::login(paste_token).await,
+        Which::Gemini => super::gemini::login(flow).await,
     }
 }
 
@@ -76,6 +79,7 @@ pub async fn logout(which: Which) -> Result<()> {
             Ok(())
         }
         Which::Claude => super::claude::logout().await,
+        Which::Gemini => super::gemini::logout().await,
     }
 }
 
@@ -271,6 +275,12 @@ impl PlanDoor {
             "claude" | "claude-code" | "anthropic" if login => return CLAUDE_IN_CHAT.into(),
             "claude" | "claude-code" | "anthropic" => {
                 return "The Claude plan signs out on the dashboard's Models page (/dashboard sends the link).".into()
+            }
+            "gemini" | "gemini-cli" | "google" if login => {
+                return "The Gemini plan signs in on the dashboard's Models page (/dashboard sends the link) or with `ferrule login gemini`.".into()
+            }
+            "gemini" | "gemini-cli" | "google" => {
+                return "The Gemini plan signs out on the dashboard's Safe page (/dashboard sends the link) or with `ferrule logout gemini`.".into()
             }
             "chatgpt" | "openai" | "codex" => {}
             _ => {

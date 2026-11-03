@@ -355,6 +355,7 @@ pub fn kind_of(plan: Option<Plan>, base_url: &str) -> String {
     match plan {
         Some(Plan::Chatgpt) => return "chatgpt".into(),
         Some(Plan::ClaudeCode) => return "claude".into(),
+        Some(Plan::GeminiCli) => return "gemini-cli".into(),
         None => {}
     }
     let host = host_of(base_url);

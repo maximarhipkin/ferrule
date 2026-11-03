@@ -11053,3 +11053,53 @@ acknowledged and reaches the turn with no "Busy" line; from a chat,
 `config_set` writes `gateway.busy_notices = false` and
 `health.watchdog_after_secs = 0` on a yes and refuses 86401; both pass the
 page's guard. The existing watchdog-off test still holds. CI on the PR.
+
+### 2026-11-03 — Native Gemini / Antigravity subscription plan (`gemini-cli` via `CloudCodeProvider`), `HarnessProfile::gemini()`, and dashboard polish
+
+No milestone claimed.
+
+**Why.** (1) The owner wants to sign in to and use a Google / Antigravity
+subscription (`plan = "gemini-cli"` / `ferrule login gemini` / dashboard
+`Models` page) directly from Ferrule on any server without installing `agy`
+or `gemini` on the host, while keeping Ferrule's self-update and client
+identity automatically up to date. (2) Gemini models need a 1M context window
+profile (`HarnessProfile::gemini()`) with reasoning retention rather than the
+128K `generic` profile. (3) The dashboard's cards, top search trigger,
+sidebar active indicator, and `Models` pin/add forms needed visual and
+ergonomic polish (including `Ctrl+K` / `Cmd+K` quick-search).
+
+**What changed.**
+- `ferrule-core`: `HarnessProfile::gemini()` (`context_window: 1_000_000`,
+  `output_reserve: 64_000`, `compaction_threshold: 0.72`,
+  `retain_reasoning: true`, `max_effort: Some("high")`); `setup.rs` and
+  `config.rs` select `"gemini"` for `Plan::GeminiCli` and
+  `generativelanguage.googleapis.com`.
+- `ferrule-plans`: `ferrule_plans::gemini` (`GeminiPlan`, `auth`, `store`)
+  implementing native Google OAuth 2.0 S256 PKCE sign-in (`authorize_url`,
+  `exchange`, `refresh`, `revoke`, `Callback`, `code_from_redirect`),
+  `v1internal:loadCodeAssist` project/tier onboarding, `v1internal:retrieveUserQuotaSummary`
+  quota window recording (`UsageFile`), and a sealed AES-256-GCM store at
+  `private/plans/gemini.json` (`AAD = "ferrule-plan:gemini"`, with automatic
+  one-time import from `~/.gemini/antigravity-cli/antigravity-oauth-token`
+  when present). Optional subprocess engine (`GeminiCli`, `EngineConfig`,
+  `cli`, `env`, `stream`) remains available if `[plans.gemini_cli] binary`
+  is explicitly set.
+- `ferrule-providers`: `ferrule_providers::cloudcode` (`CloudCodeProvider` +
+  `cloudcode::version::ClientIdentity`), speaking `v1internal:streamGenerateContent?alt=sse`,
+  `v1internal:fetchAvailableModels`, `v1internal:retrieveUserQuotaSummary`,
+  and `v1internal:loadCodeAssist` directly over HTTPS against
+  `daily-cloudcode-pa.googleapis.com`, preserving `thoughtSignature` across
+  tool turns via `NativeBlocks` (`api: "cloudcode"`), resolving tiered model
+  aliases (`gemini-4-argon-*`, `gemini-3.8-flash-*`), and auto-updating its
+  learned client identity (`1.4.12` floor).
+- `ferrule-cli`: `ferrule login gemini` (`--browser` / `--paste` + paste
+  redirect URL on stdin for headless SSH servers), `ferrule logout gemini`,
+  dashboard web sign-in endpoints (`/api/control/plans/gemini/{start,complete,poll,cancel}`),
+  `plan:gemini` in the Safe page, `doctor --ping-models` live refresh check,
+  and dashboard visual/UX polish (`app.css`, `app.js`).
+
+**Checks.** `ferrule-core`, `ferrule-providers`, `ferrule-plans` (`tests/it/gemini.rs`),
+and `ferrule-cli` unit and integration tests (`make check`), plus live
+end-to-end verification of `ferrule doctor --ping-models`, `ferrule status`
+(with `5h` and `weekly` quota windows), and `ferrule run` with
+`PATH=/usr/bin:/bin` (no `agy` or `gemini` binary on `PATH`).

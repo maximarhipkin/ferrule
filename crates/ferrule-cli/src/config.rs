@@ -17,7 +17,7 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub api_key_env: String,
     pub model: String,
-    /// Harness profile: kimi | openai | anthropic | generic
+    /// Harness profile: kimi | openai | anthropic | gemini | generic
     #[serde(default = "default_profile")]
     pub profile: String,
     /// Optional USD-per-million-token prices, for the ledger's `cost_usd`
@@ -71,6 +71,8 @@ pub enum Plan {
     Chatgpt,
     /// A Claude plan, through the unmodified `claude` binary.
     ClaudeCode,
+    /// A Google Gemini plan, through the unmodified `gemini` binary.
+    GeminiCli,
 }
 
 impl Plan {
@@ -78,6 +80,7 @@ impl Plan {
         match self {
             Plan::Chatgpt => "chatgpt",
             Plan::ClaudeCode => "claude-code",
+            Plan::GeminiCli => "gemini-cli",
         }
     }
 
@@ -86,6 +89,7 @@ impl Plan {
         match self {
             Plan::Chatgpt => "ChatGPT",
             Plan::ClaudeCode => "Claude",
+            Plan::GeminiCli => "Gemini",
         }
     }
 
@@ -94,6 +98,7 @@ impl Plan {
         match self {
             Plan::Chatgpt => "chatgpt",
             Plan::ClaudeCode => "claude",
+            Plan::GeminiCli => "gemini",
         }
     }
 }
@@ -110,6 +115,69 @@ impl std::fmt::Display for Plan {
 pub struct PlansConfig {
     pub chatgpt: ChatGptPlanConfig,
     pub claude_code: ClaudeCodePlanConfig,
+    pub gemini_cli: GeminiCliPlanConfig,
+}
+
+/// `[plans.gemini_cli]`: how the Gemini CLI engine runs `agy` (Antigravity CLI)
+/// or `gemini`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GeminiCliPlanConfig {
+    pub binary: String,
+    /// `""` defaults to `~/.gemini` (Antigravity CLI's own login and state).
+    pub config_dir: String,
+    pub turn_timeout_minutes: u64,
+    pub max_output_mb: u64,
+}
+
+impl Default for GeminiCliPlanConfig {
+    fn default() -> Self {
+        Self {
+            binary: "agy".into(),
+            config_dir: String::new(),
+            turn_timeout_minutes: 20,
+            max_output_mb: 16,
+        }
+    }
+}
+
+impl GeminiCliPlanConfig {
+    pub fn config_dir(&self, data: &std::path::Path) -> PathBuf {
+        let dir = self.config_dir.trim();
+        if dir.is_empty() {
+            if let Some(home) = dirs::home_dir() {
+                let dot = home.join(".gemini");
+                if dot.exists() {
+                    return dot;
+                }
+            }
+            return data.join("gemini-cli");
+        }
+        match dir
+            .strip_prefix("~/")
+            .or(if dir == "~" { Some("") } else { None })
+        {
+            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None => PathBuf::from(dir),
+        }
+    }
+
+    pub fn binary(&self) -> PathBuf {
+        let raw = PathBuf::from(if self.binary.trim().is_empty() {
+            "agy"
+        } else {
+            self.binary.trim()
+        });
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path = if crate::service::scope() == crate::service::Scope::System {
+            crate::service::system_path(&path)
+        } else {
+            path
+        };
+        ferrule_plans::gemini::cli::find_in(&raw, &path)
+            .or_else(|| ferrule_plans::gemini::cli::find(&raw))
+            .unwrap_or(raw)
+    }
 }
 
 /// `[plans.claude_code]`: how the Claude Code engine runs `claude`.
@@ -316,6 +384,7 @@ impl ProviderConfig {
     pub fn endpoint(&self) -> String {
         match (self.plan, self.base_url.is_empty()) {
             (Some(Plan::Chatgpt), true) => ferrule_providers::codex::DEFAULT_BASE_URL.into(),
+            (Some(Plan::GeminiCli), true) => ferrule_providers::cloudcode::DEFAULT_BASE_URL.into(),
             _ => self.base_url.clone(),
         }
     }
@@ -2077,6 +2146,12 @@ impl Config {
             .any(|p| p.plan == Some(Plan::ClaudeCode))
     }
 
+    pub fn uses_gemini_cli(&self) -> bool {
+        self.providers
+            .values()
+            .any(|p| p.plan == Some(Plan::GeminiCli))
+    }
+
     pub fn load() -> Result<(Self, PathBuf)> {
         let Some(path) = config_path()? else {
             return Err(no_config());
@@ -2203,6 +2278,12 @@ impl Config {
         for p in self.providers.values_mut() {
             if p.plan == Some(Plan::Chatgpt) {
                 p.issuer = issuer.clone();
+            }
+            if p.profile == "generic"
+                && (p.plan == Some(Plan::GeminiCli)
+                    || p.base_url.contains("generativelanguage.googleapis.com"))
+            {
+                p.profile = "gemini".into();
             }
         }
         Ok(())
