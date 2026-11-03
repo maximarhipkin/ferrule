@@ -19,8 +19,10 @@ channel that has credentials. Every channel keeps the same rules:
 
 Telegram is set up by `ferrule setup` or the dashboard's Telegram panel
 and described in the README. In a Telegram group every message reaches
-the agent, so a bot that shares a group with people and other bots
-answers (or explains why it won't) after each one; `[gateway]
+the agent, and it may stay silent: a group's agent is told that when a
+message needs nothing from it, it answers exactly `NO_REPLY`, and a turn
+that ends with `NO_REPLY` or with no text at all posts nothing in a group
+(see [silent turns](#silent-turns)). `[gateway]
 telegram_group_mention_only = true` (also on the Config page, and
 `config_set` from a chat; it takes effect after a restart) lets in only
 the messages that `@mention` the bot, mention it by name, or reply to one
@@ -32,8 +34,8 @@ channels added in M39, and the two bridge channels added in M59
 channel it's on, is at the end: [chat commands](#chat-commands),
 [voice messages](#voice-messages), [the typing
 indicator](#typing-indicator), [messages sent while it
-works](#messages-sent-while-it-works) and [keys pasted into a
-chat](#keys-pasted-into-a-chat).
+works](#messages-sent-while-it-works), [silent turns](#silent-turns) and
+[keys pasted into a chat](#keys-pasted-into-a-chat).
 
 ## Which channel to pick
 
@@ -1353,6 +1355,34 @@ The owner's restart notice after a crash says the turn isn't lost. A
 scheduled task, a plan's or `/goal`'s turn, a sub-agent's news and the
 HTTP API's requests aren't taken up this way: their callers retry them.
 A turn that `/stop`, `/new` or `max_turn_minutes` ended is not resumed.
+
+## Silent turns
+
+In a group the agent reads every message, also the ones meant for
+someone else, so a turn may end without a word. A group's agent (on
+Telegram, Signal and personal WhatsApp) has one more line in its system
+prompt: "When a group message needs nothing from you, reply with exactly
+NO_REPLY and nothing else; it is not posted."
+
+- **`NO_REPLY`, anywhere.** An answer that is exactly `NO_REPLY` (any
+  case, maybe in backticks or brackets) posts nothing, in a group or a
+  private chat.
+- **No text, in a group.** A turn that ends with nothing to say posts
+  nothing there either. In a private chat it still says "(I finished
+  without writing a reply. Ask again if you expected one.)", since you
+  asked something.
+- **Nothing left behind.** A streamed reply shows nothing while the text
+  so far could still become `NO_REPLY`, and a preview a silent turn
+  already posted (text before a tool call) is deleted. The typing
+  indicator stops as after any turn. A scheduled task whose run answers
+  `NO_REPLY` (or nothing, for a group) delivers nothing.
+- **Still on record.** The turn stays in the session's transcript (the
+  model's answer, then a `silent_turn` event) and the gateway's log says
+  "a silent turn: nothing posted".
+
+Questions with buttons, files and other messages the agent sends with
+its tools during the turn go out as before; only the final answer is
+held back.
 
 ## Keys pasted into a chat
 

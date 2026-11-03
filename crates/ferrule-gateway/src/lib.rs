@@ -40,7 +40,10 @@ pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
     StallHook,
 };
-pub use message::{Attachment, InboundMessage, OutboundMessage, Reaction, ReactionSink};
+pub use message::{
+    is_group_chat, is_no_reply, is_silent, Attachment, InboundMessage, OutboundMessage, Reaction,
+    ReactionSink, NO_REPLY,
+};
 pub use router::{AgentFactory, Drained, LaneSnapshot, Replied, Reply, Reset, Router, NEW_HINT};
 pub use scheduler::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, Hold, JobReport, BUILTIN_CHANNEL,

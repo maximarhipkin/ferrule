@@ -1,6 +1,6 @@
 use crate::channel::{send_with_buttons, Button, ButtonAction, Channel};
 use crate::error::GatewayError;
-use crate::message::{InboundMessage, OutboundMessage};
+use crate::message::{is_group_chat, is_silent, InboundMessage, OutboundMessage};
 use crate::resume::{self, Marker};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
@@ -1226,7 +1226,17 @@ async fn run_lane(
         // Whatever still holds a sender (a sub-agent) now finds it closed
         // rather than feeding the next turn's state.
         drain.abort();
+        // A turn may end without a word: `NO_REPLY` anywhere, and an empty
+        // answer in a group, where it reads every message.
+        let group = is_group_chat(&inbound.channel, &inbound.chat_id);
+        let silent = run_result
+            .as_ref()
+            .is_ok_and(|answer| is_silent(answer, group));
         let reply_text = match &run_result {
+            Ok(_) if silent => {
+                last_failure = None;
+                String::new()
+            }
             Ok(answer) => {
                 last_failure = None;
                 if answer.trim().is_empty() {
@@ -1253,8 +1263,17 @@ async fn run_lane(
         if let Some(typist) = typist {
             typist.stop().await;
         }
+        if silent {
+            tracing::info!(session = %session_id, group, "a silent turn: nothing posted");
+            agent.log_event(&format!("silent_turn group={group}"));
+        }
         // M56.6: the reply's id, for `edit_message`.
-        let sent = if let Some(streamer) = streamer {
+        let sent = if silent {
+            if let Some(streamer) = streamer {
+                streamer.discard().await;
+            }
+            None
+        } else if let Some(streamer) = streamer {
             streamer.finish(reply_text).await
         } else if let Some(ch) = &channel {
             let out = OutboundMessage {

@@ -743,6 +743,15 @@ impl Agent {
         &self.tools
     }
 
+    /// One event line in the session's transcript, when it has one.
+    pub fn log_event(&self, line: &str) {
+        if let Some(t) = &self.transcript {
+            if let Err(e) = t.log_event(line) {
+                warn!("transcript write failed: {e}");
+            }
+        }
+    }
+
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.contains(name)
     }

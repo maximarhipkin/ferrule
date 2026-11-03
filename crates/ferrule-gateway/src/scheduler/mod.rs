@@ -43,7 +43,7 @@ pub use error::SchedulerError;
 pub use store::{NewTask, Run, RunStatus, Task, TaskKind, TaskStore};
 
 use crate::channel::Channel;
-use crate::message::{InboundMessage, OutboundMessage};
+use crate::message::{is_group_chat, is_silent, InboundMessage, OutboundMessage};
 use crate::router::Router;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -323,7 +323,10 @@ impl Scheduler {
         let reply = self.router.dispatch_and_wait(inbound).await?;
         let answer = reply.text;
 
-        if let Some(channel) = self.channels.get(&task.channel) {
+        // `NO_REPLY`, or nothing for a group: the run posts nothing.
+        if is_silent(&answer, is_group_chat(&task.channel, &task.chat_id)) {
+            tracing::info!(task = %task.id, "task ended silent; nothing delivered");
+        } else if let Some(channel) = self.channels.get(&task.channel) {
             let out = OutboundMessage {
                 channel: task.channel.clone(),
                 chat_id: task.chat_id.clone(),
@@ -959,6 +962,18 @@ mod tests {
         let runs = scheduler.store().runs_for(&task.id, 5).unwrap();
         assert_eq!(runs[0].status, RunStatus::Incomplete);
         assert_eq!(runs[0].detail.as_deref(), Some(reason.as_str()));
+    }
+
+    /// A run that answers `NO_REPLY` succeeds and posts nothing.
+    #[tokio::test]
+    async fn a_no_reply_run_delivers_nothing() {
+        let (scheduler, _calls, recorder, _d1, _d2) =
+            test_scheduler(Reply::Ok("NO_REPLY".into()), Duration::from_secs(5));
+        let task = add_task(&scheduler, None);
+
+        let outcome = scheduler.execute(&task).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Succeeded { .. }));
+        assert!(recorder.sent.lock().unwrap().is_empty());
     }
 
     // -- Built-in jobs ------------------------------------------------------
