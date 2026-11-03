@@ -268,24 +268,40 @@ pub fn check_config_dir(s: &GeminiCliPlanConfig, data: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `p` with symlinks resolved when it exists, else made absolute with
-/// `.` and `..` folded away.
+/// `p` with symlinks resolved when it exists. Else it's made absolute with
+/// `.` and `..` folded away, and its deepest part that exists is resolved,
+/// so a folder not made yet compares like one that is (macOS's `/var` is
+/// `/private/var`; Windows resolves to `\\?\C:\…`).
 fn absolute(p: &Path) -> PathBuf {
     if let Ok(real) = std::fs::canonicalize(p) {
         return real;
     }
     let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
-    let mut out = PathBuf::new();
+    let mut folded = PathBuf::new();
     for part in p.components() {
         match part {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                out.pop();
+                folded.pop();
             }
-            other => out.push(other),
+            other => folded.push(other),
         }
     }
-    out
+    let mut rest = Vec::new();
+    let mut head = folded.as_path();
+    loop {
+        if let Ok(mut real) = std::fs::canonicalize(head) {
+            real.extend(rest.iter().rev());
+            return real;
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name.to_os_string());
+                head = up;
+            }
+            _ => return folded,
+        }
+    }
 }
 
 /// Native Google OAuth 2.0 PKCE sign-in at the terminal (`ferrule login gemini`,
@@ -535,5 +551,32 @@ mod tests {
             check_config_dir(&with(&good), &data).unwrap();
         }
         check_config_dir(&GeminiCliPlanConfig::default(), &data).unwrap();
+    }
+
+    /// The data folder reached through a link (macOS's `/var`) is still the
+    /// data folder, for a folder in it that doesn't exist yet too.
+    #[cfg(unix)]
+    #[test]
+    fn a_config_dir_through_a_link_is_still_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("ferrule/private")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let with = |dir: &Path| GeminiCliPlanConfig {
+            config_dir: dir.display().to_string(),
+            ..GeminiCliPlanConfig::default()
+        };
+        let data = real.join("ferrule");
+        for bad in [link.join("ferrule/private/x"), link.join("ferrule")] {
+            assert!(
+                check_config_dir(&with(&bad), &data).is_err(),
+                "{}",
+                bad.display()
+            );
+        }
+        let data = link.join("ferrule");
+        assert!(check_config_dir(&with(&real.join("ferrule/private/y")), &data).is_err());
+        check_config_dir(&with(&link.join("gemini")), &data).unwrap();
     }
 }

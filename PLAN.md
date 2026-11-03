@@ -11390,3 +11390,23 @@ input in a `.row` keeps 12ch before the row wraps; the check clicks
 **Checks.** The browser check, 27 of 27, against a fresh build; the
 dashboard tests; `tests_e2e/setup_wizard.py` (as a regular user; as root,
 setup writes to `/var/lib/ferrule`, as before) and `tests_e2e/hidden_keys.py`.
+
+### 2026-11-04 — Gemini plan: a `config_dir` check that holds on macOS and Windows (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** CI on macOS and Windows failed
+`a_config_dir_holding_the_data_folder_is_refused`: the data folder was
+resolved (macOS's `/var` → `/private/var`, Windows' `\\?\` form) but a
+folder in it that didn't exist yet wasn't, so `private/x` didn't compare
+as inside it and was let through.
+
+**What changed.** A path that doesn't exist has its deepest existing part
+resolved and the rest added back. A new unix test reaches the data
+folder through a symlink.
+
+**Checks.** `subscription::gemini` tests; clippy on `ferrule-cli`.
+macOS also failed `gateway::tests::status_is_answered_while_the_chats_turn_hangs`
+once (the `/status` came 30 ms after the turn, before it reached the
+model); nothing on the branch changes that path, so it's left to the
+rerun.
