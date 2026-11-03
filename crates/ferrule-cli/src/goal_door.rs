@@ -32,6 +32,27 @@ impl GoalDoor {
         let session = ferrule_gateway::session::session_id(GOAL_CHANNEL, &lane_chat);
         // M54: the loop runs in owner mode only if the chat it came from would.
         crate::owner_mode::started_from(&session, &msg.channel, &msg.chat_id);
+        // M66: its gated commands are asked in the chat that started it
+        // (the owner's primary chat behind it), not refused for want of one.
+        let chat = match msg.channel.as_str() {
+            "telegram" => msg
+                .chat_id
+                .parse::<i64>()
+                .map(ferrule_trust::ChatRef::from)
+                .unwrap_or_else(|_| ferrule_trust::ChatRef::new("telegram", &msg.chat_id)),
+            _ => ferrule_trust::ChatRef::new(&msg.channel, &msg.chat_id),
+        };
+        crate::trust::seat(
+            &session,
+            ferrule_trust::Route::Owner {
+                chat_label: format!(
+                    "the goal loop started in {} chat {}",
+                    chat.channel_title(),
+                    chat.chat
+                ),
+            },
+        );
+        self.hub.ask_tree_in(&session, chat);
         let prepared =
             match goal::prepare_as(Some(text.to_string()), Vec::new(), None, Some(session)) {
                 Ok(p) => p,
@@ -183,7 +204,7 @@ async fn send(
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for GoalDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if !crate::trust::is_chat_channel(&msg.channel) {
+        if !crate::trust::reads_commands(msg) {
             return None;
         }
         let mut words = msg.text.split_whitespace();
@@ -192,7 +213,7 @@ impl ferrule_gateway::Interceptor for GoalDoor {
         if cmd != "/goal" {
             return None;
         }
-        if crate::trust::owner_in(&self.hub, msg) != Some(true) {
+        if crate::trust::owner_here(&self.hub, msg) != Some(true) {
             return Some("Only the owner can start a goal loop.".into());
         }
         let text = words.collect::<Vec<_>>().join(" ");

@@ -490,7 +490,7 @@
     points.forEach((p, i) => {
       const bh = Math.max((p.v / max) * (h - 14), p.v > 0 ? 1.5 : 0);
       const x = pad + i * bw + bw * 0.16, wid = bw * 0.68;
-      svg.append(el("rect", { x, y: h - bh, width: wid, height: bh, class: p.dim ? "dim" : null },
+      svg.append(el("rect", { x, y: h - bh, width: wid, height: bh, rx: 3, class: p.dim ? "dim" : null },
         el("title", { text: p.k + ": " + fmt(p.v) })));
       if (points.length <= 12 || i % Math.ceil(points.length / 10) === 0)
         svg.append(el("text", { x: x + wid / 2, y: h + 12, "text-anchor": "middle", text: p.k }));
@@ -615,6 +615,12 @@
     backup: "M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1zM4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4",
     file: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2zM14 2v5a1 1 0 0 0 1 1h5M10 9H8M16 13H8M16 17H8",
     key: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4zM16 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0",
+    user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+    control: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4",
+    learning: "M22 10 12 5 2 10l10 5 10-5zM6 12v5c3 2 9 2 12 0v-5",
+    instructions: "M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M8 13h8M8 17h6",
+    "thumbs-up": "M7 10v11M7 10l4-8a3 3 0 0 1 3 3v4h5.5a2 2 0 0 1 2 2.3l-1.4 8A2 2 0 0 1 18 21H7M7 10H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3",
+    "thumbs-down": "M17 14V3M17 14l-4 8a3 3 0 0 1-3-3v-4H4.5a2 2 0 0 1-2-2.3l1.4-8A2 2 0 0 1 6 3h11M17 14h3a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1h-3",
     lock: "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-7a2 2 0 0 1 2 -2zM7 11V7a5 5 0 0 1 10 0v4",
     telegram: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
     // things the page says
@@ -705,18 +711,21 @@
   // Each strip says what's wrong, has a button per fix that can run from
   // here, and closes for a day unless it's one of the two that never do.
 
-  function fixButton(f) {
-    if (f.action) return btn(f.label, f.action, f.body || {}, "primary");
+  function fixButton(f, kind) {
+    if (f.action) return btn(f.label, f.action, f.body || {}, kind === undefined ? "primary" : kind);
     if (f.section) return el("button", { text: f.label, onclick: () => show(f.section, f.tile ? { tile: f.tile } : null) });
     return null;
   }
 
   function notice(p) {
     const sev = p.top || p.action === "kill/off" ? "bad" : "warn";
-    const fixes = (p.fixes || []).map(fixButton);
+    // M66: a warning's fix is a plain button; filled ones are kept for
+    // what blocks the bot, so the page has one thing that stands out.
+    const kind = sev === "bad" ? "primary" : null;
+    const fixes = (p.fixes || []).map((f) => fixButton(f, kind));
     if (!fixes.length) {
-      if (p.suggest) fixes.push(btn("Make " + p.suggest + " the default", "models/default", { model: p.suggest }, "primary"));
-      if (p.action) fixes.push(btn(p.action === "kill/off" ? "Turn the kill switch off" : "Fill missing prices", p.action, {}, "primary"));
+      if (p.suggest) fixes.push(btn("Make " + p.suggest + " the default", "models/default", { model: p.suggest }, kind));
+      if (p.action) fixes.push(btn(p.action === "kill/off" ? "Turn the kill switch off" : "Fill missing prices", p.action, {}, kind));
       if (p.section && p.section !== current) fixes.push(el("button", { text: "Open " + p.section, onclick: () => show(p.section) }));
     }
     return el("div", { class: "alert " + sev, "data-notice": p.id || null },
@@ -756,21 +765,6 @@
   }
 
   // ---- approvals: the owner's questions from any chat (M37 §4.3) ---------
-
-  function approvalsCard(list) {
-    if (!list || !list.length) return null;
-    return el("div", { class: "card" },
-      el("h2", { text: "Waiting for you", class: "mt0" }),
-      list.map((a) => el("div", { class: "check" },
-        led("warn pulse"),
-        el("div", { class: "body" },
-          el("div", { class: "t msg", dir: "auto", text: a.what }),
-          el("div", { class: "d" }, a.chat + " · asked " + secs(a.secs) + " ago",
-            a.left_secs != null ? el("span", { class: "muted", text: " · " + secs(a.left_secs) + " left" }) : null)),
-        el("div", { class: "row" },
-          btn("Allow", "approvals/answer", { code: a.code, allow: true }, "primary"),
-          btn("Refuse", "approvals/answer", { code: a.code, allow: false }, "danger")))));
-  }
 
   // ---- doctor, as a run the page follows (M37 §1.3) ----------------------
 
@@ -867,17 +861,57 @@
       const M = Object.create(sections.models);
       M.fbEdited = false;
       M.home = true;
+      // M66: two kinds side by side (a plan, a key), a tile per brain, and
+      // only the picked one's form, so there is one button to press.
+      M.pickMode = "plan";
+      M.picked = null;
       M.drawChoices = function () {
         const ps = (this.choices && this.choices.providers) || [];
-        const picks = BRAINS.map(([name, why]) => [ps.find((p) => p.name === name), why]).filter(([p]) => p);
-        const rest = ps.filter((p) => !BRAINS.some(([name]) => name === p.name));
+        const by = (name) => ps.find((p) => p.name === name);
         const working = ps.some((p) => p.connected && p.ready);
+        const list = (this.pickMode === "key" ? KEYS : PLANS)
+          .map(([name, mono, t, d, badge, tone]) => ({ p: by(name), name, mono, t, d, badge, tone }))
+          .filter((x) => x.p);
+        const waiting = this.gemini && this.gemini.state === "waiting" ? "gemini-cli"
+          : this.chatgpt && this.chatgpt.state === "waiting" ? "chatgpt" : null;
+        if (!list.some((x) => x.name === this.picked)) this.picked = (list.find((x) => x.name === waiting) || list[0] || {}).name || null;
+        const shown = new Set([...PLANS, ...KEYS].map((b) => b[0]));
+        const rest = ps.filter((p) => !shown.has(p.name));
+        const tab = (mode, label, ic) => {
+          const b = el("button", { type: "button", role: "tab", "aria-selected": String(this.pickMode === mode) }, icon(ic), el("span", { text: label }));
+          b.onclick = () => { if (this.pickMode !== mode) { this.pickMode = mode; this.picked = null; this.drawChoices(); } };
+          return b;
+        };
+        const tiles = el("div", { class: "brain-tiles", role: "radiogroup", "aria-label": "Brains" }, list.map((x) => {
+          const on = x.name === this.picked;
+          const b = el("button", { type: "button", role: "radio", "aria-checked": String(on), class: "brain-tile", "data-brain": x.name },
+            el("span", { class: "top" },
+              el("span", { class: "mono-chip " + x.tone, "aria-hidden": "true", text: x.mono }),
+              el("span", { class: "sp" }),
+              x.p.connected && x.p.ready ? tag("ready", "ok") : x.badge ? el("span", { class: "badge", text: x.badge }) : null,
+              el("span", { class: "radio", "aria-hidden": "true" })),
+            el("span", { class: "name", text: x.t }),
+            el("span", { class: "d", text: x.d }));
+          b.onclick = () => { this.picked = x.name; this.focusPick = true; this.drawChoices(); };
+          return b;
+        }));
+        const pick = list.find((x) => x.name === this.picked);
         setKids(box,
           working ? el("div", { class: "said ok row" }, el("span", { class: "grow", text: "Your bot has a brain. Say hello to try it." }),
             button("Say hello", { kind: "primary", icon: "send", onclick: (e) => hello(e.currentTarget) })) : null,
-          picks.map(([p, why]) => el("div", { class: "stack" }, el("p", { class: "muted small m0", text: why }), this.provider(p))),
+          el("div", { class: "seg-tabs", role: "tablist", "aria-label": "How to connect" },
+            tab("plan", "Sign in with a plan you pay for", "user"), tab("key", "Use an API key", "key")),
+          tiles,
+          pick ? el("div", { class: "brain-detail" }, this.provider(pick.p)) : null,
           rest.length ? disc("brains-more", "card", "More providers (" + rest.length + ")",
-            el("div", { class: "tiles details-body" }, rest.map((p) => this.provider(p)))) : null);
+            el("div", { class: "tiles details-body" }, rest.map((p) => this.provider(p)))) : null,
+          el("p", { class: "brain-foot" }, icon("lock"),
+            el("span", { text: "Tested before it's saved. Keys and sign-ins are sealed on this machine and never come back to this page." })));
+        if (this.focusPick) {
+          this.focusPick = false;
+          const t = box.querySelector(".brain-tile[aria-checked=true]");
+          if (t) t.focus();
+        }
       };
       M.loadChoices = async function () {
         try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
@@ -897,7 +931,7 @@
       return box;
     },
     openModel() {
-      connectPanel({ title: "Give your bot a brain", intro: "The model your bot thinks with. A key or a sign-in is tested before it's saved, and it never comes back to this page.",
+      connectPanel({ title: "Give your bot a brain", intro: "The model your bot thinks with. Pick one; you can add more and switch on Models later.",
         need: "an account with one of these · about 3 minutes", body: this.modelPanel() });
     },
     openTelegram() {
@@ -931,12 +965,18 @@
     "Press Restart to turn Telegram on.",
   ];
 
-  // The three a beginner is offered first (M50): no key at all, one key for
-  // hundreds of models, and Claude.
-  const BRAINS = [
-    ["chatgpt", "No key: sign in with the ChatGPT plan you already pay for."],
-    ["openrouter", "One key, hundreds of models, pay as you go."],
-    ["anthropic", "Claude, with a key from Anthropic's console."],
+  // What a beginner is offered first (M50, M66), in two kinds: a plan they
+  // already pay for (no key at all), or a key. [provider, monogram, name,
+  // what it is, badge, tone]. The rest are one tap away.
+  const PLANS = [
+    ["chatgpt", "C", "ChatGPT plan", "Plus, Pro or Business: type a code on OpenAI's page.", "No key", "ok"],
+    ["gemini-cli", "G", "Google", "Gemini and Antigravity plans: sign in with Google.", "1M context", "accent"],
+    ["claude-code", "A", "Claude plan", "Pro or Max: paste a setup-token.", null, "warn"],
+  ];
+  const KEYS = [
+    ["openrouter", "O", "OpenRouter", "One key, hundreds of models, pay as you go.", "Popular", "steel"],
+    ["anthropic", "A", "Anthropic", "Claude, with a key from Anthropic's console.", null, "warn"],
+    ["gemini", "G", "Google AI Studio", "Gemini by key, free tier included.", null, "accent"],
   ];
 
   // The first hello: sent from here, answered in Chat.
@@ -951,41 +991,98 @@
   function checklist(s) {
     const steps = s.steps;
     const n = steps.filter((x) => x.done).length;
-    const modelDone = (steps.find((x) => x.id === "model") || {}).done;
+    const modelAt = steps.findIndex((x) => x.id === "model");
+    const modelDone = (steps[modelAt] || {}).done;
+    const locked = (x) => x.id === "hello" && !modelDone && !x.done;
+    // M66: one primary button on the page, the next step's.
+    const next = steps.find((x) => !x.done && !locked(x));
     const more = (x) => {
+      const kind = x === next ? "primary" : null;
       if (x.id === "hello") {
-        const b = button(x.done ? "Open chat" : "Say hello", { kind: x.done ? null : "primary", icon: "send" });
-        b.disabled = !modelDone && !x.done;
+        const b = button(x.done ? "Open chat" : "Say hello", { kind, icon: "send" });
+        b.disabled = locked(x);
         b.onclick = () => (x.done ? show("chat") : hello(b));
         return b;
       }
       if (x.done) return null;
-      const b = button(x.id === "model" ? "Set up" : "Connect", { kind: "primary" });
+      const b = button(x.id === "model" ? "Choose a brain" : "Connect", { kind });
       b.setAttribute("aria-haspopup", "dialog");
       b.onclick = () => (x.id === "model" ? home.openModel() : home.openTelegram());
       return b;
     };
-    return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
-      el("div", { class: "card-head" },
+    const when = (x) => x.done ? el("span", { class: "when ok", text: "done" })
+      : x === next ? el("span", { class: "when now", text: "Next step" })
+      : locked(x) ? el("span", { class: "when" }, icon("lock"), "after step " + (modelAt + 1))
+      : x.skippable ? el("span", { class: "when", text: "optional" }) : null;
+    return el("section", { class: "setup", "aria-labelledby": "setup-h" },
+      el("div", { class: "setup-head" },
         el("h2", { id: "setup-h", text: "Get started" }),
         el("span", { class: "muted small", text: n + " of " + steps.length + " done" }),
         button("Hide this", { kind: "ghost", onclick: () => { home.hide(); sections.health.draw(); } })),
       el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(n), "aria-label": "Setup progress" },
         steps.map((x) => el("span", { class: x.done ? "seg on" : "seg" }))),
-      el("ol", { class: "steps" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") },
-        el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)),
+      el("ol", { class: "steps cards" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") + (x === next ? " next" : "") + (locked(x) ? " locked" : "") },
+        el("div", { class: "step-top" },
+          el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)), when(x)),
         el("div", { class: "body" },
           el("div", { class: "t" }, x.label, x.done ? el("span", { class: "sr", text: " (done)" }) : null,
-            x.skippable && !x.done ? el("span", { class: "muted small", text: " · optional" }) : null),
+            x.skippable && !x.done ? el("span", { class: "sr", text: " (optional)" }) : null),
           el("div", { class: "d msg", dir: "auto", text: x.detail })),
         more(x)))));
   }
 
+  // M66: the Home hero. One card: what state the bot is in, in words; why;
+  // the one thing to do about it; and, beside it, the parts it rests on.
+  function hero(level, said, h, setup, lanes, asks) {
+    const kill = h.kill || null;
+    const tone = level.startsWith("bad") ? "bad" : level.startsWith("warn") ? "warn" : "ok";
+    const model = setup && (setup.steps || []).find((x) => x.id === "model");
+    const noBrain = !!(model && !model.done);
+    const stopped = !!(kill && kill.on);
+    const eyebrow = stopped ? "Stopped" : tone === "bad" ? "Needs you" : asks ? "Waiting for you" : tone === "warn" ? "Worth a look"
+      : level.includes("pulse") ? "Working" : "All good";
+    const title = noBrain && !stopped ? "Your bot can't answer yet" : said;
+    const sub = noBrain && !stopped
+      ? "No model is connected, so messages go unanswered. Signing in with a plan you already pay for takes about a minute, and nothing is saved until it's tested."
+      : [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ");
+    const connect = noBrain && !stopped ? button("Connect a brain", { kind: "primary" }) : null;
+    if (connect) { connect.setAttribute("aria-haspopup", "dialog"); connect.onclick = () => home.openModel(); }
+    const ch = h.channels || [];
+    const now = [
+      ["Gateway", h.gateway ? "running" : "not in this process", h.gateway ? "ok" : "warn"],
+      model ? ["Brain", model.done ? "connected" : "none yet", model.done ? "ok" : "warn"] : null,
+      ["Chat apps", ch.length ? ch.map((c) => c.name).join(", ") : "none on", ch.some((c) => c.stale) ? "bad" : ch.length ? "ok" : "off"],
+      kill ? ["Kill switch", kill.on ? "on" : "off", kill.on ? "bad" : "ok"] : null,
+    ].filter(Boolean);
+    return el("section", { class: "card hero t-" + tone, "aria-label": "Status" },
+      el("span", { class: "hero-ico", "aria-hidden": "true" }, icon(stopped ? "power" : tone === "ok" ? "check" : "alert")),
+      el("div", { class: "hero-main" },
+        el("div", { class: "hero-eyebrow", text: eyebrow }),
+        el("p", { class: "hero-title", role: "status", dir: "auto", text: title }),
+        sub ? el("p", { class: "hero-sub msg", dir: "auto", text: sub }) : null,
+        el("div", { class: "hero-actions" },
+          connect,
+          btn("Run doctor", "doctor/run", {}),
+          kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary")
+            : menu("More actions", [{ label: "Kill switch on", path: "kill/on", body: {}, kind: "danger", icon: "power" }])) : null)),
+      el("div", { class: "hero-now" },
+        el("h3", { text: "Right now" }),
+        now.map(([k, v, l]) => el("div", { class: "kv" }, led(l), el("span", { class: "k", text: k }), el("span", { class: "v", dir: "auto", text: v })))));
+  }
+
+  // The "no model" notice says what the hero already says.
+  const saysNoModel = (p) => p.section === "models" && /^no model is connected/.test(p.what || "");
+
+  const quickTile = (ic, t, d, go) => el("button", { type: "button", class: "quick-tile", onclick: go },
+    el("span", { class: "qchip" }, icon(ic)),
+    el("span", { class: "txt" }, el("span", { class: "t", text: t }), el("span", { class: "d", text: d })),
+    icon("chevron"));
+
   const QUICK = [
     ["chat", "chat", "Chat", "Talk to your bot here"],
     ["tasks", "tasks", "Tasks", "Things it does on a schedule"],
-    ["usage", "usage", "Spending", "What it has cost so far"],
-    ["connect", "connect", "Connect", "A brain, chat apps, mail and tools"],
+    ["usage", "usage", "Usage", "What it has cost so far"],
+    ["control", "control", "Control", "Stop, allow and limit it"],
   ];
 
   sections.health = {
@@ -1042,7 +1139,14 @@
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
-      const [level, said] = status(h, setup);
+      let [level, said] = status(h, setup);
+      // M66: a gated action blocks a turn until the owner answers, so it
+      // leads, above every notice.
+      const asks = (approvals || []).length;
+      if (asks && !level.startsWith("bad")) {
+        level = "warn";
+        said = asks === 1 ? "One action needs your OK." : asks + " actions need your OK.";
+      }
       const running = turns.filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
@@ -1058,35 +1162,28 @@
       ].filter(Boolean);
       const showList = setup && !setup.done && !home.hidden();
       const tgOpen = setup && setup.done && !(setup.steps.find((x) => x.id === "telegram") || {}).done;
+      const noBrain = !!(setup && !((setup.steps || []).find((x) => x.id === "model") || { done: true }).done);
       setKids(this.box,
         el("h1", { class: "sr", text: title("health") }),
-        el("section", { class: "card hero", "aria-label": "Status" },
-          el("div", { class: "row" }, led(level),
-            el("p", { class: "lead grow", role: "status", text: said }),
-            btn("Run doctor", "doctor/run", {}),
-            kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary")
-              : menu("More actions", [{ label: "Kill switch on", path: "kill/on", body: {}, kind: "danger", icon: "power" }])) : null),
-          el("p", { class: "muted small m0", text: [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ") })),
+        hero(level, said, h, setup, lanes, asks),
+        approvalsCard(approvals),
         MANAGED.on ? el("div", { class: "card" },
           el("h2", { text: "Managed" }),
           el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
           (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
           el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
-        problems(h.problems),
+        problems(noBrain ? (h.problems || []).filter((p) => !saysNoModel(p)) : h.problems),
         showList ? checklist(setup) : null,
-        approvalsCard(approvals),
         this.updateRow(),
-        el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => el("button", { type: "button", class: "quick-tile", onclick: () => show(sec) },
-          icon(ic), el("span", { class: "t", text: t }), el("span", { class: "d", text: d }))),
-          tgOpen && !showList ? el("button", { type: "button", class: "quick-tile", onclick: () => show("channels", { tile: "telegram" }) },
-            icon("telegram"), el("span", { class: "t", text: "Telegram" }), el("span", { class: "d", text: "Talk to your bot from your phone" })) : null),
+        el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => quickTile(ic, t, d, () => show(sec))),
+          tgOpen && !showList ? quickTile("telegram", "Telegram", "Talk to your bot from your phone", () => show("channels", { tile: "telegram" })) : null),
         running.length ? el("section", { class: "card", "aria-label": "Running now" },
           el("h2", { class: "mt0", text: "Running now" }),
           table(["where", "message", "for", ""], running.map((t) => ({ cells: [
             frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
             frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
             el("span", { class: "mono", text: secs(t.busy_secs) }),
-            btn("Stop", "turn/stop", { session: t.session }, "danger"),
+            frag(button("Steps", { kind: "ghost", onclick: () => show("control") }), btn("Stop", "turn/stop", { session: t.session }, "danger")),
           ]})))) : null,
         turns.length > running.length ? el("p", { class: "muted small", text: (turns.length - running.length) + " queued behind them." }) : null,
         hiddenNotices(h.hidden),
@@ -1271,15 +1368,24 @@
           ]})))
           : el("div", { class: "empty", text: "no chat is pinned" }),
         el("h2", { text: "Pin a chat, add a model by id" }),
-        el("div", { class: "card" },
-          el("div", { class: "row" }, where, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value, channel: where.value }))),
+        el("div", { class: "grid2" },
+          el("div", { class: "card stack" },
+            el("h4", { class: "m0", text: "Pin a chat to a model" }),
+            el("p", { class: "muted small m0", text: "Fix one conversation to a specific model regardless of the default." }),
+            el("div", { class: "row" }, where, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value, channel: where.value })))),
           (() => {
-            const p = el("input", { placeholder: "provider", size: 10 });
-            const id = el("input", { placeholder: "model id", dir: "auto" });
-            const a = el("input", { placeholder: "alias (optional)", size: 10 });
-            const b = el("button", { text: "Add" });
+            const conn = ((this.choices && this.choices.providers) || []).filter((x) => x.connected);
+            const p = conn.length
+              ? el("select", { "aria-label": "provider" }, conn.map((x) => el("option", { value: x.name, text: x.name })))
+              : el("input", { placeholder: "provider", size: 10 });
+            const id = el("input", { class: "grow", placeholder: "model id", dir: "auto" });
+            const a = el("input", { placeholder: "alias (optional)", size: 12 });
+            const b = el("button", { class: "primary", text: "Add" });
             b.onclick = () => act("models/add", { provider: p.value, model: id.value, alias: a.value }, b);
-            return el("div", { class: "row" }, p, id, a, b);
+            return el("div", { class: "card stack" },
+              el("h4", { class: "m0", text: "Add a model by ID" }),
+              el("p", { class: "muted small m0", text: "Connect any model slug offered by an active provider." }),
+              el("div", { class: "row" }, p, id, a, b));
           })()));
     },
     addButtons(row) {
@@ -1444,6 +1550,10 @@
           el("div", { class: "row key-row" }, t, b));
         return box;
       }
+      if (p.plan === "gemini-cli" && (!p.connected || !p.ready)) {
+        box.append(this.googleCard());
+        return box;
+      }
       if (p.needs_key) {
         const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "paste a new key" : "paste the key", "data-secret": "1" });
         const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
@@ -1479,6 +1589,164 @@
         try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
         if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); if (this.home) this.loadChoices(); break; }
         if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
+      }
+    },
+    // M66: the Google sign-in as one card in three states: ready (what
+    // Google will ask), the link to open, then waiting with the paste-back
+    // for a server. The page polls; it redraws only when the state changes,
+    // so a half-pasted address is never wiped.
+    googleCard() {
+      const f = this.gemini;
+      const waiting = !!(f && f.state === "waiting");
+      const failed = !!(f && f.state === "failed");
+      const opened = waiting && this.geminiOpened;
+      const at = opened ? 1 : 0;
+      const card = el("div", { class: "gflow" },
+        el("ol", { class: "gsteps", "aria-label": "Sign-in steps" }, ["Open Google", "Come back here", "Connected"].map((t, i) =>
+          el("li", { class: i < at ? "done" : i === at ? "now" + (failed ? " bad" : "") : null, "aria-current": i === at ? "step" : null, text: t }))));
+      if (!waiting) {
+        if (failed) card.append(el("div", { class: "said bad msg", role: "alert", dir: "auto", text: f.said }));
+        const b = button(failed ? "Start again" : "Sign in with Google", { kind: "primary" });
+        b.onclick = () => this.startGemini(b);
+        card.append(
+          el("p", { class: "m0", text: "Use the Google account that has your Google AI Pro or Ultra, Gemini Code Assist or Antigravity plan. No CLI to install." }),
+          el("div", { class: "asks" },
+            el("div", { class: "muted", text: "Google will ask to let Ferrule:" }),
+            el("div", { class: "ask" }, icon("check"), el("span", { text: "see your email address, to show who is signed in" })),
+            el("div", { class: "ask" }, icon("check"), el("span", { text: "use Gemini through Google Cloud Code (Google calls this cloud-platform access)" }))),
+          el("div", { class: "row" }, b));
+        return card;
+      }
+      const left = el("span", { class: "left", title: "The link expires" });
+      const paint = () => {
+        const n = Math.max(0, Math.round(((this.geminiDeadline || 0) - Date.now()) / 1000));
+        left.textContent = Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0");
+      };
+      paint();
+      const timer = setInterval(() => { if (!left.isConnected) clearInterval(timer); else paint(); }, 1000);
+      const cancel = button("Cancel", { kind: "ghost danger" });
+      cancel.onclick = async () => {
+        if (await act("plans/gemini/cancel", {}, cancel)) { this.gemini = null; this.geminiTyped = ""; this.drawChoices(); }
+      };
+      if (!opened) {
+        const go = el("a", { class: "btn primary", href: f.authorize_url, target: "_blank", rel: "noopener" }, el("span", { text: "Open Google sign-in" }), icon("external"));
+        go.onclick = () => { this.geminiOpened = true; setTimeout(() => this.drawChoices(), 0); };
+        card.append(el("p", { class: "m0", text: "Your link is ready. It opens Google's page in a new tab." }),
+          el("div", { class: "row" }, go, el("span", { class: "muted small" }, "good for ", left)),
+          el("div", { class: "row" }, cancel));
+        return card;
+      }
+      const remote = !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
+      card.append(
+        el("div", { class: "wait", role: "status" }, el("span", { class: "spin", "aria-hidden": "true" }),
+          el("div", { class: "grow" },
+            el("strong", { text: "Waiting for Google…" }),
+            el("div", { class: "small msg", text: remote
+              ? "After you sign in, Google sends your browser to a localhost address that can't load from here. That's expected: copy the whole address from the address bar and paste it below."
+              : "Finish signing in in the other tab; this card updates by itself." })),
+          left),
+        remote ? this.geminiPaste() : disc("gemini-paste", null, "Ferrule on another machine? Paste the address you land on",
+          el("div", { class: "details-body" }, this.geminiPaste())),
+        el("div", { class: "row" },
+          el("a", { href: f.authorize_url, target: "_blank", rel: "noopener", class: "small", text: "Open the link again" }),
+          el("span", { class: "grow" }), cancel));
+      return card;
+    },
+    // The redirect address, checked as it's typed: an address, with a code,
+    // for this sign-in. A paste that checks out goes in by itself.
+    geminiPaste() {
+      const f = this.gemini;
+      let want = null;
+      try { want = new URL(f.authorize_url).searchParams.get("state"); } catch (_) { /* none */ }
+      const inp = el("input", { id: "gemini-redirect", type: "url", class: "mono", inputmode: "url", autocomplete: "off", spellcheck: "false",
+        placeholder: "http://localhost:51121/auth/callback?code=…", dir: "ltr" });
+      inp.value = this.geminiTyped || "";
+      const hint = el("div", { class: "hint", "aria-live": "polite" });
+      const sub = el("button", { class: "primary", text: "Finish sign-in" });
+      const check = () => {
+        const v = inp.value.trim();
+        this.geminiTyped = inp.value;
+        let q = null;
+        try { q = new URL(v).searchParams; } catch (_) { /* not an address yet */ }
+        let ok = false;
+        let said = "";
+        if (!v) said = "";
+        else if (!q) said = "That isn't an address yet: copy the whole line from the address bar.";
+        else if (q.get("error")) said = "Google says the sign-in was refused (" + q.get("error").slice(0, 40) + "). Start again.";
+        else if (!q.get("code") || !q.get("state")) said = "It needs the code and state at the end: copy the whole address.";
+        else if (want && q.get("state") !== want) said = "That address is from an older sign-in. Use the tab you opened last.";
+        else { ok = true; said = "Looks right: it has a code and matches this sign-in."; }
+        hint.textContent = said;
+        hint.className = "hint" + (ok ? " ok" : v ? " bad" : "");
+        inp.classList.toggle("good", ok);
+        sub.disabled = !ok;
+        return ok;
+      };
+      const go = async () => {
+        if (!check() || sub.getAttribute("aria-busy") === "true") return;
+        sub.setAttribute("aria-busy", "true");
+        try {
+          const r = await api("/api/plans/gemini/complete", { redirect: inp.value.trim() });
+          this.gemini = null;
+          this.geminiTyped = "";
+          toast(r.said || "Signed in to the Gemini plan.");
+          this.loadChoices();
+          refresh();
+        } catch (e) {
+          hint.textContent = e.message;
+          hint.className = "hint bad";
+        } finally {
+          sub.removeAttribute("aria-busy");
+        }
+      };
+      inp.oninput = check;
+      inp.addEventListener("paste", () => setTimeout(() => { if (check()) go(); }, 0));
+      inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } };
+      sub.onclick = go;
+      check();
+      return el("div", { class: "stack" },
+        el("label", { for: "gemini-redirect", class: "strong small", text: "Paste the address you land on" }),
+        el("div", { class: "row key-row" }, inp, sub), hint);
+    },
+    async startGemini(b) {
+      b.setAttribute("aria-busy", "true");
+      try {
+        const g = await api("/api/plans/gemini/start", {});
+        this.gemini = g;
+        this.geminiOpened = false;
+        this.geminiTyped = "";
+        this.geminiDeadline = Date.now() + (g.expires_in || 900) * 1000;
+        this.pollGemini();
+      } catch (e) {
+        sayFor(b, e.message, true);
+      } finally {
+        b.removeAttribute("aria-busy");
+      }
+      this.drawChoices();
+    },
+    async pollGemini() {
+      if (this.geminiPolling) return;
+      this.geminiPolling = true;
+      try {
+        while (this.gemini && this.gemini.state === "waiting") {
+          await new Promise((r) => setTimeout(r, 2500));
+          let g;
+          try { g = await api("/api/plans/gemini/poll"); } catch (_) { break; }
+          if (!this.gemini) break;
+          if (g.expires_in !== undefined) this.geminiDeadline = Date.now() + g.expires_in * 1000;
+          const changed = g.state !== this.gemini.state;
+          this.gemini = g.state === "none" ? null : g;
+          if (g.state === "done") {
+            toast(g.said);
+            this.gemini = null;
+            refresh();
+            this.loadChoices();
+            break;
+          }
+          if (changed && (current === "models" || this.home) && !this.fbEdited) this.drawChoices();
+        }
+      } finally {
+        this.geminiPolling = false;
       }
     },
   };
@@ -1534,6 +1802,24 @@
           el("span", { class: "mono", text: String(d.escalations) }),
           text(reasons(d.reasons)),
         ]})), [1]) : el("div", { class: "empty", text: "none in this window" }),
+        // M66: why each recent turn moved up, and what each chat or task
+        // now starts on because it usually needs the stronger model.
+        (r.recent || []).length ? frag(el("h2", { text: "Recent escalations" }),
+          table(["when", "where", "moved", "why"], r.recent.map((x) => ({ cells: [
+            el("span", { class: "muted", text: when(x.at) }),
+            el("span", { class: "mono small", text: x.scope || "–" }),
+            el("span", { class: "mono small", text: (x.from || "?") + " → " + (x.to || "?") }),
+            el("span", { class: "msg", dir: "auto", text: x.why || "" }),
+          ]})))) : null,
+        (r.scopes || []).length ? frag(el("h2", { text: "Remembered starting points" }),
+          el("p", { class: "muted small", text: "A chat or task that usually had to move up starts on the stronger tier, and eases back after turns that didn't need it." }),
+          table(["where", "starts on", "recent turns", "since", ""], r.scopes.map((x) => ({ cells: [
+            frag(el("span", { class: "mono small", text: x.scope }), x.why ? el("span", { class: "sub msg", dir: "auto", text: x.why }) : null),
+            el("span", { class: "mono", text: x.start_tier }),
+            el("span", { class: "muted", text: (x.escalated_last != null ? x.escalated_last + " of " + x.turns_last + " moved up" : "–") }),
+            el("span", { class: "muted", text: when(x.since) }),
+            btn("Reset", "routing/reset", { scope: x.scope }),
+          ]})))) : null,
         el("h2", { text: "Spend per tier" }),
         (st.tiers || []).length ? frag(
           bars(st.tiers.map((t, i) => ({ k: t.tier, v: t.usd, dim: i > 0 })), usd),
@@ -2150,8 +2436,13 @@
           stat("Spent", usd(t.usd), window_),
           stat("Calls to a model", String(t.calls), u.error_pct ? u.error_pct + "% went wrong" : "none went wrong")),
         u.caps ? capsCard(u.caps, el("span", { class: "muted small", text: "A cap stops your bot from spending more. Change them under Advanced." })) : null,
-        t.calls ? card({ title: "Cost per day" }, chart("Cost per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0))
-          : empty("Nothing spent " + window_, "Once your bot answers something, the cost shows up here."));
+        // M66: a model without prices has no cost to chart; its tokens are.
+        t.calls && u.per_day.some((d) => d.usd > 0)
+          ? card({ title: "Cost per day" }, chart("Cost per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0))
+          : t.calls ? card({ title: "Tokens per day" },
+            el("p", { class: "muted small mt0", text: "No prices for the models used, so there's no cost to show: Models › Fill missing prices." }),
+            chart("Tokens per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num))
+            : empty("Nothing spent " + window_, "Once your bot answers something, the cost shows up here."));
       setKids(this.more,
         el("div", { class: "stats" },
           stat("tokens in", num(t.input_tokens), num(t.cached_input_tokens) + " cached"),
@@ -2230,6 +2521,40 @@
     },
   };
 
+  // M66: an audit line in words. The event's fields are JSON after the
+  // tree; anything unknown keeps its name, spaced, and its first fields.
+  const ROUTE = { dashboard: "on the dashboard", terminal: "at the terminal", telegram: "in Telegram", none: "nobody could answer" };
+  function auditWords(x) {
+    let f = {};
+    const at = String(x.text || "").indexOf("{");
+    if (at >= 0) { try { f = JSON.parse(String(x.text).slice(at)); } catch (_) { f = {}; } }
+    const subj = f.subject || f.what || f.name || f.cmd || (f.code ? "the action (code " + f.code + ")" : "an action");
+    const where = [x.tree && x.tree !== "-" ? x.tree.replace("__", ":") : null, f.route && ROUTE[f.route] ? ROUTE[f.route] : null].filter(Boolean).join(" · ");
+    const ev = String(x.level || "");
+    const ans = String(f.answer || "");
+    const said = {
+      approval_asked: ["asked", "The agent asked to run " + subj],
+      approval_answered: ans === "yes" || ans === "always" || ans === "remember"
+        ? ["allowed", "You allowed " + subj + (ans === "always" ? " for this run" : ans === "remember" ? " from now on" : "")]
+        : ans === "unattended" ? ["refused", "Refused " + subj + ": nobody was there to ask"]
+          : ans === "halted" ? ["cancelled", subj + " was cancelled when the run stopped"]
+            : ["refused", "You refused " + subj],
+      approval_allowed: ["allowed", "Allowed " + subj + (f.by ? " (" + f.by + ")" : "")],
+      untrusted_seen: ["read outside", "The agent read outside content" + (f.source ? " (" + f.source + ")" : "") + ": sends ask first now"],
+      kill_on: ["stopped", "The kill switch went on" + (f.reason ? ": " + f.reason : "")],
+      kill_off: ["resumed", "The kill switch went off"],
+      cap_hit: ["cap", "A spending cap stopped a run" + (f.cap ? " (" + f.cap + ")" : "")],
+      plan_proposed: ["plan", "A plan is waiting for your approval"],
+      plan_approved: ["plan", "You approved a plan"],
+      plan_rejected: ["plan", "You rejected a plan"],
+      plan_executed: ["plan", "An approved plan ran"],
+    }[ev];
+    if (said) return { tag: said[0], text: said[1], where };
+    const words = ev.replace(/^dashboard\./, "").replace(/[._]/g, " ");
+    const bits = Object.entries(f).filter(([, v]) => typeof v !== "object").slice(0, 3).map(([k, v]) => k + " " + v).join(", ");
+    return { tag: words.split(" ")[0] || "change", text: words.charAt(0).toUpperCase() + words.slice(1) + (bits ? ": " + bits : ""), where };
+  }
+
   sections.logs = {
     every: 0,
     page: 0,
@@ -2243,7 +2568,7 @@
       this.drawPick = () => setKids(this.pick, chips("Show", [["all", "Everything"], ["warn", "Problems"], ["audit", "Changes"]], this.kindV,
         (v) => { this.kindV = v; this.drawPick(); go(); }));
       this.drawPick();
-      root.append(secHead("Logs", "what happened · secrets and chats never appear here"),
+      root.append(secHead("Activity", "what happened, in words · secrets and chats never appear here"),
         this.pick, el("div", { class: "row mt" }, this.q, button("Reload", { kind: "ghost", icon: "retry", onclick: () => this.load() })),
         this.box);
     },
@@ -2258,11 +2583,15 @@
         return /error|fail|engage/.test(l) ? "bad" : /warn/.test(l) ? "warn" : x.kind === "audit" ? "audit" : "info";
       };
       setKids(this.box,
-        r.rows.length ? el("div", { class: "logwrap" }, r.rows.map((x) =>
-          el("div", { class: "logline" },
+        r.rows.length ? el("div", { class: "logwrap" }, r.rows.map((x) => {
+          const said = x.kind === "audit" ? auditWords(x) : null;
+          return el("div", { class: "logline" + (said ? " said" : ""), title: said ? x.level + " " + (x.tree || "") + " " + x.text : null },
             el("span", { class: "when", text: String(x.at).replace("T", " ").slice(5, 19) }),
-            el("span", { class: "lvl " + lvl(x), text: x.level }),
-            el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)))))
+            el("span", { class: "lvl " + lvl(x), text: said ? said.tag : x.level }),
+            said
+              ? el("span", { class: "txt", dir: "auto" }, el("span", { class: "msg", text: said.text }), said.where ? el("span", { class: "muted", text: "  · " + said.where }) : null)
+              : el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)));
+        }))
           : empty("Nothing matches", this.q.value ? "Try a shorter search." : "Nothing of this kind has happened yet."),
         el("div", { class: "pager" },
           el("button", { type: "button", disabled: this.page === 0, onclick: () => { this.page--; this.load(); } }, icon("chevron-left"), el("span", { text: "Newer" })),
@@ -2367,7 +2696,8 @@
         r.agents.length ? el("div", { class: "plain-list" }, r.agents.map((a) => el("div", { class: "item" },
           a.status === "running" ? led("ok pulse") : null,
           el("div", { class: "grow" }, el("div", { class: "t", text: a.name }), el("div", { class: "d" }, text(a.task))),
-          a.status === "running" ? tag("running", "ok") : tag(a.status, a.status === "failed" ? "bad" : null))))
+          a.status === "running" ? tag("running", "ok") : tag(a.status, a.status === "failed" ? "bad" : null),
+          a.status === "running" && a.id ? btn("Close", "agents/close", { id: a.id }, "danger") : null)))
           : empty("No helpers running", "When your bot splits a big job, its helpers show up here."),
         advanced("agents", "role, depth, tokens, model",
           r.agents.length ? table(["agent", "role", "tokens", "model"], r.agents.map((a) => ({ cells: [
@@ -2504,8 +2834,18 @@
         : null;
       this.sendBtn.onclick = () => this.send();
       this.stopBtn.onclick = () => this.stop();
-      this.input.addEventListener("input", () => this.grow());
+      // M66: how the next message runs, which model this chat uses, the
+      // slash commands, and the steps of the answer being written.
+      this.mode = this.mode || "normal";
+      this.tools = el("div", { class: "chat-tools" });
+      this.menu = el("div", { class: "cmd-menu", role: "listbox", "aria-label": "Commands", hidden: true });
+      this.stepsBox = el("div", { class: "chat-steps" });
+      this.stepsFor = null;
+      this.drawTools();
+      this.input.addEventListener("input", () => { this.grow(); this.cmdMenu(); });
       this.input.addEventListener("keydown", (e) => {
+        if (!this.menu.hidden && ["ArrowDown", "ArrowUp", "Escape", "Tab"].includes(e.key)) { e.preventDefault(); this.cmdMove(e.key); return; }
+        if (!this.menu.hidden && e.key === "Enter" && this.menu.querySelector("[aria-selected=true]")) { e.preventDefault(); this.cmdMove("Tab"); return; }
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
       });
       this.input.addEventListener("paste", (e) => {
@@ -2513,8 +2853,15 @@
         if (f) { e.preventDefault(); this.attach(f); }
       });
       window.addEventListener("scroll", () => { if (this.pill && this.nearBottom()) this.pill.hidden = true; }, { passive: true });
-      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log, this.typing,
-        el("div", { class: "composer" }, this.pill, this.note, this.preview,
+      const fresh = button("New conversation", { kind: "ghost", icon: "plus", onclick: async (e) => {
+        const yes = await ask({ title: "Start a new conversation?", text: "The agent forgets this conversation's context; it's saved, and its memory stays.", confirm: "Start new" });
+        if (!yes) return;
+        try { await api("/api/chat/new", {}); } catch (err) { return toast(err.message, true); }
+        this.stepsFor = null;
+        this.load();
+      } });
+      root.append(secHead("Chat", "the same agent, in its own session", fresh), this.top, this.log, this.stepsBox, this.typing,
+        el("div", { class: "composer" }, this.pill, this.note, this.preview, this.menu, this.tools,
           el("div", { class: "row" }, attach, shoot, el("div", { class: "grow" }, this.input), this.stopBtn, this.sendBtn),
           this.gallery, this.camera));
       this.drawn = false;
@@ -2522,6 +2869,95 @@
       if (this.wantPick) { this.wantPick = false; setTimeout(() => this.pick(), 60); }
     },
     pick() { if (this.gallery && !this.gallery.disabled) this.gallery.click(); else this.wantPick = true; },
+    // The next message's mode and this chat's model (a pin on the
+    // dashboard's lane, the same pin Models shows).
+    async drawTools() {
+      const MODES = [["normal", "Normal"], ["plan", "Plan first"], ["goal", "Goal"]];
+      const HINT = {
+        normal: "",
+        plan: "It explores read-only, writes a plan and waits for your approval before changing anything.",
+        goal: "It keeps working until your check passes (Config: agent.verify_command), within the caps.",
+      };
+      if (!this.modelList) {
+        try {
+          const [c, m] = await Promise.all([api("/api/models/choices"), api("/api/models").catch(() => ({ pins: [] }))]);
+          this.modelList = { models: (c.models || []).filter((x) => x.ready), def: c.default || "", pin: ((m.pins || []).find((p) => p.channel === "dashboard") || {}).model || "" };
+        } catch (_) { this.modelList = { models: [], def: "", pin: "" }; }
+      }
+      const ml = this.modelList;
+      const sel = el("select", { "aria-label": "Model for this chat", class: "sm" },
+        el("option", { value: "", text: "Model: default" + (ml.def ? " (" + ml.def + ")" : "") }),
+        ml.models.map((x) => el("option", { value: x.reference, text: x.reference })));
+      sel.value = ml.pin || "";
+      sel.onchange = async () => {
+        const v = sel.value;
+        const r = v ? await act("models/pin", { chat: "owner", channel: "dashboard", model: v }, null)
+          : await act("models/unpin", { chat: "owner", channel: "dashboard" }, null);
+        if (r) ml.pin = v; else sel.value = ml.pin || "";
+      };
+      setKids(this.tools,
+        chips("Mode", MODES, this.mode, (v) => { this.mode = v; this.drawTools(); this.input.focus(); }),
+        ml.models.length > 1 || ml.pin ? sel : null,
+        el("span", { class: "muted small grow", text: HINT[this.mode] || "Type / for commands." }));
+    },
+    // "/" opens the commands the chat understands (GET /api/commands).
+    async cmdMenu() {
+      const v = this.input.value;
+      if (!v.startsWith("/") || v.includes(" ") || v.includes("\n")) { this.menu.hidden = true; return; }
+      if (!this.commands) {
+        try { this.commands = (await api("/api/commands")).commands || []; } catch (_) { this.commands = []; }
+      }
+      const q = v.toLowerCase();
+      const hits = this.commands.filter((c) => c.cmd.toLowerCase().startsWith(q)).slice(0, 8);
+      if (!hits.length) { this.menu.hidden = true; return; }
+      setKids(this.menu, hits.map((c, i) => {
+        const o = el("button", { type: "button", role: "option", "aria-selected": String(i === 0), class: "cmd" },
+          el("span", { class: "mono", text: c.cmd + (c.args ? " " + c.args : "") }), el("span", { class: "muted small", text: c.what || "" }));
+        o.onclick = () => this.cmdPick(c);
+        o.dataset.cmd = c.cmd;
+        return o;
+      }));
+      this.menu.hidden = false;
+    },
+    cmdPick(c) {
+      this.input.value = c.cmd + (c.args ? " " : "");
+      this.menu.hidden = true;
+      this.input.focus();
+      this.grow();
+    },
+    cmdMove(key) {
+      const opts = [...this.menu.querySelectorAll("[role=option]")];
+      if (key === "Escape") { this.menu.hidden = true; return; }
+      let i = opts.findIndex((o) => o.getAttribute("aria-selected") === "true");
+      if (key === "Tab") { const c = (this.commands || []).find((x) => x.cmd === (opts[i] || opts[0]).dataset.cmd); if (c) this.cmdPick(c); return; }
+      i = (i + (key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
+      opts.forEach((o, j) => o.setAttribute("aria-selected", String(j === i)));
+    },
+    // The steps of the answer being written, live; then the last answer's.
+    steps(waiting, lastId) {
+      const key = waiting ? "live" : "last-" + lastId;
+      if (this.stepsFor === key) return;
+      this.stepsFor = key;
+      if (waiting) {
+        setKids(this.stepsBox, el("div", { class: "card flat live" }, liveTurn({ lane: "dashboard" })));
+        return;
+      }
+      const body = el("div", { class: "details-body" });
+      const d = disc("chat-steps", "chat-steps-disc", frag(icon("console"), " How it got there ", el("span", { class: "muted small", text: "· the steps of the last answer" })), body);
+      d.addEventListener("toggle", () => { if (d.open && !body.firstChild) body.append(liveTurn({ lane: "dashboard" }, { head: false })); });
+      if (d.open) body.append(liveTurn({ lane: "dashboard" }, { head: false }));
+      setKids(this.stepsBox, lastId ? d : null);
+    },
+    // 👍/👎 on an answer: a signal for learning (and a 👎 asks why).
+    async react(e, thumb, b) {
+      let why = "";
+      if (thumb === "down") {
+        why = await ask({ title: "What went wrong?", text: "Optional. The agent learns from it; it never sees this as a message.", confirm: "Send", input: { label: "What went wrong" } });
+        if (why === null) return;
+      }
+      const r = await act("chat/react", { id: e.id, thumb, why: why || "" }, b);
+      if (r) { this.reacted = this.reacted || {}; this.reacted[e.id] = thumb; const row = this.rows.get(e.id); if (row) row.sig = ""; this.draw(false); }
+    },
     grow() {
       // Measured at one row, then as many as the text needs, up to eight.
       const cs = getComputedStyle(this.input);
@@ -2566,6 +3002,8 @@
       const grew = c.entries.length > 0;
       const stick = this.nearBottom() || !this.drawn;
       this.draw(c.waiting);
+      const lastBot = [...this.entries.values()].filter((e) => e.who !== "you").sort((a, b) => b.id - a.id)[0];
+      this.steps(!!c.waiting, lastBot ? lastBot.id : 0);
       this.typing.hidden = !c.waiting;
       this.stopBtn.hidden = !c.waiting;
       if (grew) {
@@ -2611,6 +3049,8 @@
         el("div", { class: "foot" },
           el("span", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
           mine ? null : el("button", { type: "button", class: "ghost icon sm", "aria-label": "Copy the answer", title: "Copy the answer", onclick: () => copyText(e.text) }, icon("copy")),
+          mine ? null : el("button", { type: "button", class: "ghost icon sm thumb" + ((this.reacted || {})[e.id] === "up" ? " on" : ""), "aria-label": "Good answer", title: "Good answer", "aria-pressed": String((this.reacted || {})[e.id] === "up"), onclick: (ev) => this.react(e, "up", ev.currentTarget) }, icon("thumbs-up")),
+          mine ? null : el("button", { type: "button", class: "ghost icon sm thumb" + ((this.reacted || {})[e.id] === "down" ? " on" : ""), "aria-label": "Bad answer", title: "Bad answer", "aria-pressed": String((this.reacted || {})[e.id] === "down"), onclick: (ev) => this.react(e, "down", ev.currentTarget) }, icon("thumbs-down")),
           retry ? el("button", { type: "button", class: "ghost sm", onclick: (ev) => this.again(ev.currentTarget) }, icon("retry"), el("span", { text: "Try again" })) : null));
     },
     // The last thing the owner said, said again.
@@ -2639,8 +3079,14 @@
           this.sendBtn.disabled = false;
           await api("/api/chat/photo", { text: t, mime: photo.mime, data: photo.data }, { signal: this.sending.signal });
           this.detach();
-        } else await api("/api/chat/send", { text: t });
-        if (said === undefined) { this.input.value = ""; this.grow(); delete this.input.dataset.dirty; }
+        } else {
+          const prefix = said === undefined && !t.startsWith("/") ? { plan: "/plan ", goal: "/goal " }[this.mode] || "" : "";
+          await api("/api/chat/send", { text: prefix + t });
+        }
+        if (said === undefined) {
+          this.input.value = ""; this.grow(); delete this.input.dataset.dirty; this.menu.hidden = true;
+          if (this.mode !== "normal") { this.mode = "normal"; this.drawTools(); }
+        }
         this.load();
       } catch (e) {
         if (e.name === "AbortError") toast("Cancelled: the photo wasn't sent.");
@@ -2947,7 +3393,26 @@
         restart ? el("div", { class: "alert warn" }, el("div", { class: "body" },
           el("div", { class: "what", text: "A channel's settings changed since the gateway started." }),
           el("div", { class: "row" }, btn("Restart the gateway", "gateway/restart", {}, "primary")))) : null,
-        el("div", { class: "tiles" }, c.channels.map((x) => this.card(x))));
+        // M66: what's set up, open; the rest folded, one line each, so
+        // the page isn't eleven empty forms.
+        (() => {
+          const set = c.channels.filter((x) => x.configured || x.state === "restart");
+          const rest = c.channels.filter((x) => !set.includes(x));
+          return frag(
+            set.length ? el("div", { class: "tiles" }, set.map((x) => this.card(x))) : null,
+            rest.length ? el("h2", { text: set.length ? "Add another chat app" : "Add a chat app" }) : null,
+            rest.length ? el("div", { class: "stack folded" }, rest.map((x) => {
+              const st = CHANNEL_STATE[x.state] || [x.state, null];
+              const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+              s.append(el("path", { d: x.icon }));
+              return disc("chadd:" + x.name, "card fold", frag(s, el("strong", { text: x.title }), el("span", { class: "grow" }), tag(st[0], st[1])),
+                el("div", { class: "details-body" }, this.card(x)));
+            })) : null);
+        })());
+    },
+    focus(tile) {
+      opened.add("chadd:" + tile);
+      setTimeout(() => { const n = document.getElementById("channel-" + tile); if (n) n.scrollIntoView({ block: "start" }); }, 400);
     },
 
     card(x) {
@@ -3247,25 +3712,43 @@
         const shown = f.value === null || f.value === undefined ? "" : String(f.value);
         if (f.kind === "bool" || f.kind === "choice") {
           const opts = f.kind === "bool" ? ["true", "false"] : f.choices || [];
+          const dv = f.default === undefined || f.default === null ? null : f.kind === "bool" ? (f.default ? "on" : "off") : String(f.default);
           input = el("select", { name: f.key, "aria-label": f.key },
-            el("option", { value: "", text: "default" }),
+            el("option", { value: "", text: dv === null ? "default" : "default (" + dv + ")" }),
             opts.map((o) => el("option", { value: o, text: f.kind === "bool" ? (o === "true" ? "on" : "off") : o, selected: shown === o })));
           input.onchange = () => {
             const v = input.value;
             set(f.key, v === "" ? null : f.kind === "bool" ? v === "true" : v, input);
           };
-          return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), input);
+          return fieldRow(f, input);
         }
         const text = f.kind === "text";
-        input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key, dir: text ? "ltr" : null });
+        const dflt = f.default === undefined || f.default === null || f.default === "" ? "default" : "default: " + f.default;
+        input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: dflt, "aria-label": f.key, dir: text ? "ltr" : null });
         input.value = shown;
         const save = el("button", { text: "Save" });
         save.onclick = () => {
           const v = input.value.trim();
           set(f.key, v === "" ? null : text ? v : Number(v), save);
         };
-        return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), el("div", { class: "row" }, input, save));
+        return fieldRow(f, el("div", { class: "row" }, input, save));
       };
+      // M66: the help is the name; the key is the small print; a value
+      // that differs from the default says so.
+      const fieldRow = (f, control) => el("div", { class: "check cfg" },
+        el("div", { class: "body" },
+          el("div", { class: "t", text: f.help || f.key }),
+          el("div", { class: "d" }, el("code", { text: f.key }),
+            f.value !== null && f.value !== undefined && f.value !== "" ? frag(" ", tag("set", "accent")) : null)),
+        control);
+      // Grouped by area: the server's group, else the key's first word.
+      const AREA = { agent: "Agent", agents: "Sub-agents", plans: "Plans", gateway: "Chat apps", trust: "Safety", health: "Health", scheduler: "Schedule", dashboard: "Dashboard", learning: "Learning", proactive: "Proactive", routing: "Routing", memory: "Memory" };
+      const grouped = new Map();
+      for (const f of c.fields || []) {
+        const g = f.group || AREA[f.key.split(".")[0]] || "Other";
+        if (!grouped.has(g)) grouped.set(g, []);
+        grouped.get(g).push(f);
+      }
       const raw = el("textarea", { rows: 18, spellcheck: "false", class: "mono", "aria-label": "config file" });
       raw.value = c.text || "";
       const said = el("div");
@@ -3326,7 +3809,9 @@
         c.problem ? el("div", { class: "alert bad" }, el("div", { class: "body" },
           el("div", { class: "what", text: "The file doesn't load" + (c.problem.line ? " (line " + c.problem.line + ")" : "") }),
           el("div", { class: "fix msg", dir: "auto", text: c.problem.error }))) : null,
-        (c.fields || []).length ? el("div", { class: "card" }, el("h2", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
+        grouped.size ? frag(el("h2", { text: "Settings" }), [...grouped.entries()].map(([g, list], i) =>
+          disc("cfg-" + g, "card cfg-group", frag(el("strong", { text: g }), el("span", { class: "muted small", text: " · " + list.length + (list.some((f) => f.value !== null && f.value !== undefined && f.value !== "") ? ", " + list.filter((f) => f.value !== null && f.value !== undefined && f.value !== "").length + " set" : "") })),
+            el("div", { class: "details-body" }, list.map(row))))) : null,
         el("div", { class: "card" },
           el("h2", { class: "mt0", text: "The file" }),
           el("p", { class: "muted small", text: "Secrets show as placeholders and stay as they are when you save. Commands, gates, secret routing and who gets in can only change on the machine." }),
@@ -3356,14 +3841,36 @@
       let wait = null;
       this.q.oninput = () => { clearTimeout(wait); wait = setTimeout(() => this.load(), 300); };
       this.q.onkeydown = (e) => { if (e.key === "Escape" && this.q.value) { this.q.value = ""; this.load(); } };
-      root.append(secHead(tr("Memory"), tr("what it remembers")), el("div", { class: "row search" }, icon("search"), this.q), this.box);
+      // M66: add a fact yourself; "Never used" shows what's never been recalled.
+      this.view = this.view || "all";
+      this.pick = el("div");
+      this.drawPick = () => setKids(this.pick, chips("Show", [["all", "Everything"], ["pinned", "Pinned"], ["stale", "Never used"]], this.view,
+        (v) => { this.view = v; this.drawPick(); this.load(); }));
+      this.drawPick();
+      const add = el("input", { class: "grow", dir: "auto", placeholder: "Something it should remember, in your words", "aria-label": "A new memory" });
+      const addBtn = button("Remember", { kind: "primary", icon: "plus" });
+      addBtn.onclick = async () => {
+        const t = add.value.trim();
+        if (!t) return add.focus();
+        if (await act("memory/add", { text: t }, addBtn)) { add.value = ""; delete add.dataset.dirty; this.load(); }
+      };
+      add.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addBtn.click(); } };
+      add.oninput = () => { add.dataset.dirty = "1"; };
+      root.append(secHead(tr("Memory"), tr("what it remembers")),
+        el("div", { class: "card flat" }, el("div", { class: "row key-row" }, add, addBtn),
+          el("p", { class: "muted small m0", text: "Keys and passwords are refused here: they go in the Safe." })),
+        el("div", { class: "row search" }, icon("search"), this.q), this.pick, this.box);
     },
     async load() {
       const q = this.q.value.trim();
       const mine = ++this.seq;
       let r;
       try {
-        r = await api("/api/memory" + (q ? "?q=" + encodeURIComponent(q) : ""));
+        const qs = new URLSearchParams();
+        if (q) qs.set("q", q);
+        if (this.view === "stale") qs.set("view", "stale");
+        r = await api("/api/memory" + (qs.toString() ? "?" + qs : ""));
+        if (this.view === "pinned" && r.memories) r.memories = r.memories.filter((m) => m.pinned);
       } catch (e) { return mine === this.seq ? sectionError(this.box, e) : null; }
       if (mine !== this.seq) return null;
       setKids(this.box,
@@ -3375,12 +3882,31 @@
     item(m) {
       const b = button(tr("Forget"), { icon: "trash", kind: "ghost", aria: tr("Forget this memory") });
       b.onclick = async () => { if (await act("memory/forget", { id: m.id }, b)) this.load(); };
-      return el("div", { class: "card memory" },
+      const pin = m.pinned !== undefined ? button(m.pinned ? "Unpin" : "Pin", { kind: "ghost", aria: (m.pinned ? "Unpin" : "Pin") + ": " + m.text.slice(0, 40) }) : null;
+      if (pin) pin.onclick = async () => { if (await act("memory/pin", { id: m.id, pinned: !m.pinned }, pin)) this.load(); };
+      const edit = m.id !== undefined ? button("Edit", { kind: "ghost", icon: "edit" }) : null;
+      const card = el("div", { class: "card memory" + (m.pinned ? " pinned" : "") });
+      const view = () => setKids(card,
         el("div", { class: "item" },
           el("div", { class: "grow" },
             el("div", { class: "t msg", dir: "auto", text: m.text }),
-            el("div", { class: "d" }, (m.tags || []).map((g) => el("span", { class: "tag", dir: "auto", text: g })), " ", ago(m.at))),
-          b));
+            el("div", { class: "d" },
+              m.pinned ? frag(tag("pinned", "accent"), " ") : null,
+              m.source ? frag(tag(m.source), " ") : null,
+              (m.tags || []).map((g) => el("span", { class: "tag", dir: "auto", text: g })), " ", ago(m.at),
+              m.recalls !== undefined ? el("span", { class: "muted", text: " · " + (m.recalls ? "used " + m.recalls + (m.recalls === 1 ? " time" : " times") + (m.last_recalled ? ", last " + when(m.last_recalled) : "") : "never used yet") }) : null)),
+          pin, edit, b));
+      if (edit) edit.onclick = () => {
+        const ta = el("textarea", { rows: 3, dir: "auto", class: "grow", "aria-label": "Edit this memory" });
+        ta.value = m.text;
+        ta.dataset.dirty = "1";
+        const save = button("Save", { kind: "primary" });
+        save.onclick = async () => { if (await act("memory/edit", { id: m.id, text: ta.value.trim() }, save)) this.load(); };
+        setKids(card, el("div", { class: "stack" }, ta, el("div", { class: "row" }, save, button("Cancel", { kind: "ghost", onclick: view }))));
+        ta.focus();
+      };
+      view();
+      return card;
     },
   };
 
@@ -3540,14 +4066,6 @@
       try {
         r = await api("/api/backups");
       } catch (e) { r = null; }
-      // The Autonomy row needs the config; without one it isn't shown.
-      try {
-        this.autonomy = (await api("/api/settings")).autonomy || null;
-      } catch (e) { this.autonomy = null; }
-      // M56.2: what the owner said "Always here" to.
-      try {
-        this.grants = (await api("/api/grants")).grants || [];
-      } catch (e) { this.grants = null; }
       this.draw(r);
       // A backup runs in the background: look again until it is done.
       clearTimeout(this.poll);
@@ -3562,25 +4080,10 @@
       const lang = card({ title: tr("Language"), icon: "globe" },
         el("p", { class: "muted small mt0", text: tr("Hebrew reads right to left. What you and your bot write always follows its own direction.") }),
         chips(tr("Language"), [["en", "English"], ["he", "עברית"]], LANG, (v) => { if (v !== LANG && window.ferruleLang) window.ferruleLang.set(v); }));
-      // The owner's switch (M54): a managed bot's sandbox is the panel's.
-      const auto = this.autonomy && !MANAGED.on
-        ? card({ title: tr("Autonomy"), icon: "lock" },
-          el("p", { class: "muted small mt0", text: tr("Protected autonomous does everything itself and can't see your keys. Changing it restarts the bot.") }),
-          this.autonomy === "off" ? el("p", { class: "small", text: tr("Sandbox off (set on the machine)") }) : null,
-          chips(tr("Autonomy"), [["owner", tr("Protected autonomous")], ["ask", tr("Ask me first")]], this.autonomy,
-            async (v) => { if (v !== this.autonomy && await act("sandbox/mode", { mode: v })) this.load(); }))
-        : null;
-      const gr = this.grants;
-      const stand = gr ? card({ title: tr("Standing approvals"), icon: "check" },
-        el("p", { class: "muted small mt0", text: tr("What you allowed with Always here. It runs without asking until you revoke it, except a send after the bot read something from outside.") }),
-        gr.length ? el("div", { class: "plain-list" }, gr.map((g) => el("div", { class: "item" },
-          el("div", { class: "grow" },
-            el("div", { class: "t mono", dir: "ltr", text: g.what }),
-            el("div", { class: "d", text: ago(g.at) })),
-          g.widen ? button(tr("Whole domain"), { kind: "ghost", onclick: async (e) => { if (await act("grants/widen", { id: g.id }, e.currentTarget)) this.load(); } }) : null,
-          button(tr("Revoke"), { icon: "trash", kind: "ghost", aria: tr("Revoke") + " " + g.what, onclick: async (e) => { if (await act("grants/revoke", { id: g.id }, e.currentTarget)) this.load(); } }))))
-          : el("p", { class: "muted small", text: tr("None yet. A question about a command in one folder, or a send to the same address, offers Always here.") }))
-        : null;
+      // M66: autonomy and standing approvals live on Control now.
+      const safety = card({ title: "Safety", icon: "control" },
+        el("p", { class: "muted small mt0", text: "Autonomy, standing approvals, the kill switch and the spending caps are on the Control page." }),
+        el("div", { class: "row" }, button("Open Control", { onclick: () => show("control") })));
       const list = r && r.files && r.files.length
         ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item file" },
           el("div", { class: "grow" },
@@ -3602,7 +4105,7 @@
           button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
           button(tr("Keyboard shortcuts"), { onclick: () => shortcuts() }),
           button(tr("Sign out"), { icon: "power", onclick: () => document.getElementById("logout").click() })));
-      setKids(this.box, look, lang, auto, stand, bak, more);
+      setKids(this.box, look, lang, safety, bak, more);
     },
     async backup() {
       const r = await act("backup", {});
@@ -3815,21 +4318,378 @@
     },
   };
 
+  // ---- M66: a turn's steps, live (GET /api/turn) -------------------------
+  // What the agent did, one line a step: a model call, a tool and a short
+  // summary of its arguments, a check. Never the tool's output: the
+  // dashboard shows what happened, not transcripts (docs/dashboard.md).
+
+  const STEP_ICON = { tool: "console", model: "models", verify: "check", retry: "retry", fallback: "routing", escalate: "up" };
+  const when = (t) => (typeof t === "number" ? ago(t) : t && !isNaN(Date.parse(t)) ? ago(Math.round(Date.parse(t) / 1000)) : t || "");
+  const pct = (x) => (x === null || x === undefined ? "–" : Math.round(x * 100) + "%");
+  const kfmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n));
+  const dur = (s) => (s === null || s === undefined ? "" : s < 10 ? s.toFixed(1) + " s" : secs(Math.round(s)));
+
+  function stepsList(steps, dropped) {
+    if (!steps || !steps.length) return el("p", { class: "muted small m0", text: "No steps yet." });
+    return el("ol", { class: "steps-live" },
+      dropped ? el("li", { class: "st more muted small", text: dropped + " earlier steps not shown" }) : null,
+      steps.map((s) => el("li", { class: "st " + (s.status || "") },
+        el("span", { class: "st-ico", "aria-hidden": "true" }, s.status === "running" ? el("span", { class: "spin" }) : icon(s.status === "error" ? "x" : STEP_ICON[s.kind] || "check")),
+        el("span", { class: "st-name mono", dir: "ltr", text: s.name || s.kind }),
+        el("span", { class: "st-sum msg", dir: "auto", text: s.summary || "" }),
+        el("span", { class: "st-time mono", text: s.status === "running" ? "…" : dur(s.secs) }),
+        el("span", { class: "sr", text: s.status === "error" ? " (failed)" : s.status === "running" ? " (running)" : "" }))));
+  }
+
+  // A box that follows one turn while it runs, then rests on its last view.
+  function liveTurn(query, opts) {
+    opts = opts || {};
+    const box = el("div", { class: "live-turn" });
+    let first = true;
+    const tick = async () => {
+      if (!first && !box.isConnected) return;
+      first = false;
+      let t;
+      try { t = await api("/api/turn?" + new URLSearchParams(query)); } catch (e) {
+        setKids(box, el("p", { class: "muted small m0", text: e.status === 404 ? "This turn has ended." : e.message }));
+        return;
+      }
+      const tokens = t.tokens_in !== undefined ? kfmt(t.tokens_in || 0) + " in · " + kfmt(t.tokens_out || 0) + " out" : null;
+      setKids(box,
+        opts.head === false ? null : el("div", { class: "row small muted lt-head" },
+          t.busy ? led("ok pulse") : led("off"),
+          el("span", { class: "grow msg", dir: "auto", text: t.busy ? (t.activity ? "Now: " + t.activity : "Working…") : t.last ? "Last answer" : "Idle" }),
+          tokens ? el("span", { class: "mono", text: tokens }) : null,
+          t.busy_secs !== undefined && t.busy_secs !== null ? el("span", { class: "mono", text: secs(t.busy_secs) }) : null),
+        stepsList(t.steps, t.dropped));
+      if (opts.onTurn) opts.onTurn(t);
+      if (t.busy) setTimeout(tick, 1500);
+    };
+    setTimeout(tick, 0);
+    return box;
+  }
+
+  // ---- M66: approvals with their scope (once, this run, always here) -----
+
+  function approvalsCard(list, opts) {
+    if (!list || !list.length) return null;
+    opts = opts || {};
+    const answer = async (a, allow, scope, b) => {
+      await act("approvals/answer", Object.assign({ code: a.code, allow }, scope ? { scope } : {}), b);
+    };
+    return el("div", { class: "card approvals" },
+      el("div", { class: "card-head" }, icon("alert"), el("h2", { text: "Waiting for you" }),
+        el("span", { class: "muted small", text: list.length === 1 ? "the agent is paused on this" : "the agent is paused on these" })),
+      list.map((a) => el("div", { class: "check" },
+        led("warn pulse"),
+        el("div", { class: "body" },
+          el("div", { class: "t msg", dir: "auto", text: a.what }),
+          el("div", { class: "d" },
+            a.kind ? tag(a.kind, "warn") : null, a.kind ? " " : null,
+            a.tool ? el("span", { class: "mono", text: a.tool + " · " }) : null,
+            a.chat + " · asked " + secs(a.secs) + " ago",
+            a.left_secs != null ? el("span", { class: "muted", text: " · " + secs(a.left_secs) + " left" }) : null)),
+        el("div", { class: "row" },
+          button("Allow", { kind: "primary", onclick: (e) => answer(a, true, null, e.currentTarget) }),
+          a.can_run ? button("Allow for this run", { onclick: (e) => answer(a, true, "run", e.currentTarget) }) : null,
+          a.can_always ? button("Always here", { onclick: (e) => answer(a, true, "here", e.currentTarget) }) : null,
+          button("Refuse", { kind: "danger", onclick: (e) => answer(a, false, null, e.currentTarget) })))),
+      opts.foot || null);
+  }
+
+  // ---- M66: Control — what the agent may do, and what it is doing --------
+  // One page for the switches that used to be spread over Home's menu,
+  // Settings and Usage: what's running (with its steps and Stop), what's
+  // waiting for you, the kill switch, autonomy, the caps, standing
+  // approvals, plans and add-ons waiting, and conversations to resume.
+
+  sections.control = {
+    title: "Control",
+    every: 3,
+    open: new Set(),
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Control", "what your agent may do, and what it's doing"), this.box);
+    },
+    async load(h) {
+      const get = (p) => api(p).catch((e) => ({ error: e.message, status: e.status }));
+      const [c, ap, grants, plans, pend, sess, st] = await Promise.all([
+        get("/api/control"), get("/api/approvals"), get("/api/grants"), get("/api/plans"),
+        get("/api/extensions/pending"), get("/api/sessions"), get("/api/settings"),
+      ]);
+      this.last = { h: h || lastHealth || {}, c, ap, grants, plans, pend, sess, autonomy: st && !st.error ? st.autonomy || null : null };
+      this.draw();
+    },
+    draw() {
+      const { h, c, ap, grants, plans, pend, sess, autonomy } = this.last;
+      const turns = (h.turns || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+      const kill = (c && !c.error && c.kill) || h.kill || null;
+      // Right now: running turns, each with its steps and Stop.
+      const now = card({ title: "Right now", icon: "health" },
+        turns.length ? el("div", { class: "plain-list" }, turns.map((t) => {
+          const key = t.session || t.place;
+          const open = this.open.has(key);
+          const toggleBtn = button(open ? "Hide steps" : "Steps", { kind: "ghost", onclick: () => { if (open) this.open.delete(key); else this.open.add(key); this.draw(); } });
+          toggleBtn.setAttribute("aria-expanded", String(open));
+          return el("div", { class: "item turn" },
+            el("div", { class: "row" },
+              led(t.stuck ? "bad" : "ok pulse"),
+              el("div", { class: "grow" },
+                el("div", { class: "t msg", dir: "auto", text: t.text || "(a message)" }),
+                el("div", { class: "d" }, el("span", { class: "mono", text: t.place }), " · " + secs(t.busy_secs),
+                  t.activity ? el("span", { class: "msg", dir: "auto", text: " · " + t.activity }) : null,
+                  t.stuck ? frag(" ", tag("stuck", "bad")) : null)),
+              t.session ? toggleBtn : null,
+              btn("Stop", "turn/stop", { session: t.session }, "danger")),
+            open && t.session ? liveTurn({ session: t.session }) : null);
+        })) : el("p", { class: "muted small m0", text: "Nothing is running. Messages and scheduled tasks show up here while the agent works on them, step by step." }));
+      // The kill switch, with a reason that's kept with it.
+      let killCard = null;
+      if (kill) {
+        const why = el("input", { class: "grow", placeholder: "Why (optional): it's shown with the switch", dir: "auto", "aria-label": "Why stop everything" });
+        killCard = card({ title: "Kill switch", icon: "power", cls: kill.on ? "kill on" : "kill" },
+          kill.on
+            ? frag(el("p", { class: "m0" }, tag("on", "bad"), " Nothing runs: chats, tasks and sub-agents are stopped",
+              kill.by ? " by " + kill.by : "", kill.at ? ", " + (kill.at_unix ? ago(kill.at_unix) : isNaN(Date.parse(kill.at)) ? kill.at : ago(Math.round(Date.parse(kill.at) / 1000))) : "", "."),
+            kill.reason ? el("p", { class: "muted small msg", dir: "auto", text: "Why: " + kill.reason }) : null,
+            el("div", { class: "row" }, btn("Resume everything", "kill/off", {}, "primary")))
+            : frag(el("p", { class: "muted small m0", text: "Off: every run proceeds. On, it stops every running turn and refuses new ones until you resume, from here, /resume in a chat or `ferrule stop --clear`." }),
+              el("div", { class: "row key-row" }, why,
+                button("Stop everything", { kind: "danger primary", icon: "power", onclick: (e) => act("kill/on", { reason: why.value.trim() }, e.currentTarget) }))));
+      }
+      // Autonomy: the sandbox mode (M54), with the words Settings used.
+      const auto = autonomy && !MANAGED.on
+        ? card({ title: tr("Autonomy"), icon: "lock" },
+          el("p", { class: "muted small mt0", text: tr("Protected autonomous does everything itself and can't see your keys. Changing it restarts the bot.") }),
+          autonomy === "off" ? el("p", { class: "small", text: tr("Sandbox off (set on the machine)") }) : null,
+          chips(tr("Autonomy"), [["owner", tr("Protected autonomous")], ["ask", tr("Ask me first")]], autonomy,
+            async (v) => { if (v !== autonomy && await act("sandbox/mode", { mode: v })) this.load(); }),
+          c && !c.error ? el("p", { class: "muted small", text: [
+            "Approvals time out after " + secs(c.approval_timeout_secs),
+            c.owner_chat ? "they go to " + c.owner_chat + " and this page" : "they show on this page",
+            c.untrusted_send_gate ? "a send after reading outside content asks first" : "sends after outside content don't ask",
+          ].join(" · ") + "." }) : null)
+        : null;
+      // Limits: the caps, as Usage has them.
+      const limits = h.spend ? frag(el("h2", { text: "Limits" }), capsCard(h.spend)) : null;
+      // Standing approvals ("Always here", M56.2).
+      const gr = grants && !grants.error ? grants.grants || [] : null;
+      const stand = gr ? card({ title: tr("Standing approvals"), icon: "check" },
+        el("p", { class: "muted small mt0", text: tr("What you allowed with Always here. It runs without asking until you revoke it, except a send after the bot read something from outside.") }),
+        gr.length ? el("div", { class: "plain-list" }, gr.map((g) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t mono", dir: "ltr", text: g.what }),
+            el("div", { class: "d", text: ago(g.at) })),
+          g.widen ? button(tr("Whole domain"), { kind: "ghost", onclick: async (e) => { if (await act("grants/widen", { id: g.id }, e.currentTarget)) this.load(); } }) : null,
+          button(tr("Revoke"), { icon: "trash", kind: "ghost", aria: tr("Revoke") + " " + g.what, onclick: async (e) => { if (await act("grants/revoke", { id: g.id }, e.currentTarget)) this.load(); } }))))
+          : el("p", { class: "muted small", text: tr("None yet. A question about a command in one folder, or a send to the same address, offers Always here.") }))
+        : null;
+      // Plans waiting (plan mode, M19 §8).
+      const pl = plans && !plans.error ? (plans.plans || []).filter((p) => !p.status || p.status === "pending" || p.status === "proposed") : [];
+      const planCard = pl.length ? card({ title: "Plans waiting", icon: "tasks" },
+        el("p", { class: "muted small mt0", text: "Plan mode explored read-only and wrote these. Nothing changes until you approve one." }),
+        pl.map((p) => el("div", { class: "plan" },
+          el("div", { class: "d small muted" }, el("span", { class: "mono", text: p.chat || "" }), p.created ? " · " + when(p.created) : ""),
+          el("pre", { class: "out msg", dir: "auto", text: p.text || "" }),
+          el("div", { class: "row" },
+            btn("Approve and run", "plans/approve", { id: p.id }, "primary"),
+            button("Reject", { kind: "danger", onclick: async (e) => {
+              const why = await ask({ title: "Reject this plan?", text: "Optionally say why; the agent sees it.", confirm: "Reject", danger: true, input: { label: "Why" } });
+              if (why !== null) act("plans/reject", { id: p.id, why }, e.currentTarget);
+            } }))))) : null;
+      // Add-ons the agent asked for that need you (M13).
+      const items = pend && !pend.error ? pend.items || [] : [];
+      const addons = items.length ? card({ title: "Add-ons waiting", icon: "extensions" },
+        el("p", { class: "muted small mt0", text: "Tools and skills the agent wanted to install that a check flagged or that need your yes." }),
+        items.map((x) => el("div", { class: "check" },
+          led(x.status === "flagged" ? "bad" : "warn"),
+          el("div", { class: "body" },
+            el("div", { class: "t" }, el("strong", { text: x.name }), " ", tag(x.kind || "add-on"), " ", tag(x.status, x.status === "flagged" ? "bad" : "warn")),
+            el("div", { class: "d mono", dir: "ltr", text: x.source || "" }),
+            (x.findings || []).length ? el("ul", { class: "small" }, x.findings.map((f) => el("li", { class: "msg", dir: "auto", text: typeof f === "string" ? f : f.what || JSON.stringify(f) }))) : null),
+          el("div", { class: "row" }, btn("Deny", "extensions/deny", { id: x.id }, "danger")))),
+        pend.approve ? el("p", { class: "muted small msg", dir: "auto", text: pend.approve }) : null) : null;
+      // Conversations: recent sessions; a goal left pending can go on.
+      const ss = sess && !sess.error ? sess.sessions || [] : null;
+      const convo = ss ? disc("control-sessions", "card", frag("Conversations ", el("span", { class: "muted small", text: "· " + ss.length + " recent" + (ss.some((s) => s.goal_pending) ? ", some goals unfinished" : "") })),
+        el("div", { class: "details-body" }, ss.length ? table(["where", "started with", "messages", "updated", ""], ss.map((s) => ({ cells: [
+          el("span", { class: "mono small", text: s.place }),
+          frag(el("span", { class: "msg", dir: "auto", text: s.first || "–" }), s.goal_pending ? frag(" ", tag("goal unfinished", "warn")) : null),
+          String(s.messages != null ? s.messages : "–"),
+          el("span", { class: "muted", text: when(s.updated) }),
+          s.goal_pending ? btn("Resume", "sessions/resume", { id: s.id }, "primary") : null,
+        ] }))) : el("div", { class: "empty", text: "no conversations yet" }))) : null;
+      setKids(this.box,
+        approvalsCard(ap && !ap.error ? ap.approvals : []),
+        now, killCard, auto, planCard, addons, stand, limits, convo,
+        c && c.error && c.status === 404 ? el("p", { class: "muted small", text: "This server is older than the page: some controls aren't here yet." }) : null);
+    },
+  };
+
+  // ---- M66: Instructions — the agent's own words about how to work -------
+  // The layers the prompt is built from (AGENTS.md, CLAUDE.md, GEMINI.md,
+  // ferrule.md; global and per workspace). A save applies to conversations
+  // that start after it: a running one keeps its prompt, byte for byte.
+
+  sections.instructions = {
+    title: "Instructions",
+    every: 0,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Instructions", "how your agent should work"), this.box);
+    },
+    async load() {
+      let r;
+      try { r = await api("/api/instructions"); } catch (e) { return sectionError(this.box, e); }
+      const layers = r.layers || [];
+      setKids(this.box,
+        el("p", { class: "muted small m0", text: r.note || "The agent reads these at the start of every conversation. A change applies to new conversations; ones already running keep theirs." }),
+        layers.length ? layers.map((l) => {
+          const ta = el("textarea", { class: "mono instr", rows: Math.min(22, Math.max(6, (l.text || "").split("\n").length + 2)), dir: "auto", spellcheck: "false", "aria-label": l.label, disabled: !l.editable });
+          ta.value = l.text || "";
+          const save = button(l.exists ? "Save" : "Create", { kind: "primary" });
+          const said = el("span", { class: "muted small" });
+          ta.addEventListener("input", () => { ta.dataset.dirty = "1"; said.textContent = "Not saved yet"; });
+          save.onclick = async () => {
+            const res = await act("instructions/save", Object.assign({ id: l.id, text: ta.value }, l.hash ? { base_hash: l.hash } : {}), save);
+            if (res) { delete ta.dataset.dirty; said.textContent = ""; this.load(); }
+          };
+          return card({ title: l.label, icon: "file", right: tag(l.scope === "global" ? "every workspace" : "this workspace", l.scope === "global" ? "accent" : null) },
+            el("div", { class: "muted small mono", dir: "ltr", text: l.path + (l.exists ? " · " + bytes(l.bytes || 0) : " · not created yet") }),
+            ta,
+            l.editable ? el("div", { class: "row" }, save, said) : el("p", { class: "muted small msg", dir: "auto", text: l.why || "Read-only here." }));
+        }) : el("div", { class: "empty", text: "No instruction files found." }));
+    },
+  };
+
+  // ---- M66: Learning — what the agent learned, and the switch ------------
+  // The nightly pass (M16/M53) turns what went wrong into lessons and
+  // skills; failure notes keep a failed run's own words for next time;
+  // 👍/👎 and corrections are its signals. Everything kept can be undone.
+
+  sections.learning = {
+    title: "Learning",
+    every: 15,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Learning", "how your agent gets better"), this.box);
+    },
+    async load() {
+      let r;
+      try { r = await api("/api/learn"); } catch (e) { return sectionError(this.box, e); }
+      this.r = r;
+      this.draw();
+    },
+    draw() {
+      const r = this.r;
+      const set = async (body, b) => { if (await act("learn/settings", Object.assign(r.hash ? { base_hash: r.hash } : {}, body), b)) this.load(); };
+      const passes = r.passes || [];
+      const proposed = passes.flatMap((p) => (p.changes || []).filter((x) => x.outcome === "proposed"));
+      const kindWord = { lesson_add: "new lesson", lesson_edit: "lesson changed", lesson_retire: "lesson retired", skill: "skill" };
+      const outcomeTone = { kept: "ok", rejected: "bad", proposed: "warn", reverted: null };
+      const uses = (u) => u ? [u.activations != null ? u.activations + " uses" : null, u.sessions != null ? u.sessions + " conversations" : null, u.failed ? u.failed + " failed" : null, u.thumbs_down ? u.thumbs_down + " 👎" : null].filter(Boolean).join(" · ") : "";
+      const sw = card({ title: "Learning", icon: "learning", right: toggle("Learning", r.enabled, (e) => set({ enabled: !r.enabled }, e.currentTarget)) },
+        el("p", { class: "muted small mt0", text: r.enabled
+          ? "On: " + (r.schedule || "a pass runs every night") + ", it looks at what went wrong (failed runs, 👎, corrections) and proposes one change each: a lesson or a skill. Each is tested before it's kept, and you can undo it."
+          : "Off. Turn it on and a nightly pass looks at what went wrong and proposes lessons and skills, each tested before it's kept. Failure notes and 👎 are recorded either way." }),
+        r.needs_restart ? el("p", { class: "small warn", text: "Saved; Telegram's 👍/👎 follow after a restart. The nightly pass and failure notes follow now." }) : null,
+        r.running ? el("p", { class: "small" }, led("ok pulse"), " A pass is running now.") : null,
+        el("div", { class: "row" },
+          (() => { const b = button("Run a pass now", { kind: r.enabled ? "primary" : null, onclick: (e) => act("learn/run", {}, e.currentTarget).then(() => this.load()) }); b.disabled = !!r.running; return b; })(),
+          button("Preview (dry run)", { kind: "ghost", onclick: (e) => act("learn/run", { dry_run: true }, e.currentTarget).then(() => this.load()) })),
+        el("div", { class: "kv-row small" },
+          el("span", { class: "muted", text: "Failure notes" }),
+          toggle("Failure notes", r.failure_notes, (e) => set({ failure_notes: !r.failure_notes }, e.currentTarget)),
+          el("span", { class: "muted msg", text: "after a run that didn't finish, its own last words are kept for 7 days so the next try knows" })));
+      // M66: saving its own skills, apart from installing others' (M13).
+      if (r.self_written !== undefined) sw.append(el("div", { class: "kv-row small" },
+        el("span", { class: "muted", text: "Save its own skills" }),
+        toggle("Save its own skills", r.self_written, (e) => set({ self_written: !r.self_written }, e.currentTarget)),
+        el("span", { class: "muted msg", text: "a skill it wrote and checked can be kept for next time (installing others' tools stays under Add-ons)" })));
+      const ev = r.eval || null;
+      const evalCard = ev ? card({ title: "Weekly check", icon: "check", right: toggle("Weekly check", ev.enabled, (e) => set({ weekly_eval: !ev.enabled }, e.currentTarget)) },
+        el("p", { class: "muted small mt0", text: "Once a week it runs the same tasks with and without what it learned, so you can see whether the lessons help" + (ev.usd_cap ? ", within $" + Number(ev.usd_cap).toFixed(2) + " a run" : "") + ". Off by default: it costs model calls." }),
+        ev.last ? el("div", { class: "stats" },
+          stat("with lessons", pct(ev.last.with_pass), ev.last.tasks + " tasks passed"),
+          stat("without", pct(ev.last.without_pass), "the same tasks"),
+          stat("last run", when(ev.last.at), ev.last.spent_usd != null ? "$" + Number(ev.last.spent_usd).toFixed(4) : null)) : el("p", { class: "muted small", text: "No check has run yet." }),
+        (ev.trend || []).filter((t) => t.delta != null).length > 1 ? frag(el("h4", { class: "mb0", text: "Lessons' effect over time (pass rate with minus without, points)" }),
+          bars(ev.trend.filter((t) => t.delta != null).map((t) => ({ k: String(t.at).slice(5, 10), v: Math.max(0, Math.round(t.delta * 100)), dim: t.delta <= 0 })), (v) => "+" + v)) : null,
+        el("div", { class: "row" }, button("Run the check now", { onclick: (e) => act("learn/eval", {}, e.currentTarget).then(() => this.load()) }))) : null;
+      const fb = r.feedback || {};
+      const stats = el("div", { class: "stats" },
+        stat("last pass", r.last_pass ? when(r.last_pass.at) : "never", r.last_pass ? r.last_pass.kept + " kept · " + r.last_pass.rejected + " rejected" + (r.last_pass.proposed ? " · " + r.last_pass.proposed + " to review" : "") : null),
+        stat("lessons", String((r.lessons || []).length), "in the playbook"),
+        stat("learned skills", String((r.skills || []).length)),
+        stat("feedback, 7 days", "👍 " + (fb.up_7d || 0) + " · 👎 " + (fb.down_7d || 0), (fb.signals_7d || 0) + " other signals"));
+      const review = proposed.length ? card({ title: "To review", icon: "alert", cls: "accent" },
+        el("p", { class: "muted small mt0", text: "The test couldn't prove these help or hurt. Nothing changes until you keep one." }),
+        proposed.map((x) => el("div", { class: "check" },
+          led("warn"),
+          el("div", { class: "body" },
+            el("div", { class: "t msg", dir: "auto", text: x.summary }),
+            el("div", { class: "d" }, tag(kindWord[x.kind] || x.kind), x.scope ? " · " + x.scope : "", x.why ? el("span", { class: "msg", dir: "auto", text: " · " + x.why }) : null)),
+          el("div", { class: "row" }, btn("Keep", "learn/keep", { id: x.id }, "primary"), btn("Drop", "learn/drop", { id: x.id }, "danger"))))) : null;
+      const lessons = (r.lessons || []).length ? card({ title: "Lessons", icon: "memory" },
+        el("p", { class: "muted small mt0", text: "Short rules the agent reads at the start of a conversation in their scope. The numbers are signals, not proof." }),
+        table(["lesson", "scope", "since", "track record"], r.lessons.map((l) => ({ cells: [
+          el("span", { class: "msg", dir: "auto", text: l.text }),
+          el("span", { class: "mono small", text: l.scope || "everywhere" }),
+          el("span", { class: "muted", text: when(l.added) }),
+          el("span", { class: "muted small", text: uses(l.uses) || "–" }),
+        ] })))) : null;
+      const skills = (r.skills || []).length ? card({ title: "Skills it learned or wrote", icon: "extensions" },
+        table(["skill", "scope", "since", "track record"], r.skills.map((s) => ({ cells: [
+          frag(el("strong", { class: "mono", text: s.name }), " ", tag(s.origin === "agent" ? "it wrote this" : "learned", s.origin === "agent" ? "accent" : null),
+            s.description ? el("span", { class: "sub msg", dir: "auto", text: s.description }) : null),
+          el("span", { class: "mono small", text: s.scope || "everywhere" }),
+          el("span", { class: "muted", text: when(s.added) }),
+          el("span", { class: "muted small", text: uses(s.uses) || "–" }),
+        ] })))) : null;
+      const history = card({ title: "Passes", icon: "clock" },
+        passes.length ? passes.map((p) => disc("pass-" + p.id, "pass", frag(el("strong", { text: when(p.at) }), " ",
+          el("span", { class: "muted small", text: "· " + (p.status || "") + ((p.changes || []).length ? " · " + p.changes.length + " changes" : "") + (p.spent_usd ? " · $" + Number(p.spent_usd).toFixed(4) : "") })),
+          el("div", { class: "details-body plain-list" }, (p.changes || []).length ? p.changes.map((x) => el("div", { class: "item" },
+            el("div", { class: "grow" },
+              el("div", { class: "t msg", dir: "auto", text: x.summary }),
+              el("div", { class: "d" }, tag(x.outcome, outcomeTone[x.outcome]), " ", tag(kindWord[x.kind] || x.kind), x.scope ? " · " + x.scope : "", x.why ? el("span", { class: "msg", dir: "auto", text: " · " + x.why }) : null)),
+            x.outcome === "kept" ? btn("Undo", "learn/revert", { id: x.id }) : null))
+            : el("p", { class: "muted small", text: "Nothing to change." }))))
+          : el("p", { class: "muted small m0", text: r.enabled ? "No pass yet: the first one runs on schedule, or press Run a pass now." : "No pass has run." }));
+      const notes = (r.notes || []).length ? card({ title: "Failure notes", icon: "file" },
+        el("p", { class: "muted small mt0", text: "What a run that didn't finish said last. Recalled when a later message is about the same thing; each fades after 7 days." }),
+        el("div", { class: "plain-list" }, r.notes.map((n) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t msg", dir: "auto", text: n.text }),
+            el("div", { class: "d mono small", text: (n.scope || "") + " · " + when(n.at) })))))) : null;
+      setKids(this.box, sw, stats, review, evalCard, lessons, skills, notes, history);
+    },
+  };
+
   // ---- navigation and polling --------------------------------------------
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
   // The groups put what a beginner touches daily first (D3).
 
+  // M66: what you watch and steer first; what the agent learns and is
+  // told next; one Setup entry, whose pages are tabs (SUBPAGES).
   const GROUPS = [
-    [/*tr*/"Everyday", ["health", "chat", "files", "tasks", "proactive", "memory", "usage"]],
-    [/*tr*/"Setup", ["connect", "channels", "connections", "models"]],
-    [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
+    [/*tr*/"Everyday", ["health", "chat", "control", "tasks", "files", "usage"]],
+    [/*tr*/"Agent", ["learning", "memory", "instructions", "proactive", "agents"]],
+    [/*tr*/"Setup", ["connect", "models"]],
+    [/*tr*/"Advanced", ["logs", "console", "config", "settings"]],
   ];
-  const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
-  const TABS = ["health", "chat", "connect", "tasks"];
+  // Pages reached by a tab on their parent rather than the sidebar.
+  const SUBPAGES = { channels: "connect", connections: "connect", extensions: "connect", routing: "models" };
+  const TABGROUPS = [
+    ["connect", [["connect", /*tr*/"Overview"], ["channels", /*tr*/"Chat apps"], ["connections", /*tr*/"Services"], ["extensions", /*tr*/"Add-ons"]]],
+    ["models", [["models", /*tr*/"Models"], ["routing", /*tr*/"Routing"]]],
+  ];
+  const order = [...GROUPS.flatMap((g) => g[1]), ...Object.keys(SUBPAGES)].filter((s) => sections[s]);
+  const TABS = ["health", "chat", "control", "connect"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", files: /*tr*/"uploads and media", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
-  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", files: /*tr*/"Files", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", control: /*tr*/"stop, allow, limit", learning: /*tr*/"how it gets better", instructions: /*tr*/"how it should work", files: /*tr*/"uploads and media", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", control: /*tr*/"Control", learning: /*tr*/"Learning", instructions: /*tr*/"Instructions", files: /*tr*/"Files", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Activity", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   // What /api/login or /api/session said: the CSRF token and the session's limits.
@@ -3895,7 +4755,7 @@
   function markNav() {
     for (const a of document.querySelectorAll("#rail a, #tabs a, #sheet a")) {
       const s = a.dataset.s;
-      const on = s === current;
+      const on = s === current || SUBPAGES[current] === s;
       a.classList.toggle("on", on || (s === "more" && !TABS.includes(current)));
       if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       const n = s === "more" ? order.filter((x) => !TABS.includes(x)).reduce((t, x) => t + (badges[x] || 0), 0) : badges[s] || 0;
@@ -3914,6 +4774,13 @@
     banner = el("div");
     document.getElementById("main").replaceChildren(banner, root);
     sections[name].mount(root);
+    const tabs = TABGROUPS.find(([, list]) => list.some(([s]) => s === name));
+    if (tabs) root.prepend(el("nav", { class: "subtabs", "aria-label": title(tabs[0]) },
+      tabs[1].filter(([s]) => sections[s]).map(([s, label]) => {
+        const a = el("a", { href: "#" + s, class: s === name ? "on" : null, "aria-current": s === name ? "page" : null, text: tr(label) });
+        a.onclick = (e) => { e.preventDefault(); show(s); };
+        return a;
+      })));
     if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
     markNav();
     window.scrollTo(0, 0);
@@ -4138,7 +5005,7 @@
     // bar, which a reload reads as a login token.
     document.querySelector(".skip").onclick = (e) => { e.preventDefault(); document.getElementById("main").focus(); };
     const find = document.getElementById("find");
-    find.append(icon("search"));
+    find.append(icon("search"), el("span", { class: "find-lbl", text: "Search" }), el("kbd", { class: "find-kbd", "aria-hidden": "true", text: "/" }));
     document.getElementById("logout").append(icon("power"));
     find.onclick = () => palette();
   }

@@ -15,6 +15,7 @@
 
 pub mod chatgpt;
 pub mod claude;
+pub mod gemini;
 mod jwt;
 mod lock;
 #[cfg(feature = "mock")]
@@ -22,6 +23,7 @@ pub mod mock;
 pub mod usage;
 
 pub use chatgpt::ChatGpt;
+pub use gemini::GeminiPlan;
 pub use usage::{Reading, UsageFile, Window};
 
 /// Seconds since the epoch.

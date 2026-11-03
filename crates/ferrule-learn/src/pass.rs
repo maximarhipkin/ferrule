@@ -7,10 +7,10 @@ use crate::consolidate::{self, CLUSTER_JACCARD, CLUSTER_ROWS};
 use crate::diff::unified;
 use crate::episode::{render_run, render_tail, scan_sessions, Episode};
 use crate::files::{
-    Change, ChangeRevert, EpisodeNote, LearnDir, PassRecord, Rejected, RevertNote, State, DONE,
-    REVERTED, RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
+    Change, ChangeRevert, EpisodeNote, LearnDir, PassRecord, Proposal as Pending, Proposed,
+    Rejected, RevertNote, State, DONE, PROPOSED, REVERTED, RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
 };
-use crate::gate::{Gate, GateRun, GateVerdict, ProbeOut};
+use crate::gate::{Gate, GateRun, ProbeOut};
 use crate::judge::{Contrast, Side, Slate};
 use crate::playbook::{prompt_block_for, Delta, Playbook, TEMPLATE};
 use crate::reflect::{self, Proposal};
@@ -34,11 +34,47 @@ pub fn near_cap(max_bullets: usize) -> usize {
 }
 
 /// How the retire that made room for an add begins its reason.
-const MADE_ROOM: &str = "made room for ";
+pub(crate) const MADE_ROOM: &str = "made room for ";
 
 /// The start of the reason of the retire that made room for `a`.
-fn made_room(a: &crate::playbook::Applied) -> String {
+pub(crate) fn made_room(a: &crate::playbook::Applied) -> String {
     format!("{MADE_ROOM}{} pb-{} (", a.op, a.id)
+}
+
+/// Add one, cut one: the lesson an add (or a promotion) in a full view
+/// retires, of `lessons` (the view), never `keep`. The worst record in
+/// use first (the learning page's numbers: the most sessions that failed
+/// or got a 👎, as a share of those it was in, with enough sessions to
+/// say), else the reflector's `pick`, else the oldest no pass kept since.
+pub(crate) fn choose_cut(
+    lessons: &[crate::playbook::Lesson],
+    keep: Option<u32>,
+    pick: Option<u32>,
+    state: &State,
+    uses: &crate::usage::Stats,
+) -> Option<(u32, String)> {
+    let mine = |n: u32| lessons.iter().any(|l| l.id == Some(n)) && Some(n) != keep;
+    let ids = || lessons.iter().filter_map(|l| l.id).filter(|n| mine(*n));
+    let worst = ids()
+        .filter_map(|n| Some((uses.lessons.get(&n)?.badness()?, n)))
+        // The worst share, then the most bad sessions, then the oldest.
+        .max_by_key(|((share, bad), n)| (*share, *bad, std::cmp::Reverse(*n)));
+    if let Some((_, n)) = worst {
+        let u = uses.lessons[&n];
+        return Some((
+            n,
+            format!(
+                "the worst record in use: {} of {} session(s) with it ended not done, {} got a 👎",
+                u.failed, u.sessions, u.thumbs_down
+            ),
+        ));
+    }
+    if let Some(n) = pick.filter(|n| mine(*n)) {
+        return Some((n, "the reflector's pick".into()));
+    }
+    ids()
+        .min_by_key(|n| (state.touched.get(n).copied().unwrap_or(0), *n))
+        .map(|n| (n, "the oldest lesson no pass kept since".into()))
 }
 
 /// M53.5: one change a pass kept, for the owner's "Learned" line.
@@ -70,6 +106,9 @@ pub struct Options {
     pub trigger: String,
     /// For the journal: the workspace the gate copies.
     pub workspace: Option<PathBuf>,
+    /// The pass's id, when the caller picked one ([`LearnDir::new_pass_id`]);
+    /// `None` makes one.
+    pub id: Option<String>,
 }
 
 /// What a pass works with; the CLI builds it from the config.
@@ -222,6 +261,17 @@ async fn ask(
     }
 }
 
+/// What the gate's evidence says about a change.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Verdict {
+    /// Proven: kept.
+    Kept(String),
+    /// Neither proven nor disproven: proposed to the owner.
+    Unproven(String),
+    /// Proven bad: rejected.
+    Rejected(String),
+}
+
 /// Why weak evidence is weak: no control run fitted.
 const NO_CONTROL: &str =
     "the caps left room for one re-run only, so there was no control run without the change";
@@ -237,60 +287,62 @@ const NO_CONTROL: &str =
 /// Without a control the evidence is weak (the check alone, or the judge
 /// against the episode's own run, as before M53.1's fix): the change is
 /// then kept only when the owner's 👍 corroborates it ([`weak`]).
-async fn contrast_gate(
+///
+/// What proves a change bad (the check fails with it, the probe with it
+/// stops short, the judge prefers the run without it) rejects it; what
+/// proves nothing either way (no check and no probe, a control that
+/// passes too, a judge that can't tell) proposes it to the owner.
+pub(super) async fn contrast_gate(
     env: &Env,
     meter: &Arc<Meter>,
     pass: &str,
     ep: &Episode,
     with: GateRun<'_>,
     control: GateRun<'_>,
-) -> GateVerdict {
+) -> Verdict {
     let slate = Slate::new(pass, with.n);
     let before = meter.spent();
     if env.gate.check().is_some() {
         let v = env.gate.run(with).await;
         if !v.passed {
-            return v;
+            return Verdict::Rejected(v.reason);
         }
         if !meter.room_for(meter.spent().since(before)) {
             return weak(ep, &v.reason, NO_CONTROL);
         }
         let c = env.gate.run(control).await;
         if meter.exceeded().is_some() {
-            return GateVerdict::fail(format!(
+            return Verdict::Unproven(format!(
                 "{}; the control run without it was cut by the budget",
                 v.reason
             ));
         }
         if c.passed {
-            return GateVerdict::fail(format!(
+            return Verdict::Unproven(format!(
                 "{}; but {}: nothing shows the lesson helped",
                 v.reason, c.reason
             ));
         }
-        return GateVerdict {
-            passed: true,
-            reason: format!("{}; without it, {}", v.reason, c.reason),
-        };
+        return Verdict::Kept(format!("{}; without it, {}", v.reason, c.reason));
     }
     let Some(w) = env.gate.probe(with).await else {
-        return GateVerdict::fail("no check to gate on");
+        return Verdict::Unproven("no check to gate on".into());
     };
     if !w.finished {
-        return GateVerdict::fail(format!(
+        return Verdict::Rejected(format!(
             "the probe run with the change stopped before finishing: {}",
             w.incomplete.as_deref().unwrap_or("unknown")
         ));
     }
     if meter.room_for(meter.spent().since(before)) {
         let Some(c) = env.gate.probe(control).await else {
-            return GateVerdict::fail("the gate could not run the control");
+            return Verdict::Unproven("the gate could not run the control".into());
         };
         if meter.exceeded().is_some() {
-            return GateVerdict::fail("budget reached during the control run");
+            return Verdict::Unproven("budget reached during the control run".into());
         }
         if !c.finished && c.tail.trim().is_empty() {
-            return GateVerdict::fail(format!(
+            return Verdict::Unproven(format!(
                 "the control run without the change could not run: {}",
                 c.incomplete.as_deref().unwrap_or("unknown")
             ));
@@ -301,17 +353,14 @@ async fn contrast_gate(
         };
         let blind = slate.describe();
         return match judge(env, meter, pass, ep, &slate, &w, other, "control").await {
-            Err(why) => GateVerdict::fail(why),
-            Ok((Contrast::Better, why)) => GateVerdict {
-                passed: true,
-                reason: format!(
-                    "kept by the judge: the run with the change beat a control run without it ({blind}): {why}"
-                ),
-            },
-            Ok((Contrast::Worse, why)) => GateVerdict::fail(format!(
+            Err(why) => Verdict::Unproven(why),
+            Ok((Contrast::Better, why)) => Verdict::Kept(format!(
+                "kept by the judge: the run with the change beat a control run without it ({blind}): {why}"
+            )),
+            Ok((Contrast::Worse, why)) => Verdict::Rejected(format!(
                 "the judge found the control run without the change better ({blind}): {why}"
             )),
-            Ok((Contrast::Confounded, why)) => GateVerdict::fail(format!(
+            Ok((Contrast::Confounded, why)) => Verdict::Unproven(format!(
                 "the judge saw no clear difference with and without the change ({blind}): {why}"
             )),
         };
@@ -323,7 +372,7 @@ async fn contrast_gate(
     };
     let blind = slate.describe();
     match judge(env, meter, pass, ep, &slate, &w, other, "original").await {
-        Err(why) => GateVerdict::fail(format!("weak evidence ({NO_CONTROL}): {why}")),
+        Err(why) => Verdict::Unproven(format!("weak evidence ({NO_CONTROL}): {why}")),
         Ok((Contrast::Better, why)) => weak(
             ep,
             &format!(
@@ -331,8 +380,11 @@ async fn contrast_gate(
             ),
             NO_CONTROL,
         ),
-        Ok((_, why)) => GateVerdict::fail(format!(
-            "weak evidence ({NO_CONTROL}), and the judge did not prefer the run with the change to the episode's own run ({blind}): {why}"
+        Ok((Contrast::Worse, why)) => Verdict::Rejected(format!(
+            "weak evidence ({NO_CONTROL}), and the judge preferred the episode's own run to the run with the change ({blind}): {why}"
+        )),
+        Ok((Contrast::Confounded, why)) => Verdict::Unproven(format!(
+            "weak evidence ({NO_CONTROL}), and the judge saw no clear difference from the episode's own run ({blind}): {why}"
         )),
     }
 }
@@ -340,17 +392,15 @@ async fn contrast_gate(
 /// Weak evidence is kept only when the owner's 👍 corroborates it: the
 /// episode is a 👎 on a chat reply (M53.5) and the owner reacted 👍 to a
 /// later reply in the same chat. That says the chat ended well, not that
-/// the change did; it is the only owner's word the pass has.
-fn weak(ep: &Episode, found: &str, why: &str) -> GateVerdict {
+/// the change did; it is the only owner's word the pass has. Without it
+/// the change is proposed to the owner, not kept.
+fn weak(ep: &Episode, found: &str, why: &str) -> Verdict {
     if ep.outcome == crate::thumbs::OUTCOME && ep.fixed {
-        GateVerdict {
-            passed: true,
-            reason: format!(
-                "kept on weak evidence ({why}), corroborated by the owner's 👍 on a later reply in this chat: {found}"
-            ),
-        }
+        Verdict::Kept(format!(
+            "kept on weak evidence ({why}), corroborated by the owner's 👍 on a later reply in this chat: {found}"
+        ))
     } else {
-        GateVerdict::fail(format!(
+        Verdict::Unproven(format!(
             "weak evidence, not kept without the owner's 👍 ({why}): {found}"
         ))
     }
@@ -403,7 +453,7 @@ async fn judge(
 /// Runs one pass. Takes the lock, so a second concurrent pass is refused.
 pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
     let dir = &env.dir;
-    let id = dir.new_pass_id();
+    let id = opts.id.clone().unwrap_or_else(|| dir.new_pass_id());
     let lock = dir.lock(&format!("pass {id}"))?;
     let recovered = dir.recover(&id);
     let state = dir.state()?;
@@ -429,6 +479,7 @@ pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
         notes: vec![],
         reverted: None,
         undone: vec![],
+        proposed: vec![],
     };
     for r in &recovered {
         rec.notes
@@ -471,7 +522,8 @@ pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
         &id,
         "finish",
         json!({ "status": rec.status, "changes": rec.changes.len(),
-                "rejected": rec.rejected.len(), "spent": rec.spent }),
+                "rejected": rec.rejected.len(), "proposed": rec.proposed.len(),
+                "spent": rec.spent }),
     );
     drop(lock);
     if let Some(told) = &env.on_kept {
@@ -582,6 +634,8 @@ async fn body(
     } else {
         before
     });
+    // What each lesson's sessions went like, for add one, cut one.
+    let uses = dir.usage_stats();
     let mut last_id = state.last_id.max(pb.max_id());
     let mut cursor = state.cursor;
     let mut errors = 0usize;
@@ -750,16 +804,7 @@ async fn body(
         // reflector's pick, else the oldest no pass has kept since.
         let mut cut = None;
         if full && matches!(delta, Delta::Add { .. } | Delta::Promote { .. }) {
-            let mine = |n: u32| lessons.iter().any(|l| l.id == Some(n)) && Some(n) != did;
-            cut = match pick.filter(|n| mine(*n)) {
-                Some(n) => Some((n, "the reflector's pick")),
-                None => lessons
-                    .iter()
-                    .filter_map(|l| l.id)
-                    .filter(|n| mine(*n))
-                    .min_by_key(|n| (state.touched.get(n).copied().unwrap_or(0), *n))
-                    .map(|n| (n, "the oldest lesson no pass kept since")),
-            };
+            cut = choose_cut(&lessons, did, pick, &state, &uses);
             if cut.is_none() && lessons.len() >= opts.max_bullets {
                 let why = format!(
                     "the playbook is full ({} lessons here, max_bullets {}) and holds no lesson the pass may retire",
@@ -785,8 +830,8 @@ async fn body(
             let mut candidate = pb.clone();
             let tried = candidate
                 .apply_in(&delta, new_id, scope)
-                .and_then(|_| match cut {
-                    Some((n, _)) => candidate.apply(&Delta::Retire { id: n }, 0).map(|_| ()),
+                .and_then(|_| match &cut {
+                    Some((n, _)) => candidate.apply(&Delta::Retire { id: *n }, 0).map(|_| ()),
                     None => Ok(()),
                 });
             if let Err(e) = tried {
@@ -833,18 +878,34 @@ async fn body(
                 control: true,
                 ..run.clone()
             };
+            let at = if probed { "probe" } else { "gate" };
             let verdict = contrast_gate(env, meter, &id, ep, run, control).await;
-            if !verdict.passed {
-                let budget = meter.exceeded();
-                reject(rec, dir, &ep.key, op, did, dtext, verdict.reason);
-                note(
-                    rec,
-                    ep,
-                    format!(
-                        "rejected {op} at the {}",
-                        if probed { "probe" } else { "gate" }
-                    ),
-                );
+            let budget = meter.exceeded();
+            let kept = match verdict {
+                Verdict::Kept(why) => Some(why),
+                Verdict::Rejected(why) => {
+                    reject(rec, dir, &ep.key, op, did, dtext.clone(), why);
+                    note(rec, ep, format!("rejected {op} at the {at}"));
+                    None
+                }
+                Verdict::Unproven(why) => {
+                    let change = Pending::Lesson {
+                        op: op.into(),
+                        target: did,
+                        text: dtext.clone(),
+                        retire: pick,
+                    };
+                    let (r, e) = (reason.clone(), evidence.clone());
+                    propose(rec, dir, ep, scope, change, r, e, why);
+                    note(
+                        rec,
+                        ep,
+                        format!("proposed {op}: the {at} couldn't prove it"),
+                    );
+                    None
+                }
+            };
+            let Some(why) = kept else {
                 if let Some(why) = budget {
                     // Not finished: the cursor stays before it.
                     stop = Some(Stop::Budget(why));
@@ -854,8 +915,8 @@ async fn body(
                 cursor = cursor.max(ep.at);
                 dir.save_pass(rec)?;
                 continue;
-            }
-            gate_reason = verdict.reason;
+            };
+            gate_reason = why;
         }
         let applied = match pb.apply_in(&delta, new_id, scope) {
             Ok(a) => a,
@@ -1049,7 +1110,7 @@ fn merge(env: &Env, facts: &[Memory], content: &str) -> Result<(i64, bool, Vec<i
     let ids: Vec<i64> = facts.iter().map(|f| f.id).collect();
     let before = store.max_id().map_err(|e| e.to_string())?;
     let ins = store
-        .insert(content, &[], &ids)
+        .insert_from(content, &[], &ids, Some("learned"))
         .map_err(|e| e.to_string())?;
     if ins.replaced.is_empty() {
         return Err(format!(
@@ -1098,6 +1159,38 @@ fn reject(
         id,
         text,
         reason,
+    });
+}
+
+/// Keeps a change the gate couldn't prove as proposed, for the owner.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn propose(
+    rec: &mut PassRecord,
+    dir: &LearnDir,
+    ep: &Episode,
+    scope: Option<&str>,
+    change: Pending,
+    reason: String,
+    evidence: String,
+    gate: String,
+) {
+    let id = format!("p{}", rec.proposed.len() + 1);
+    dir.log(
+        &rec.id,
+        "propose",
+        json!({ "episode": ep.key, "id": id, "change": change, "gate": gate }),
+    );
+    rec.proposed.push(Proposed {
+        id,
+        change,
+        scope: scope.map(str::to_string),
+        reason,
+        episode: ep.key.clone(),
+        gate,
+        evidence,
+        status: PROPOSED.into(),
+        decided_at: None,
+        kept_as: None,
     });
 }
 
@@ -1234,6 +1327,38 @@ pub fn changelog(p: &PassRecord, diff: &str) -> String {
                     (None, None) => String::new(),
                 };
                 format!("{}{what} (from {}): {}", r.op, r.source, r.reason)
+            })
+            .collect(),
+    );
+    section(
+        &mut s,
+        "Proposed, not proven",
+        p.proposed
+            .iter()
+            .map(|x| {
+                let what = match &x.change {
+                    Pending::Lesson {
+                        op, target, text, ..
+                    } => {
+                        let on = target.map(|t| format!(" pb-{t}")).unwrap_or_default();
+                        let text = text
+                            .as_deref()
+                            .map(|t| format!(" {t:?}"))
+                            .unwrap_or_default();
+                        format!("playbook {op}{on}{text}")
+                    }
+                    Pending::Skill {
+                        name, description, ..
+                    } => format!("skill `{name}`: {description:?}"),
+                };
+                let kept = x
+                    .kept_as
+                    .map(|n| format!(", as change {n}"))
+                    .unwrap_or_default();
+                format!(
+                    "{} {what} — {} (from {}; gate: {}) [{}{kept}]",
+                    x.id, x.reason, x.episode, x.gate, x.status
+                )
             })
             .collect(),
     );

@@ -5,7 +5,11 @@
 //! memories through M15's UPDATE, and writes every change to a readable,
 //! revertable file — within caps read from the ledger. M53.5: the owner's
 //! 👎 on a chat reply is an episode too, and each kept change can be undone
-//! on its own. Design: `docs/m16-learning-loop.md`.
+//! on its own. The learning page: what the gate can't prove is proposed
+//! to the owner, not dropped ([`proposed`]); the owner's signals
+//! ([`signals`]) and what each lesson and skill was used in ([`usage`])
+//! are kept whether learning is on or not. Design:
+//! `docs/m16-learning-loop.md`.
 
 pub mod budget;
 pub mod consolidate;
@@ -16,15 +20,18 @@ pub mod gate;
 pub mod judge;
 pub mod pass;
 pub mod playbook;
+pub mod proposed;
 pub mod reflect;
 pub mod scope;
 pub mod screen;
+pub mod signals;
 pub mod skills;
 pub mod thumbs;
+pub mod usage;
 
 pub use budget::{Caps, LearnSink, Meter, PriceFn, Spent, CALL_KIND};
 pub use episode::Episode;
-pub use files::{LearnDir, PassRecord, State};
+pub use files::{LearnDir, PassRecord, Proposal, Proposed, State};
 pub use gate::{Gate, GateRun, GateVerdict, ProbeOut, WorkspaceGate};
 pub use pass::{plan, revert, revert_change, run_pass, Env, Learned, OnKept, Options, Plan};
 pub use playbook::{

@@ -4,9 +4,15 @@
 //! episodes only the CLI can see (scheduled-task runs in `tasks.db`).
 //! M53.5: the job tells the owner each change it kept, with an Undo
 //! (`/unlearn`), and [`thumbs`] keeps the owner's 👍/👎 on replies.
+//! The learning page (`dashboard/learn_page.rs`): the job is always
+//! registered and follows `[learning] enabled` at once ([`apply`]); a pass
+//! can start from the page ([`start`]); [`watch`] keeps each run's use and
+//! its failure note; the owner's Undo is a signal ([`counted_undo`]).
 
 mod thumbs;
-pub use thumbs::thumbs;
+pub mod watch;
+pub mod weekly;
+pub use thumbs::{live as live_thumbs, telegram_started, thumbs};
 
 use crate::config::{self, Config};
 use crate::ledger;
@@ -60,6 +66,16 @@ pub struct LearningConfig {
     pub max_clusters: usize,
     pub gate_max_iterations: usize,
     pub gate_timeout_secs: u64,
+    /// A run that ends not done leaves its own status in memory, for a
+    /// week ([`watch`]). On even while learning is off: no model call.
+    pub failure_notes: bool,
+    /// The weekly playbook eval ([`weekly`]): kept lessons' tasks with and
+    /// without the playbook. Off by default: it spends money unattended.
+    pub weekly_eval: bool,
+    /// Its cost cap per run, in dollars; 0 runs none.
+    pub eval_usd_cap: f64,
+    /// When it runs (cron, in `timezone`).
+    pub eval_schedule: String,
 }
 
 impl Default for LearningConfig {
@@ -80,6 +96,10 @@ impl Default for LearningConfig {
             max_clusters: 5,
             gate_max_iterations: 20,
             gate_timeout_secs: 900,
+            failure_notes: true,
+            weekly_eval: false,
+            eval_usd_cap: 1.0,
+            eval_schedule: "43 4 * * 0".into(),
         }
     }
 }
@@ -128,18 +148,26 @@ pub enum LearnCmd {
 /// `scope`. With `only`, for a session that isn't the owner's, `scope`'s
 /// alone: a global lesson may have been learned in the owner's chats.
 pub fn prompt_section(cfg: &LearningConfig, scope: Option<&str>, only: bool) -> Option<String> {
+    prompt_block(cfg, scope, only)?.text
+}
+
+/// [`prompt_section`] whole: its text and the lessons it holds.
+pub fn prompt_block(
+    cfg: &LearningConfig,
+    scope: Option<&str>,
+    only: bool,
+) -> Option<ferrule_learn::PromptBlock> {
     if !cfg.playbook {
         return None;
     }
     let dir = LearnDir::new(&config::data_dir().ok()?);
     let text = dir.read_playbook().ok()?;
-    match scope.filter(|_| only) {
+    Some(match scope.filter(|_| only) {
         Some(scope) => {
             ferrule_learn::prompt_block_only(&text, scope, cfg.max_bullets, PROMPT_CHARS)
         }
         None => ferrule_learn::prompt_block_for(&text, scope, cfg.max_bullets, PROMPT_CHARS),
-    }
-    .text
+    })
 }
 
 /// M53.4: the scope an agent of run tree `tree` learns and is taught in:
@@ -242,6 +270,12 @@ impl ViewCache {
     }
 }
 
+/// The gateway in this process: where its pass works, its provider, and
+/// the hub its "Learned" lines go through; a pass started from the page
+/// runs as the nightly one would.
+static GATEWAY: Mutex<Option<Gateway>> = Mutex::new(None);
+type Gateway = (PathBuf, Option<String>, Option<Arc<Hub>>);
+
 fn spec(cfg: &LearningConfig) -> BuiltinSpec {
     BuiltinSpec {
         name: TASK_NAME.into(),
@@ -283,10 +317,29 @@ pub fn register(
             }
         }
     }
-    if !learning.enabled {
-        return scheduler;
+    if ensure {
+        let want = cfg.learning.weekly_eval.then(|| weekly::spec(cfg));
+        if let Err(e) = ensure_builtin(
+            scheduler.store(),
+            weekly::TASK_NAME,
+            want.as_ref(),
+            chrono::Utc::now(),
+        ) {
+            eprintln!("ferrule: [learning] eval_schedule: {e}; the weekly playbook eval is off");
+        }
     }
+    let scheduler = scheduler.with_builtin(weekly::TASK_NAME, Arc::new(weekly::Job));
+    // The learning page: the job is there whether learning is on or not,
+    // so turning it on there needs no restart ([`apply`]); a task the
+    // config doesn't want is removed above, and the job checks again.
     let workspace = dunce::canonicalize(workspace).unwrap_or(workspace.to_path_buf());
+    if hub.is_some() {
+        *GATEWAY.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+            workspace.clone(),
+            learning.provider.clone().or(provider.clone()),
+            hub.clone(),
+        ));
+    }
     scheduler.with_builtin(
         TASK_NAME,
         Arc::new(Job {
@@ -312,17 +365,22 @@ pub fn undo_command(l: &Learned) -> String {
 impl BuiltinJob for Job {
     async fn run(&self, _task: &Task) -> Result<JobReport, String> {
         let (cfg, _) = Config::load().map_err(|e| format!("{e:#}"))?;
-        let told = self.hub.clone().map(|hub| -> OnKept {
-            Arc::new(move |l: &Learned| {
-                hub.tell_owner_choices(l.line.clone(), vec![("Undo".into(), undo_command(l))])
-            })
-        });
+        if !cfg.learning.enabled {
+            // The file says off since the task was made: it goes.
+            let said = apply(&cfg).unwrap_or_else(|e| format!("{e:#}"));
+            return Ok(JobReport {
+                summary: format!("no pass: [learning] enabled = false; {said}"),
+                incomplete: None,
+            });
+        }
+        let told = self.hub.clone().map(told);
         let p = pass(
             &cfg,
             &self.workspace,
             self.provider.clone(),
             "scheduled",
             told,
+            None,
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
@@ -333,13 +391,21 @@ impl BuiltinJob for Job {
     }
 }
 
+/// Each change a pass kept, one line in the owner's chat with an Undo.
+fn told(hub: Arc<Hub>) -> OnKept {
+    Arc::new(move |l: &Learned| {
+        hub.tell_owner_choices(l.line.clone(), vec![("Undo".into(), undo_command(l))])
+    })
+}
+
 fn summary(p: &PassRecord) -> String {
     format!(
-        "pass {}: {}, {} change(s), {} rejected, {} skipped, ${:.4} / {} tokens",
+        "pass {}: {}, {} change(s), {} rejected, {} proposed, {} skipped, ${:.4} / {} tokens",
         p.id,
         p.status,
         p.changes.len(),
         p.rejected.len(),
+        p.proposed.len(),
         p.skipped.len(),
         p.spent.usd,
         p.spent.tokens
@@ -356,6 +422,7 @@ fn options(cfg: &Config, workspace: &Path, trigger: &str) -> Options {
         max_prompt_chars: PROMPT_CHARS,
         trigger: trigger.into(),
         workspace: Some(workspace.to_path_buf()),
+        id: None,
     }
 }
 
@@ -471,6 +538,7 @@ async fn pass(
     provider: Option<String>,
     trigger: &str,
     on_kept: Option<OnKept>,
+    id: Option<String>,
 ) -> Result<PassRecord> {
     // M19: no pass while the owner's kill switch is on or a day cap is
     // spent; the pass's own caps (`[learning]`) still apply on top.
@@ -479,7 +547,139 @@ async fn pass(
     }
     let mut env = env(cfg, workspace, provider)?;
     env.on_kept = on_kept;
-    ferrule_learn::run_pass(&options(cfg, workspace, trigger), &env).await
+    let opts = Options {
+        id,
+        ..options(cfg, workspace, trigger)
+    };
+    ferrule_learn::run_pass(&opts, &env).await
+}
+
+/// The learning page: makes the built-in task match `[learning]` now
+/// (added, moved or removed) and failure notes follow it in this process.
+/// In words: when the next pass is, or that none is scheduled.
+pub fn apply(cfg: &Config) -> Result<String> {
+    watch::set_notes(cfg.learning.failure_notes);
+    let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+    let want = cfg.learning.enabled.then(|| spec(&cfg.learning));
+    ensure_builtin(&store, TASK_NAME, want.as_ref(), chrono::Utc::now())
+        .map_err(|e| anyhow!("the pass's task couldn't be made to match: {e}"))?;
+    let eval = cfg.learning.weekly_eval.then(|| weekly::spec(cfg));
+    ensure_builtin(&store, weekly::TASK_NAME, eval.as_ref(), chrono::Utc::now())
+        .map_err(|e| anyhow!("the weekly eval's task couldn't be made to match: {e}"))?;
+    let task = store
+        .list()?
+        .into_iter()
+        .find(|t| t.channel == BUILTIN_CHANNEL && t.name == TASK_NAME);
+    Ok(match task {
+        Some(t) if !t.enabled => {
+            "its task is paused on the Tasks page, so no pass runs until it's resumed".into()
+        }
+        Some(t) => match t.next_run_at {
+            Some(at) => format!(
+                "the next pass is at {}",
+                chrono::DateTime::from_timestamp(at, 0)
+                    .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .unwrap_or_else(|| at.to_string())
+            ),
+            None => "its task has no next run".into(),
+        },
+        None => "no pass is scheduled".into(),
+    })
+}
+
+/// What [`start`] did.
+pub struct Started {
+    pub said: String,
+    /// The pass's id, when one started.
+    pub id: Option<String>,
+}
+
+/// The learning page's Run: a pass in the background, as the nightly one
+/// would run (its workspace, provider and "Learned" lines), or with
+/// `dry_run` what one would review now, nothing spent or written. `Err`
+/// says why none can start: the kill switch, a spent cap, a pass already
+/// running, no model to run it on.
+pub async fn start(cfg: &Config, dry_run: bool, fallback: &Path) -> Result<Started> {
+    let (workspace, provider, hub) = GATEWAY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| (fallback.to_path_buf(), cfg.learning.provider.clone(), None));
+    if let Some(why) = crate::trust::hub(cfg)?.check("learn", None, false) {
+        return Err(anyhow!("No pass: {why}"));
+    }
+    let dir = LearnDir::new(&config::data_dir()?);
+    if let Some((who, age)) = dir.lock_holder() {
+        if age < ferrule_learn::files::STALE_LOCK {
+            return Err(anyhow!(
+                "A learning pass is already running ({who}, started {}s ago).",
+                age.as_secs()
+            ));
+        }
+    }
+    if dry_run {
+        let env = env(cfg, &workspace, provider)?;
+        let plan = ferrule_learn::plan(&options(cfg, &workspace, "dashboard"), &env)?;
+        let check = plan
+            .check
+            .as_deref()
+            .map_or("no check: changes are probed and judged blind, and what can't be proven is proposed to you".into(), |c| format!("the check is `{c}`"));
+        return Ok(Started {
+            said: format!(
+                "Dry run, nothing spent or written: a pass now would review {} episode(s) ({} left for later) and {} memory cluster(s); {check}; caps ${:.2} a pass, ${:.2} a day (${:.4} spent in the last 24 hours).",
+                plan.episodes.len(),
+                plan.later,
+                plan.clusters.len(),
+                plan.caps.usd_per_pass,
+                plan.caps.usd_per_day,
+                plan.day_before.usd
+            ),
+            id: None,
+        });
+    }
+    // Checked before it goes to the background: a missing key is said now.
+    env(cfg, &workspace, provider.clone())?;
+    let id = dir.new_pass_id();
+    let (cfg, run_id) = (cfg.clone(), id.clone());
+    tokio::spawn(async move {
+        let told = hub.map(told);
+        match pass(&cfg, &workspace, provider, "dashboard", told, Some(run_id)).await {
+            Ok(p) => tracing::info!("learning: {}", summary(&p)),
+            Err(e) => tracing::warn!("learning: the pass from the page failed: {e:#}"),
+        }
+    });
+    Ok(Started {
+        said: format!(
+            "A learning pass started ({id}); it runs in the background within its caps. Each change it keeps comes with an Undo; what it can't prove waits here for your Keep."
+        ),
+        id: Some(id),
+    })
+}
+
+/// M29's `/undo`, counted: an Undo that undid something is the owner's
+/// signal that the run's work was wrong.
+pub fn counted_undo(
+    undo: Arc<dyn Fn() -> String + Send + Sync>,
+) -> Arc<dyn Fn() -> String + Send + Sync> {
+    Arc::new(move || {
+        let said = undo();
+        if !said.starts_with("Nothing was undone") {
+            signal(ferrule_learn::signals::UNDO, "chat", None);
+        }
+        said
+    })
+}
+
+/// Records one of the owner's signals; a failure is only logged.
+pub fn signal(kind: &str, source: &str, about: Option<String>) {
+    let Ok(data) = config::data_dir() else {
+        return;
+    };
+    let mut s = ferrule_learn::signals::Signal::new(kind, source, chrono::Utc::now().timestamp());
+    s.about = about;
+    if let Err(e) = LearnDir::new(&data).add_signal(&s) {
+        tracing::warn!("learning: a signal wasn't kept: {e}");
+    }
 }
 
 /// M53.5: `/unlearn <pass> <change>`, the Undo under a "Learned" line, in
@@ -495,10 +695,17 @@ pub fn unlearn(pass: &str, change: usize) -> String {
         Ok(r) if r.undone.is_empty() => {
             format!("Nothing was undone: {}", r.not_undone.join("; "))
         }
-        Ok(r) => format!(
-            "Done: {}. `ferrule learn diff {pass}` shows the pass.",
-            r.undone.join("; ")
-        ),
+        Ok(r) => {
+            signal(
+                ferrule_learn::signals::UNLEARN,
+                "chat",
+                Some(format!("{pass}:{change}")),
+            );
+            format!(
+                "Done: {}. `ferrule learn diff {pass}` shows the pass.",
+                r.undone.join("; ")
+            )
+        }
     }
 }
 
@@ -521,13 +728,19 @@ pub async fn cmd(op: LearnCmd) -> Result<()> {
                 )?);
                 return Ok(());
             }
-            let p = pass(&cfg, &workspace, provider, "manual", None).await?;
+            let p = pass(&cfg, &workspace, provider, "manual", None, None).await?;
             println!("{}", summary(&p));
             for (i, c) in p.changes.iter().enumerate() {
                 println!("  {}. {}", i + 1, change_line(c));
             }
             for r in &p.rejected {
                 println!("  rejected {}: {}", r.op, r.reason);
+            }
+            for x in &p.proposed {
+                println!(
+                    "  proposed {} (not proven: {}); keep or drop it on the dashboard's Learning page",
+                    x.id, x.gate
+                );
             }
             println!(
                 "details: {}",
@@ -590,11 +803,10 @@ fn print_plan(p: &ferrule_learn::Plan) {
     }
     println!(
         "check: {}",
-        p.check
-            .as_deref()
-            .map_or("none — every add and edit is rejected".into(), |c| format!(
-                "`{c}`"
-            ))
+        p.check.as_deref().map_or(
+            "none — adds and edits are probed, and what can't be proven is proposed".into(),
+            |c| format!("`{c}`")
+        )
     );
     println!(
         "caps: ${:.2}/pass, ${:.2}/day, {} tokens/pass, {} tokens/day; spent in the last 24h: ${:.4}, {} tokens",

@@ -175,7 +175,11 @@ no new damage. The answer is `{"better":"A"|"B"|"neither","why":…}`:
   the change as B): …");
 - the control → **worse**: rejected;
 - neither, an unreadable answer → **no difference or confounded**, the
-  default: rejected. A failed judge call rejects too.
+  default: not kept. Since the learning page
+  ([m16-learning-loop.md](m16-learning-loop.md) §13) such a change is
+  **proposed**, not dropped: it is kept in `pass.json`'s `proposed` and
+  does nothing until the owner keeps it. A failed judge call, a control
+  that couldn't run or one the budget cut proposes it too.
 
 The seed, the change's label and what it was compared with go into the
 pass's `log.jsonl` (`"judge"` lines), so the order can be checked.
@@ -183,9 +187,11 @@ pass's `log.jsonl` (`"judge"` lines), so the order can be checked.
 **A check: it must fail without the change** (`WorkspaceGate::run`). The
 run with the change must finish and pass the check twice, as before.
 Then the control runs the check once: if the task passes without the
-change too, nothing shows the change helped, and it is rejected ("…; but
-the task finished without the lesson and `<check>` passed: nothing shows
-the lesson helped"). A control that fails the check, or stops before
+change too, nothing shows the change helped, and it is not kept but
+proposed ("…; but the task finished without the lesson and `<check>`
+passed: nothing shows the lesson helped"); so is one whose control the
+budget cut. Only a run with the change that fails the check is
+rejected. A control that fails the check, or stops before
 finishing, keeps it ("…; without it, `<check>` fails without the lesson:
 …").
 
@@ -197,16 +203,19 @@ and not kept, unless the owner's 👍 corroborates it (`weak`): the episode
 is an owner's 👎 on a chat reply (M53.5) and the owner reacted 👍 to a
 later reply in the same chat (the episode's `fixed`). That says the chat
 ended well, not that the change did, and it is the only word from the
-owner the pass has; a task or session episode on weak evidence is never
-kept. The reason says which: "kept on weak evidence (…), corroborated by
-the owner's 👍 …" or "weak evidence, not kept without the owner's 👍
-(…)". The proposed text stays in the changelog either way.
+owner the pass has; the pass never keeps a task or session episode's
+change on weak evidence by itself: it proposes it to the owner instead
+(m16 §13). The reason says which: "kept on weak evidence (…),
+corroborated by the owner's 👍 …" or "weak evidence, not kept without
+the owner's 👍 (…)", the proposal's reason. A judge that prefers the
+episode's own run rejects it; one that can't tell proposes it. The
+proposed text stays in the changelog either way.
 
 **Cost.** A gated change now costs up to two task re-runs and, without a
 check, one judge call, all `call_kind = "learn"` inside the caps. With
 the defaults (300,000 tokens a pass), a pass whose first re-runs are
-large will judge later episodes on weak evidence and keep none of them;
-the cap is the owner's dial.
+large will judge later episodes on weak evidence and keep none of them
+itself (they are proposed); the cap is the owner's dial.
 
 **Not done.** Still one draw per arm (K=1): the contrast removes the
 "compared with a failure" bias, not the run-to-run noise, and a lesson
@@ -375,11 +384,19 @@ promoted lesson or skill in the gate run's prompt. Both are revertible:
 
 **Add one, cut one.** Once the view reaches 90% of `max_bullets` (36 of
 40), an add or a promotion must retire a lesson of the view as well.
-The reflector is told and may name it (`"retire":"pb-N"`). Without a
-valid pick, the pass retires the `[pb-N]` lesson no pass has kept
-(added, edited or promoted) for longest; `learn/state.json`'s `touched`
-holds those times. Ferrule can't see whether an agent followed a
-lesson, so "unused" can only mean "not kept again". The retire is gated
+The reflector is told and may name it (`"retire":"pb-N"`). Since the
+learning page (m16 §13) the pass first retires the lesson of the view
+with the worst record in use: `learn/usage.jsonl` holds, for each agent
+session, the `[pb-N]` lessons its prompt carried and whether its runs
+ended done, and the owner's 👎s are matched to the session they fell
+in, so each lesson has the sessions it was in, those that ended not
+done and those that got a 👎. The worst share of bad sessions wins,
+among lessons in at least 2 sessions with at least one bad. These are
+signals, not proof: Ferrule still can't see whether an agent followed a
+lesson, only what happened in sessions that carried it. Without such a
+record, the reflector's valid pick goes; without one, the `[pb-N]`
+lesson no pass has kept (added, edited or promoted) for longest;
+`learn/state.json`'s `touched` holds those times. The retire is gated
 with the add, as one candidate, and journaled as its own change ("made
 room for add pb-N"). An add is refused only when the view is full and
 holds no pass lesson to retire.

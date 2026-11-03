@@ -194,7 +194,9 @@ fn executed(hub: &Hub, store: &PlanStore, mut plan: Plan, outcome: &str) -> Resu
     Ok(())
 }
 
-fn reject(hub: &Hub, store: &PlanStore, id: &str, why: &str) -> Result<()> {
+/// Rejects a proposed plan, audited (the CLI's `reject`, a refused chat
+/// question, and the dashboard's Reject, M66).
+pub(crate) fn reject(hub: &Hub, store: &PlanStore, id: &str, why: &str) -> Result<()> {
     let plan = store
         .decide(id, PlanStatus::Rejected)
         .map_err(|e| anyhow!(e))?;
@@ -374,9 +376,21 @@ where
         plan.text.trim()
     );
     let timeout = Duration::from_secs(hub.config().plan_timeout_secs);
-    let asked = hub
-        .ask_owner(&sid, &format!("plan {}", plan.id), &question, timeout)
-        .await;
+    let subject = format!("plan {}", plan.id);
+    // M66: asked from the page's own chat, the question is asked there;
+    // from a chat app, in the owner's primary chat, as before.
+    let asked = if chat.channel == crate::dashboard::chat::CHANNEL {
+        let q = ferrule_trust::hub::Question {
+            subject: &subject,
+            what: &subject,
+            text: &question,
+            timeout,
+            op: None,
+        };
+        hub.ask_in(&sid, Some(chat.clone()), q).await.map(drop)
+    } else {
+        hub.ask_owner(&sid, &subject, &question, timeout).await
+    };
     if let Err(why) = asked {
         reject(hub, &store, &plan.id, &why)?;
         say(format!("Plan {} wasn't run: {why}.", plan.id)).await;

@@ -89,6 +89,66 @@ pub enum Change {
     },
 }
 
+/// What a proposed change would do, once the owner keeps it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "what", rename_all = "lowercase")]
+pub enum Proposal {
+    /// A playbook delta: `add`, `edit` or `promote`.
+    Lesson {
+        op: String,
+        /// The lesson an edit or a promotion is of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        /// The reflector's pick, should the add need to make room.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retire: Option<u32>,
+    },
+    /// A skill, its validated draft kept under the pass dir.
+    Skill {
+        name: String,
+        description: String,
+        /// The draft, under the pass dir.
+        dir: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scripts: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        notes: Vec<String>,
+    },
+}
+
+pub const PROPOSED: &str = "proposed";
+pub const KEPT: &str = "kept";
+pub const DROPPED: &str = "dropped";
+
+/// "Proposed, not proven": a change the gate could neither prove nor
+/// disprove (no check, the judge couldn't decide, no control run fitted
+/// the caps). It does nothing until the owner keeps it; then it lands as
+/// a change of its pass, revertable like the others.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Proposed {
+    /// `p1`, `p2`, … within the pass.
+    pub id: String,
+    pub change: Proposal,
+    /// Where it would apply; `None` is everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub reason: String,
+    pub episode: String,
+    /// Why the gate couldn't prove it.
+    pub gate: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub evidence: String,
+    /// [`PROPOSED`], [`KEPT`] or [`DROPPED`].
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// Once kept: its number among the pass's changes, from 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_as: Option<usize>,
+}
+
 /// A proposal the pass didn't apply, and why.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rejected {
@@ -160,6 +220,10 @@ pub struct PassRecord {
     /// M53.5: changes undone one by one; a pass revert skips them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undone: Vec<ChangeRevert>,
+    /// Changes the gate couldn't prove, waiting for the owner's Keep or
+    /// Drop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposed: Vec<Proposed>,
 }
 
 impl PassRecord {
@@ -187,6 +251,106 @@ pub fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     }
     fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+/// `learn/signals.jsonl` and `learn/usage.jsonl` grow with use: an append
+/// that takes one past this many bytes prunes it ([`prune_log`]).
+pub const LOG_PRUNE_AT: u64 = 4 * 1024 * 1024;
+/// What a prune leaves at most: its lines older than [`LOG_KEEP_DAYS`]
+/// go first, then the oldest until the file is under this.
+pub const LOG_KEEP_TO: u64 = 2 * 1024 * 1024;
+/// How long a line of those logs is kept once one is pruned.
+pub const LOG_KEEP_DAYS: i64 = 90;
+
+/// `<log>.lock` beside a log: appends hold it shared, a prune holds it
+/// alone while it rewrites (as the trust audit log does), so no line is
+/// lost in the swap. `None` when it can't be made: writing goes on
+/// unlocked.
+fn log_lock(path: &Path) -> Option<fs::File> {
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .ok()
+}
+
+/// One process's writers take turns, the lock file keeps other processes'.
+static LOG_HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Appends `line` (one JSON object with a Unix-seconds `at`) to `path`;
+/// past [`LOG_PRUNE_AT`] the file is pruned to [`LOG_KEEP_DAYS`] and
+/// [`LOG_KEEP_TO`].
+pub fn append_log(path: &Path, line: &str) -> Result<(), String> {
+    let _held = LOG_HELD.lock().unwrap_or_else(|e| e.into_inner());
+    let err = |e: std::io::Error| format!("couldn't write {}: {e}", path.display());
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(err)?;
+    }
+    let len = {
+        let lock = log_lock(path);
+        if let Some(l) = &lock {
+            let _ = l.lock_shared();
+        }
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(err)?;
+        writeln!(f, "{line}").map_err(err)?;
+        f.metadata().map(|m| m.len()).unwrap_or(0)
+    };
+    if len > LOG_PRUNE_AT {
+        let cutoff = chrono::Utc::now().timestamp() - LOG_KEEP_DAYS * 86_400;
+        match prune_log(path, cutoff, LOG_KEEP_TO) {
+            Ok((kept, dropped)) => {
+                tracing::info!(log = %path.display(), kept, dropped, "learning: pruned a log")
+            }
+            Err(e) => tracing::warn!(log = %path.display(), "learning: a log wasn't pruned: {e}"),
+        }
+    }
+    Ok(())
+}
+
+/// Drops the lines of `path` whose `at` is before `cutoff` (Unix seconds),
+/// then the oldest until the rest is at most `keep_to` bytes; a line that
+/// doesn't parse is kept by the age rule, like any other by the size one.
+/// The file is rewritten through a temporary one and a rename, under the
+/// lock every append takes. Returns (kept, dropped).
+pub fn prune_log(path: &Path, cutoff: i64, keep_to: u64) -> std::io::Result<(usize, usize)> {
+    let lock = log_lock(path);
+    if let Some(l) = &lock {
+        l.lock()?;
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(e) => return Err(e),
+    };
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let old = |l: &str| {
+        serde_json::from_str::<serde_json::Value>(l)
+            .ok()
+            .and_then(|v| v["at"].as_i64())
+            .is_some_and(|at| at < cutoff)
+    };
+    let mut keep: std::collections::VecDeque<&str> =
+        lines.iter().copied().filter(|l| !old(l)).collect();
+    let mut size: u64 = keep.iter().map(|l| l.len() as u64 + 1).sum();
+    while size > keep_to {
+        let Some(l) = keep.pop_front() else { break };
+        size -= l.len() as u64 + 1;
+    }
+    let dropped = lines.len() - keep.len();
+    if dropped > 0 {
+        let mut out = String::with_capacity(size as usize);
+        for l in &keep {
+            out.push_str(l);
+            out.push('\n');
+        }
+        write_atomic(path, out.as_bytes()).map_err(std::io::Error::other)?;
+    }
+    Ok((keep.len(), dropped))
 }
 
 pub struct LearnDir {
@@ -433,6 +597,7 @@ mod tests {
             notes: vec![],
             reverted: None,
             undone: vec![],
+            proposed: vec![],
         }
     }
 
@@ -466,6 +631,46 @@ mod tests {
         assert!(!dir.pass_dir(&p.id).join("scratch-1").exists());
         assert_eq!(dir.passes().len(), 2);
         assert!(dir.load_pass("../x").is_err());
+    }
+
+    #[test]
+    fn a_log_past_its_size_drops_old_lines_then_the_oldest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("learn/usage.jsonl");
+        let now = chrono::Utc::now().timestamp();
+        let line = |at: i64, pad: usize| format!(r#"{{"at":{at},"x":"{}"}}"#, "y".repeat(pad));
+        // Age, then size: two old lines go, then the oldest new one.
+        let body: String = [
+            line(1, 10),
+            line(now - 100 * 86_400, 10),
+            "not json".to_string(),
+            line(now - 3, 10),
+            line(now - 2, 10),
+        ]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        let cutoff = now - LOG_KEEP_DAYS * 86_400;
+        let keep_to = 2 * (line(now - 2, 10).len() as u64 + 1);
+        assert_eq!(prune_log(&path, cutoff, keep_to).unwrap(), (2, 3));
+        let left = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            left,
+            format!("{}\n{}\n", line(now - 3, 10), line(now - 2, 10))
+        );
+        assert_eq!(prune_log(&path, cutoff, keep_to).unwrap(), (2, 0));
+
+        // An append past LOG_PRUNE_AT prunes: here every old line goes.
+        let old = line(1, 1000);
+        let n = (LOG_PRUNE_AT as usize / (old.len() + 1)) + 1;
+        fs::write(&path, format!("{old}\n").repeat(n)).unwrap();
+        append_log(&path, &line(now, 10)).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{}\n", line(now, 10))
+        );
     }
 
     #[test]

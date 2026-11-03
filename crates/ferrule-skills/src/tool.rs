@@ -32,6 +32,10 @@ pub fn tools(skills: Arc<SkillSet>) -> Vec<Arc<dyn Tool>> {
     LiveSkillTools::new(SkillsHandle::fixed(skills)).tools()
 }
 
+/// Told the name of each skill `activate_skill` loads (not one already
+/// active): the learning page counts what each skill was used in.
+pub type OnActivate = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Which skills one agent's view keeps (M53.3): the learning pass's
 /// skills pass a fresh injection screen, and (M53.4) only those of the
 /// agent's scope.
@@ -136,6 +140,7 @@ impl LiveSkillTools {
             activate: Arc::new(ActivateSkillTool {
                 skills: skills.clone(),
                 active: Arc::default(),
+                told: Mutex::default(),
             }),
             read: Arc::new(ReadSkillFileTool {
                 skills: skills.clone(),
@@ -150,6 +155,11 @@ impl LiveSkillTools {
     /// activated for this agent's `activate_skill`.
     pub fn triggers(&self, opts: TriggerOptions) -> SkillTriggers {
         SkillTriggers::new(self.skills.clone(), self.activate.active.clone(), opts)
+    }
+
+    /// Tells `hook` of each skill `activate_skill` loads from now on.
+    pub fn on_activate(&self, hook: OnActivate) {
+        *self.activate.told.lock().unwrap() = Some(hook);
     }
 }
 
@@ -189,6 +199,7 @@ pub struct ActivateSkillTool {
     /// Names already loaded by this agent. One tool instance per agent, so
     /// this is per session. Triggers add to it too.
     active: Arc<Mutex<HashSet<String>>>,
+    told: Mutex<Option<OnActivate>>,
 }
 
 #[async_trait::async_trait]
@@ -229,6 +240,10 @@ impl Tool for ActivateSkillTool {
             .map_err(|e| failed(ACTIVATE_TOOL, e))?;
         let content = render_activation(&skill, &body);
         self.active.lock().unwrap().insert(skill.name.clone());
+        let told = self.told.lock().unwrap().clone();
+        if let Some(told) = told {
+            told(&skill.name);
+        }
         Ok(ToolOutput::ok(content))
     }
 }
@@ -558,6 +573,27 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("outside"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn each_new_activation_is_told_once() {
+        let (_dir, set) = fixture();
+        let live = LiveSkillTools::new(SkillsHandle::fixed(set));
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let log = seen.clone();
+        live.on_activate(Arc::new(move |n: &str| log.lock().unwrap().push(n.into())));
+        for _ in 0..2 {
+            live.activate
+                .call(json!({"name": "pdf"}), &ctx())
+                .await
+                .unwrap();
+        }
+        assert!(live
+            .activate
+            .call(json!({"name": "nope"}), &ctx())
+            .await
+            .is_err());
+        assert_eq!(*seen.lock().unwrap(), vec!["pdf".to_string()]);
     }
 
     #[test]

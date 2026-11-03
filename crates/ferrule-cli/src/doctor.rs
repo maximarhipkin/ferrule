@@ -780,6 +780,34 @@ async fn plan_check(
         } else if !offline {
             text.push_str(" · refresh not tried (--ping-models tries it)");
         }
+    } else if plan == config::Plan::GeminiCli {
+        if let Ok(Some(meta)) = crate::secrets::private_dir()
+            .map(|d| ferrule_plans::gemini::store::Store::new(&d).meta())
+            .unwrap_or(Ok(None))
+        {
+            text.push_str(&format!(
+                ", signed in {}",
+                subscription::login::age_words(meta.signed_in_at)
+            ));
+        }
+        if ping && !offline {
+            match subscription::gemini::plan("") {
+                Ok(auth) => match auth.refresh_now().await {
+                    Ok(_) => text.push_str(" · refresh works"),
+                    Err(e) => {
+                        broken(r, format!("{label}: the refresh failed: {e}"));
+                        r.hint("`ferrule login gemini`");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    broken(r, format!("{label}: {e:#}"));
+                    return;
+                }
+            }
+        } else if !offline {
+            text.push_str(" · refresh not tried (--ping-models tries it)");
+        }
     }
     r.ok("provider", text);
     plan_usage(r, plan);

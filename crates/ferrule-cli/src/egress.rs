@@ -54,6 +54,13 @@ pub fn endpoints(cfg: &Config) -> Vec<(String, u16)> {
                 .map(|h| (h.to_string(), 443)),
         );
     }
+    if cfg.uses_gemini_cli() {
+        out.extend(
+            crate::subscription::gemini::GOOGLE_HOSTS
+                .iter()
+                .map(|h| (h.to_string(), 443)),
+        );
+    }
     out.sort();
     out.dedup();
     out

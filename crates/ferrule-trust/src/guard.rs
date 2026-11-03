@@ -212,16 +212,17 @@ impl TrustGuard {
                     g.command, g.kind
                 );
                 let timeout = Duration::from_secs(self.hub.config().approval_timeout_secs);
-                self.hub
-                    .ask_gate(
-                        &self.tree,
-                        &subject,
-                        &question,
-                        timeout,
-                        for_run,
-                        standing.as_ref(),
-                    )
-                    .await
+                let kind = g.kind.to_string();
+                let gate = crate::hub::Gate {
+                    subject: &subject,
+                    question: &question,
+                    timeout,
+                    for_run,
+                    remember: standing.as_ref(),
+                    kind: Some(&kind),
+                    tool: Some(call.tool),
+                };
+                self.hub.ask_gate_with(&self.tree, gate).await
             }
             Route::Terminal(p) => {
                 let question = format!("ferrule wants to run `{}` — {}{read}.", g.command, g.kind);

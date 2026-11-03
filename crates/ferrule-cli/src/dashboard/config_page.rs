@@ -869,6 +869,79 @@ const FORM: &[Field] = &[
     },
 ];
 
+/// M66: where the page puts a form field, by its section.
+fn group_of(key: &str) -> &'static str {
+    match key.split('.').next().unwrap_or("") {
+        "agent" | "agents" | "plans" => "Agent",
+        "gateway" => "Chat apps",
+        "trust" | "health" => "Safety",
+        "scheduler" => "Scheduler",
+        "dashboard" => "Dashboard",
+        "update" => "Updates",
+        "memory" => "Memory",
+        "web_search" | "browser" => "Web",
+        _ => "Other",
+    }
+}
+
+/// M66: what a form field is while it isn't set: the built-in default,
+/// or what it follows in the rest of the file (`now`, the file as read).
+/// `None` for a key the form doesn't have; `Some(Null)` when the default
+/// depends on more than the file (said in the field's help).
+fn default_of(base: &Config, now: &Config, key: &str) -> Option<Value> {
+    Some(match key {
+        "agent.stream" => json!(base.agent.stream),
+        "agent.parallel_tools" => json!(base.agent.parallel_tools),
+        "agent.edit_file" => json!(base.agent.edit_file),
+        "agent.repo_map_tokens" => json!(base.agent.repo_map_tokens),
+        "agent.lint" => json!(match base.agent.lint {
+            crate::config::LintMode::Auto => "auto",
+            crate::config::LintMode::Off => "off",
+        }),
+        "agent.auto_commit" => json!(base.agent.auto_commit),
+        "agent.verify_timeout_secs" => json!(base.agent.verify_timeout_secs),
+        "agents.max_tokens" => json!(base.agents.max_tokens),
+        "agents.budget_window_hours" => json!(base.agents.budget_window_hours),
+        "plans.claude_code.turn_timeout_minutes" => {
+            json!(base.plans.claude_code.turn_timeout_minutes)
+        }
+        // Unset, a chat app streams as `[agent] stream` says.
+        "gateway.telegram_stream" | "gateway.discord_stream" | "gateway.slack_stream" => {
+            json!(now.agent.stream)
+        }
+        "gateway.telegram_group_mention_only" => json!(base.gateway.telegram_group_mention_only),
+        "gateway.busy_notices" => json!(base.gateway.busy_notices()),
+        "trust.untrusted_send_gate" => json!(base.trust.untrusted_send_gate),
+        "health.watchdog_after_secs" => json!(base.health.watchdog_after_secs),
+        "scheduler.tick_interval_secs" => json!(base.scheduler.tick_interval_secs),
+        "dashboard.idle_minutes" => json!(base.dashboard.idle_minutes),
+        "dashboard.session_hours" => json!(base.dashboard.session_hours),
+        "dashboard.link_minutes" => json!(base.dashboard.link_minutes),
+        // Unset: on when setup installed the update units, else off.
+        "update.auto" => json!(crate::update::units_installed()),
+        "update.channel" => json!(base.update.channel),
+        "update.claude" => json!(base.update.claude),
+        "memory.vector_weight" => json!(base.memory.vector_weight),
+        // An f32: shown as written, not as its nearest f64.
+        "memory.min_similarity" => {
+            json!((f64::from(base.memory.min_similarity) * 1e6).round() / 1e6)
+        }
+        // Keyless DuckDuckGo unless a provider is named (M56.8).
+        "web_search.provider" => json!(base.web_search.provider.as_deref().unwrap_or("duckduckgo")),
+        "web_search.max_results" => json!(base.web_search.max_results),
+        "web_search.safe_search" => json!(base.web_search.safe_search),
+        "web_search.region" => json!(base.web_search.region),
+        "web_search.language" => json!(base.web_search.language),
+        "web_search.max_output_tokens" => json!(base.web_search.max_output_tokens),
+        "web_search.timeout_secs" => json!(base.web_search.timeout_secs),
+        // Unset: the provider's own price.
+        "web_search.price_per_search_usd" => json!(base.web_search.price_per_search_usd),
+        "web_search.max_searches_per_day" => json!(base.web_search.max_searches_per_day),
+        "browser.enabled" => json!(base.browser.enabled),
+        _ => return None,
+    })
+}
+
 fn field_value(doc: &DocumentMut, key: &str) -> Value {
     let mut item = doc.as_item();
     for seg in key.split('.') {
@@ -896,12 +969,21 @@ pub fn get(ctx: &Ctx) -> Answer {
         // Not TOML at all: the page shows nothing it can't hide.
         None => String::new(),
     };
+    // M66: each field's default, from an empty file and from this one.
+    let base: Option<Config> = toml::from_str("").ok();
+    let now: Option<Config> = toml::from_str(&text).ok();
     let fields: Vec<Value> = FORM
         .iter()
         .map(|f| {
+            let default = base
+                .as_ref()
+                .and_then(|b| default_of(b, now.as_ref().unwrap_or(b), f.key))
+                .unwrap_or(Value::Null);
             json!({
                 "key": f.key, "kind": f.kind, "choices": f.choices, "help": f.help,
                 "value": doc.as_ref().map_or(Value::Null, |d| field_value(d, f.key)),
+                "default": default,
+                "group": group_of(f.key),
             })
         })
         .collect();
@@ -1371,6 +1453,37 @@ mod tests {
 
     fn doc(s: &str) -> DocumentMut {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn every_form_field_has_a_default_and_a_group() {
+        let base: Config = toml::from_str("").unwrap();
+        for f in FORM {
+            let d = default_of(&base, &base, f.key)
+                .unwrap_or_else(|| panic!("{} has no default", f.key));
+            assert_ne!(group_of(f.key), "Other", "{}", f.key);
+            // A known default has the field's own kind.
+            let fits = match f.kind {
+                "bool" => d.is_boolean(),
+                "int" => d.is_u64(),
+                "float" => d.is_number(),
+                "choice" => d.as_str().is_some_and(|c| f.choices.contains(&c)),
+                _ => d.is_string() || d.is_null(),
+            };
+            assert!(fits || d.is_null(), "{}: {d}", f.key);
+        }
+        let d = |k: &str| default_of(&base, &base, k).unwrap();
+        assert_eq!(d("scheduler.tick_interval_secs"), json!(30));
+        assert_eq!(d("dashboard.session_hours"), json!(12));
+        assert_eq!(d("web_search.provider"), json!("duckduckgo"));
+        assert_eq!(d("memory.min_similarity"), json!(0.3));
+        // A chat app's stream follows `[agent] stream` in the file.
+        let now: Config = toml::from_str("[agent]\nstream = false\n").unwrap();
+        assert_eq!(
+            default_of(&base, &now, "gateway.slack_stream"),
+            Some(json!(false))
+        );
+        assert_eq!(default_of(&base, &base, "nope"), None);
     }
 
     #[test]

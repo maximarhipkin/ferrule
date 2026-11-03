@@ -30,7 +30,24 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.14** (2026-11-03, PR #75): silent turns. A turn that ends
+  - **v0.14.15** (2026-11-04, PR #76): M66 and the native Gemini plan.
+    `plan = "gemini-cli"` signs in to a Google / Antigravity plan over
+    HTTPS with no `agy` or `gemini` on the host (the native client is the
+    default; a logout sticks); the OAuth client isn't shipped, the owner
+    puts `FERRULE_GEMINI_CLIENT_ID` / `_SECRET` in the secrets file. The
+    dashboard is regrouped (Everyday, Agent, Setup, Advanced) and gets a
+    Control page (kill switch, lanes, live steps, plans, sessions, scoped
+    approvals), chat controls (modes, a model pin, slash commands, 👍/👎
+    with a correction, questions and approvals in the page), an
+    Instructions editor, a grouped Config, a readable Activity log and a
+    Google sign-in card with a paste-back.
+    The learning loop can be seen and switched on from a Learning page:
+    feedback from every surface, failure notes kept after a failed run,
+    changes it couldn't prove listed for the owner, a measure of whether
+    a lesson or skill helped, routing that remembers per scope, memory
+    upkeep and a weekly check. Every crate is at 0.14.15 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.14** (2026-11-03, PR #75): silent turns. A turn that ends
     with exactly `NO_REPLY` posts nothing in any chat, and one that ends
     with no text posts nothing in a group (Telegram, Signal, personal
     WhatsApp); a private chat still gets the empty-answer notice. A
@@ -38,8 +55,7 @@ below it is append-only.
     nothing from it. A streamed preview holds back while the text could
     be `NO_REPLY` and a silent turn deletes what it posted; a scheduled
     run that is silent delivers nothing; the transcript gets a
-    `silent_turn` event. Every crate is at 0.14.14 except
-    `ferrule-plugin-sdk`.
+    `silent_turn` event.
   - Before it, **v0.14.13** (2026-11-02, PR #74): `[trust] untrusted_send_gate` is
     on the Config page and in `config_set`, from the chat only on the
     owner's card (owner mode too) and never by a chat `config_restore`.
@@ -11053,3 +11069,344 @@ acknowledged and reaches the turn with no "Busy" line; from a chat,
 `config_set` writes `gateway.busy_notices = false` and
 `health.watchdog_after_secs = 0` on a yes and refuses 86401; both pass the
 page's guard. The existing watchdog-off test still holds. CI on the PR.
+
+### 2026-11-03 — Native Gemini / Antigravity subscription plan (`gemini-cli` via `CloudCodeProvider`), `HarnessProfile::gemini()`, and dashboard polish
+
+No milestone claimed.
+
+**Why.** (1) The owner wants to sign in to and use a Google / Antigravity
+subscription (`plan = "gemini-cli"` / `ferrule login gemini` / dashboard
+`Models` page) directly from Ferrule on any server without installing `agy`
+or `gemini` on the host, while keeping Ferrule's self-update and client
+identity automatically up to date. (2) Gemini models need a 1M context window
+profile (`HarnessProfile::gemini()`) with reasoning retention rather than the
+128K `generic` profile. (3) The dashboard's cards, top search trigger,
+sidebar active indicator, and `Models` pin/add forms needed visual and
+ergonomic polish (including `Ctrl+K` / `Cmd+K` quick-search).
+
+**What changed.**
+- `ferrule-core`: `HarnessProfile::gemini()` (`context_window: 1_000_000`,
+  `output_reserve: 64_000`, `compaction_threshold: 0.72`,
+  `retain_reasoning: true`, `max_effort: Some("high")`); `setup.rs` and
+  `config.rs` select `"gemini"` for `Plan::GeminiCli` and
+  `generativelanguage.googleapis.com`.
+- `ferrule-plans`: `ferrule_plans::gemini` (`GeminiPlan`, `auth`, `store`)
+  implementing native Google OAuth 2.0 S256 PKCE sign-in (`authorize_url`,
+  `exchange`, `refresh`, `revoke`, `Callback`, `code_from_redirect`),
+  `v1internal:loadCodeAssist` project/tier onboarding, `v1internal:retrieveUserQuotaSummary`
+  quota window recording (`UsageFile`), and a sealed AES-256-GCM store at
+  `private/plans/gemini.json` (`AAD = "ferrule-plan:gemini"`, with automatic
+  one-time import from `~/.gemini/antigravity-cli/antigravity-oauth-token`
+  when present). Optional subprocess engine (`GeminiCli`, `EngineConfig`,
+  `cli`, `env`, `stream`) remains available if `[plans.gemini_cli] binary`
+  is explicitly set.
+- `ferrule-providers`: `ferrule_providers::cloudcode` (`CloudCodeProvider` +
+  `cloudcode::version::ClientIdentity`), speaking `v1internal:streamGenerateContent?alt=sse`,
+  `v1internal:fetchAvailableModels`, `v1internal:retrieveUserQuotaSummary`,
+  and `v1internal:loadCodeAssist` directly over HTTPS against
+  `daily-cloudcode-pa.googleapis.com`, preserving `thoughtSignature` across
+  tool turns via `NativeBlocks` (`api: "cloudcode"`), resolving tiered model
+  aliases (`gemini-4-argon-*`, `gemini-3.8-flash-*`), and auto-updating its
+  learned client identity (`1.4.12` floor).
+- `ferrule-cli`: `ferrule login gemini` (`--browser` / `--paste` + paste
+  redirect URL on stdin for headless SSH servers), `ferrule logout gemini`,
+  dashboard web sign-in endpoints (`/api/control/plans/gemini/{start,complete,poll,cancel}`),
+  `plan:gemini` in the Safe page, `doctor --ping-models` live refresh check,
+  and dashboard visual/UX polish (`app.css`, `app.js`).
+
+**Checks.** `ferrule-core`, `ferrule-providers`, `ferrule-plans` (`tests/it/gemini.rs`),
+and `ferrule-cli` unit and integration tests (`make check`), plus live
+end-to-end verification of `ferrule doctor --ping-models`, `ferrule status`
+(with `5h` and `weekly` quota windows), and `ferrule run` with
+`PATH=/usr/bin:/bin` (no `agy` or `gemini` binary on `PATH`).
+
+### 2026-11-03 — Review of the Gemini plan commit, its fixes, and the dashboard redesign from the Claude Design board (Claude, Opus 5.5)
+
+No milestone claimed (the dashboard notes call it M66 in comments).
+
+**Why.** The owner asked for the latest commit to be checked, the
+dashboard's design and flow to be improved with Claude Design, and the
+agent tested end to end: its permissions and the Google sign-in.
+
+**What changed.**
+- Gemini plan, from the review:
+  - `[plans.gemini_cli] binary` defaults to empty, so the native HTTPS
+    client is the default, as the commit meant. Before, the default was
+    `agy`: with `agy` on the machine every turn went through it, launched
+    with `--dangerously-skip-permissions` and no approval bridge, so a
+    recursive delete or a force push never reached the owner's gate.
+  - A logout sticks: `Store::forget` deletes the record and leaves
+    `private/plans/gemini.no-cli-import`, so the CLI's token isn't pulled
+    back in; a signed-out record (a refused refresh) is never imported
+    over; `ferrule logout gemini` no longer imports the CLI's token first
+    (and then revoked it). The Safe's delete uses `forget` too. Unit
+    tests: `gemini::store::tests`.
+  - `cloudcode`: an id Google leaves out of a `functionCall` is unique
+    across responses (`synthetic_call_id`), so an older tool result never
+    maps to a newer call's name.
+  - `plans/gemini/start` and `poll` answer `expires_in`.
+- Dashboard (`app.js`, `app.css`, `setup.rs`):
+  - Header: the search button is styled on `#find` (the old rule needed
+    an `sm` class it never had, so "Search /" spilled onto the theme
+    button).
+  - Home: one hero card (tone in an icon tile, "Needs you / Waiting for
+    you / All good", the next action in it, "Right now" beside it); the
+    "no model is connected" notice isn't repeated under it; pending
+    approvals sit right under the hero; a warning's fix is a plain
+    button, filled ones are for what blocks the bot.
+  - Get started: the steps are cards on a desktop, only the next step's
+    button is primary, and Say hello is shown locked until there's a brain.
+  - Give your bot a brain: "Sign in with a plan you pay for" or "Use an
+    API key", a tile each (ChatGPT, Google, Claude; OpenRouter,
+    Anthropic, Google AI Studio), and only the picked one's form. The
+    Google sign-in was the last card under "More providers".
+  - Google sign-in card: steps (Open Google, Come back here, Connected),
+    what Google will ask for, the link with a countdown, then waiting
+    with a paste-back that checks the address as it's typed and sends a
+    good paste by itself. Polling redraws only when the state changes;
+    before, every 3 s poll redrew the card and wiped a half-pasted
+    address. On a page not opened at localhost the paste field is shown
+    at once; on localhost it's one tap away.
+
+**Checks.** `cargo fmt --check`; `cargo clippy --workspace --all-targets`
+(only the older `ferrule-sandbox` dead-code warning); `cargo test
+--workspace --locked`: everything passes except tests that fail the same
+way here on the original commit. The 7 `autocommit` tests and
+`starter_suite` failed only because of the container's forced commit
+signing (`GIT_CONFIG_*`), and pass without it. `instances_are_listed_made_and_removed`
+and `enforcement::hidden_paths_outside_the_workspace_and_the_host_environ`
+fail as root, before and after this change. Against the real binary with a scripted
+OpenAI-compatible mock (`ferrule run`, and `ferrule gateway` with
+`local = true` and its dashboard, driven by Playwright): a recursive
+delete and a force push are refused without a terminal; at a terminal `n`
+and `y` refuse and `yes` runs it; from the dashboard's chat the gate
+shows on Chat and Home and Allow runs it; the shell sees no key from the
+environment; the private dir is unreadable; writes outside the roots are
+refused. The Google flow was driven up to the token exchange (start,
+link, wrong state, garbage, auto-submit of a good paste, cancel); a real
+Google sign-in still needs the owner's account.
+
+**Open, from the review (not fixed here).**
+- `cloudcode` ends a cut-off or blocked stream as a success (no
+  `finishReason` / `blockReason` check, unlike `common::ended_early`).
+- No project: every request re-runs `loadCodeAssist` and `onboardUser`
+  under the store lock (up to ~60 s against a 30 s stale lock);
+  `onboardUser` doesn't wait for its operation.
+- A 429 shows as `HTTP 429: …` (no plan-limit wording, `RetryInfo`
+  ignored); 401/403 read as "the provider refused the API key".
+- `state()` says signed in when only `.gemini/oauth_creds.json` exists,
+  which the native client can't use.
+- `[plans.gemini_cli] config_dir = "~"` would unhide `private/` from the
+  engine child (only with that non-default setting).
+- The loopback listener binds 127.0.0.1 while the redirect says
+  `localhost`; any request with a wrong state ends the wait.
+- The client presents itself as Antigravity with its OAuth client: a
+  terms-of-service risk for the owner's Google account.
+- `ferrule sandbox` fails "ferrule's own environment is unreadable" when
+  ferrule runs as root (seen in a root container).
+
+### 2026-11-03 — M66: control from the dashboard, a learning loop you can see, and the dashboard reorganised (Claude, Opus 5.5)
+
+**Why.** An audit of every page (and of the code behind it) found that
+the owner couldn't see or steer the agent from the dashboard, and that the
+self-improvement machinery was built but off, unreachable from the page
+and never run on real data: only Telegram 👎 counted as feedback, nothing
+was kept after a failed run, unprovable changes were dropped silently and
+nothing measured whether a lesson or skill helped.
+
+**What changed.**
+- Navigation: Everyday (Home, Chat, Control, Tasks, Files, Usage), Agent
+  (Learning, Memory, Instructions, Proactive, Agents), Setup (Connect,
+  Models), Advanced (Activity, Console, Config, Settings). Channels,
+  Connections and Extensions are tabs under Connect; Routing is a tab
+  under Models (same URLs).
+- Control (new page; `GET /api/control`): what's running, each turn's
+  steps live (`GET /api/turn`, a bounded step buffer per lane in the
+  gateway's router; summaries, never tool output) with Stop; approvals
+  with their scope (`approvals/answer {scope: once|run|here}`, only where
+  the hub offers it); the kill switch with a reason; autonomy, standing
+  approvals and caps (moved from Settings and Usage); plans waiting
+  (`GET /api/plans`, `plans/approve|reject`); add-ons waiting
+  (`GET /api/extensions/pending`, `extensions/deny` — approving still
+  needs the terminal, where the scan's findings are shown); conversations
+  (`GET /api/sessions`, `sessions/resume` for goal-pending ones).
+- Chat: Normal / Plan first / Goal for the next message; a model pin for
+  the page chat; a `/` command menu (`GET /api/commands`, from the menu);
+  New conversation (`chat/new`); 👍/👎 with an optional why
+  (`chat/react`); "How it got there" (the last answer's steps). The
+  owner's slash commands now work in the page chat (channel `dashboard`,
+  chat `owner` only); plan questions and goal reports come back to it.
+- Instructions (new page; `GET /api/instructions`,
+  `instructions/save`): the AGENTS.md / CLAUDE.md / GEMINI.md /
+  ferrule.md layers the prompt is built from, editable, for new
+  conversations only.
+- Learning (new page; `GET /api/learn`, `learn/settings|run|revert|keep|drop`):
+  the switch, a dry run, passes and their changes with Undo, lessons and
+  skills with their track record, feedback counts, failure notes.
+  - Proposed, not proven: what the gate can't prove is kept as a proposal
+    for Keep/Drop instead of being dropped.
+  - Feedback: page 👍/👎, /undo, Undo of a learned change, Keep/Drop go
+    to `learn/signals.jsonl`; refused approvals and proactive answers are
+    read from the audit log. A page 👎 becomes an episode.
+  - Failure notes (`[learning] failure_notes = true` by default, even
+    with learning off): a root run that ends unfinished leaves its own
+    scrubbed status in memory, scoped, recalled after the user's message
+    for 7 days. Not after a guard stop or an owner's refusal.
+  - What helps: `learn/usage.jsonl` (lessons per session, outcomes,
+    `activate_skill`); a full playbook cuts the worst record first. Both
+    logs are bounded (4 MiB, then 90 days / 2 MiB).
+- Activity (was Logs): audit lines in words. Config: grouped by area,
+  with each field's default. Channels: what's set up open, the rest folded.
+  Usage: tokens per day when there are no prices. Home: a waiting approval
+  leads; a warning's fix is a plain button. local.rs: a server that
+  answers `/models` but isn't a known kind counts as up.
+
+**Security review (a separate agent, before delivery) and its fixes.**
+Instructions: a file holding a key isn't sent to the page or editable
+there, a save needs the file's hash (409 if it changed), a key in the
+text is refused, and the route is behind the M52.6 step-up; its body limit
+fits an escaped 64 KiB file. The 👎 "why" goes through the paste guard and
+the scrubber. No failure note from a `/plan` run or from a run that read
+outside content. `plans/approve` and `sessions/resume` can't double-start
+(one lock; `PlanStore::decide` is first-claim-wins across processes); child
+ids are validated and passed after `--`. Step summaries are redacted and
+URL-scrubbed before they're cut. A refusal is audited as scope "once".
+`/login chatgpt` gets the managed-mode check.
+
+**Checks.** `cargo fmt --check`; `cargo clippy --workspace --all-targets`
+(only the older `ferrule-sandbox` warning); `cargo test --workspace
+--locked` with the container's commit signing turned off: 1,780 pass;
+the two that fail (`instances_are_listed_made_and_removed`,
+`hidden_paths_outside_the_workspace_and_the_host_environ`) fail the same
+way on the original commit when run as root. In a browser against
+`ferrule gateway` with a scripted model: a gated command from the page
+chat, its live steps, Allow for this run; the kill switch with a reason;
+`/plan` from the page chat (Plan first) asking for approval there; an
+instruction file saved; learning switched on, a dry run, a failure note
+with a key redacted, a page 👎 recorded with learning off.
+
+**Not done / open.** Gated tool calls are still asked in the primary chat
+app (and on the page's approvals list), not in the page chat; a goal
+loop's gated commands are refused (no chat to ask). `/connect` and
+friends stay on chat apps. The learning pass has still not run against a
+real model here (only a dry run against a scripted one).
+
+### 2026-11-03 — M66, round 2: questions in the page chat, goal loops that ask, routing that remembers, memory upkeep, a weekly check, and the Gemini plan's review defects (Claude, Opus 5.5)
+
+**Why.** The owner asked to finish what round 1 left open and the next
+improvements from the audit, and to fix the defects the first review of
+the Gemini plan found.
+
+**What changed.**
+- A gated call in a page-chat turn is asked in the page chat (Allow /
+  Allow for this run / Always here / Refuse), still listed on the
+  approvals card; each conversation can have its own asking chat
+  (`Hub::ask_tree_in`), falling back to the primary owner chat. A `/goal`
+  loop asks in the chat that started it instead of refusing; a terminal
+  `run --goal` without a TTY still refuses.
+- Routing remembers (docs/routing.md "Remembering"): a chat or task whose
+  last 5 turns moved up 3 times starts one tier up, and eases back after
+  5 turns that didn't; `/api/routing` gains `scopes` and `recent` (why
+  each turn moved up), `routing/reset {scope}`. Bounded file under
+  `<data>/models/`.
+- `[skills] self_written` (off): the agent may keep a skill it wrote and
+  checked, apart from `[extensions]`.
+- Memory upkeep: use counts, pins (never fade, rank ×2), a source per
+  fact, a daily model-free merge of identical facts (journaled,
+  reversible), and the page's add / edit / pin / "never used" view; adds
+  and edits refuse keys like the chat does.
+- Weekly check (`[learning] weekly_eval = false`, `eval_usd_cap = 1.0`):
+  the kept lessons' tasks, with and without the playbook, under the caps;
+  results and a trend on the Learning page.
+- Gemini plan: a stream that ends without a finish reason is an early end
+  (retried), a block is a refusal; quota (with its reset time), expired
+  sign-in and "no tier" each get their own sentence; no-project accounts
+  back off instead of re-onboarding every request, onboardUser is polled
+  to done, the store lock covers only the refresh; `state()` counts a CLI
+  login only when that CLI is the engine; a `config_dir` holding the data
+  dir is refused and `private/` stays hidden regardless; the loopback
+  listens on 127.0.0.1 and ::1 and ignores wrong-state requests; one
+  client version everywhere (`FERRULE_GEMINI_CLIENT_VERSION`).
+
+**Checks.** fmt clean; clippy clean but for the older `ferrule-sandbox`
+warning; `cargo test --workspace --locked`: 2,000 pass, the two root-only
+failures as before. In a browser against the gateway: a gated command
+from the page chat asked in the page chat and run on Allow; memory add,
+pin and a key refused.
+
+**Open.** A goal resumed from the dashboard (a `run --resume` child)
+still can't ask. The weekly check and the learning pass haven't run
+against a real model. The Gemini plan presents itself as the Antigravity
+client (its OAuth client id, `ideType`, User-Agent): a terms-of-service
+risk for the owner's Google account that the docs don't state yet.
+
+### 2026-11-04 — Gemini plan: the OAuth client comes from the secrets file, not the source (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** GitHub's push protection refused the branch: the Gemini plan's
+commits carried a Google OAuth client id and secret in
+`ferrule-plans/src/gemini/auth.rs`. The client isn't the owner's (it's
+the Antigravity app's), and the repository is public. The owner chose to
+take it out of the code.
+
+**What changed.**
+- The branch's history was rewritten so no commit holds the two values
+  (the constants were emptied in every commit; nothing else moved).
+- `Issuer::client()`: the issuer's own client when set (tests), else
+  `FERRULE_GEMINI_CLIENT_ID` and `FERRULE_GEMINI_CLIENT_SECRET` from the
+  secrets file or the environment, read when a sign-in or a refresh
+  needs them. Neither, or only one, is `NO_CLIENT`: `ferrule login
+  gemini` and the dashboard's start say so and send nothing to Google;
+  a refresh with no client is a transient error, so a sign-in isn't
+  marked signed out over the owner's setup.
+- `docs/subscriptions.md` says where the two go, and that they aren't
+  a tool key for the Safe's **Add a key**.
+
+**Checks.** `cargo test -p ferrule-plans`: the sign-in test sends the
+issuer's client in the URL and both token requests; a new test covers
+no client, half a client, and the refresh staying signed in. The full
+`make check` set ran on the release tree.
+
+**Open.** Sign-in needs the owner to supply a client now. Unchanged from
+before: presenting as the Antigravity client is a terms-of-service risk
+for the owner's Google account.
+
+### 2026-11-04 — Dashboard: the CI browser check passes again (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** CI's `scripts/dashboard_browser_check.mjs` failed on the M66
+branch, a check I hadn't run locally: Home's redesigned checklist had
+dropped its `progressbar`, the model step's button is now "Choose a
+brain", and on a phone the Setup pages' tabs were 38 px high and the
+Models page's "model id" field shrank to 35 px.
+
+**What changed.** The checklist has its segmented progress bar again
+(under the heading); `.subtabs a` is at least `--tap` high; a growing
+input in a `.row` keeps 12ch before the row wraps; the check clicks
+"Choose a brain".
+
+**Checks.** The browser check, 27 of 27, against a fresh build; the
+dashboard tests; `tests_e2e/setup_wizard.py` (as a regular user; as root,
+setup writes to `/var/lib/ferrule`, as before) and `tests_e2e/hidden_keys.py`.
+
+### 2026-11-04 — Gemini plan: a `config_dir` check that holds on macOS and Windows (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** CI on macOS and Windows failed
+`a_config_dir_holding_the_data_folder_is_refused`: the data folder was
+resolved (macOS's `/var` → `/private/var`, Windows' `\\?\` form) but a
+folder in it that didn't exist yet wasn't, so `private/x` didn't compare
+as inside it and was let through.
+
+**What changed.** A path that doesn't exist has its deepest existing part
+resolved and the rest added back. A new unix test reaches the data
+folder through a symlink.
+
+**Checks.** `subscription::gemini` tests; clippy on `ferrule-cli`.
+macOS also failed `gateway::tests::status_is_answered_while_the_chats_turn_hangs`
+once (the `/status` came 30 ms after the turn, before it reached the
+model); nothing on the branch changes that path, so it's left to the
+rerun.

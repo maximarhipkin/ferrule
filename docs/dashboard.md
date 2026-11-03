@@ -394,6 +394,64 @@ a height (36 px with a mouse, 44 px on a phone), and a row's rarer
 actions sit behind **⋯**. The design and its numbers are in
 [m49-dashboard-polish.md](m49-dashboard-polish.md).
 
+## Seeing and steering the agent (M66)
+
+What the page reads and changes for the Control, Chat, Instructions and
+Sessions views. Every write is audited, as the page's other writes are;
+none of these is a chat op, so the agent's admin tool can't call them.
+
+- **A turn's steps** (`GET /api/turn?session=<id>`, or `?lane=dashboard`
+  for the page's own chat): each model call, tool call, check, retry,
+  fallback and escalation of the running turn, with its status and time,
+  the turn's tokens when the model reported them, and after the reply the
+  last turn's steps (`last: true`). A turn keeps its latest 80 steps and
+  counts the ones it dropped.
+- **Control** (`GET /api/control`): the kill switch and its reason, the
+  autonomy mode, the caps as Usage shows them, the count of standing
+  approvals, the send gate, the approval timeout, the owner's chat, and
+  how many turns run and questions wait. Changes stay on the routes that
+  make them (`kill/on`, `sandbox/mode`, `settings/caps`, `grants/revoke`).
+- **Approvals** say a gated call's kind and tool, and whether **Allow for
+  this run** and **Always here** are offered; the page answers with the
+  same reach (`scope`: `once`, `run`, `here`) the chat's buttons send, and
+  refuses one the question doesn't offer.
+- **Plans** (plan mode): Approve answers the question a chat's `/plan` is
+  waiting on, so its run goes on as on a `yes` in that chat; a plan nobody
+  is asked about runs as `ferrule plan approve <id>`, after a confirm.
+  Reject does what `ferrule plan reject` does.
+- **Sessions** lists the newest 50 conversations on disk. A goal loop the
+  budget cut short resumes from here as `ferrule run --resume <id>`, a run
+  the page follows (up to two hours; a gated command in it is refused, as
+  there's no terminal to ask).
+- **Instructions** shows AGENTS.md, CLAUDE.md, GEMINI.md and ferrule.md
+  beside the config and in the workspace, which one of each folder is
+  read, and saves one (64 KB at most, written whole or not at all). A
+  file that holds a key or token is neither shown nor saved from the page,
+  a save with one in it is refused, a file changed since the page read it
+  is refused (reload first), and from a login older than 10 minutes the
+  save asks in your chat first, as a key change does. New conversations
+  read it; running ones keep the prompt they started with.
+- **Extensions inbox** lists install requests and what the scan
+  suspended, with the scan's findings, and denies a request. Approving
+  one stays at the terminal (`ferrule extensions approve <id>`): it
+  fetches and scans the extension there and shows what the scan found
+  before asking.
+- **Chat**: **New conversation** is `/new` for the page's chat, and `/`
+  lists the commands the page's chat answers (`GET /api/commands`, from
+  the commands' one list): every owner command but `/dashboard` and
+  `/connect`, `/connections`, `/disconnect` (Connections does those). The
+  page's chat counts as the owner's own chat, as it did for answers: a
+  `/plan` typed there asks its question there, and a plan's, a goal's or
+  a graph's report comes back there. A gated command in one of its turns,
+  or in a goal loop started there, is asked there too (**Allow**, **Allow
+  for this run**, **Always here** where offered, **Refuse**), and is in the
+  approvals list; a key change's confirmation still goes to your chat app.
+  A reply sent whole keeps its id, as a streamed one does, for its 👍/👎.
+- **Routing** (`GET /api/routing`) also lists what each chat and task
+  needed (`scopes`) and the last escalations with their reason
+  (`recent`); **Reset** (`POST /api/routing/reset {scope}`) starts a
+  scope on its floor again ([routing.md](routing.md#remembering-m66)).
+
 ## Several instances
 
 Each [named instance](instances.md) has its own dashboard, opened with
@@ -406,8 +464,10 @@ refuses `--instance`.
 
 Keys, tokens, the relay key, secrets-file values, the heartbeat URL's
 path, URL paths in log lines, and message bodies beyond a redacted
-80-character preview of a running turn. Every response also passes through
-the same redactor as `/status`.
+80-character preview of a running turn and a 120-character one of each
+conversation's first message (Sessions). A turn's steps name each tool and
+the one argument the `activity` line shows, never a tool's output. Every
+response also passes through the same redactor as `/status`.
 
 ## Model prices from the command line
 

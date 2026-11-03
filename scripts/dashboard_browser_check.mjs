@@ -262,7 +262,7 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
       h.load = async function (health) { this.last = { h: health, approvals: [], setup: { done: false, steps } }; this.draw(); };
       window.__realLoad = real;
       await h.load((await window.ferrule.api("/api/health")));`);
-    if (!(await click("#main .steps", "Set up"))) throw new Error("no Set up button");
+    if (!(await click("#main .steps", "Choose a brain"))) throw new Error("no Choose a brain button");
     await until("a provider form in the panel", () => js(`return document.querySelectorAll("dialog.connect[open] .card").length > 0`), 15).catch(async (e) => {
       throw new Error(e.message + "; the panel: " + (await js(`const p = document.querySelector("dialog.connect"); return p ? p.outerHTML.slice(0, 300) : "none"`)));
     });

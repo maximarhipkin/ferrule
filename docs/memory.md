@@ -19,10 +19,20 @@ them `profile` or `preference` (M56.4).
 
 - **They don't fade.** Every other fact's recall score halves every 7
   days, so a fact from two months ago ranks far below one from today.
-  A fact tagged `profile` or `preference` keeps its full score.
+  A fact tagged `profile` or `preference` keeps its full score, and so
+  does one you pin on the dashboard's Memory page, which also counts
+  twice against its peers. The page shows how often each fact was
+  recalled into a prompt and who wrote it, and lists the stale ones
+  (over 30 days, never recalled); see
+  [m16-learning-loop.md](m16-learning-loop.md) §13, "Memory upkeep".
 - **They're in every session.** Up to 10 of them (newest first) open the
   session's memory block, whatever the session is about, then the facts
   that match the goal, then the newest ones.
+- **Failure notes come only when they match.** A fact tagged
+  `failure-note` (what a run that ended unfinished said, kept by the
+  learning loop: [m16-learning-loop.md](m16-learning-loop.md) §13) is
+  never one of the newest facts that fill the block, only one a message
+  matches, and only for 7 days.
 - **A long chat keeps recalling.** A chat lane is one session for many
   messages, and the block is picked from its first message. Each later
   message you send runs one more keyword search (no embedding call), and

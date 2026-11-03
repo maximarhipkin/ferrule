@@ -41,6 +41,48 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// want things done. Every other fact's score halves every 7 days.
 pub const DURABLE_TAGS: &[&str] = &["profile", "preference"];
 
+/// The learning loop's failure notes (`docs/m16-learning-loop.md`,
+/// "Failure notes"): what a run that ended not done said about it. A note
+/// is recalled only when a message matches it, never as one of the newest
+/// facts, and only for [`NOTE_DAYS`] days; it stays in the store (the
+/// dashboard's Memory page lists and forgets it) until then and after.
+pub const FAILURE_NOTE: &str = "failure-note";
+/// A fact the owner wrote (`ferrule memory add`, the memory page).
+pub const OWNER: &str = "owner";
+
+/// How long a failure note is recalled.
+pub const NOTE_DAYS: i64 = 7;
+/// Rows past the 5 newest the session-start block looks at, so failure
+/// notes left out don't leave it short.
+const RECENT_NOTES: usize = 5;
+
+/// Whether `m` is a failure note recall no longer shows at `now`.
+fn faded(m: &Memory, now: i64) -> bool {
+    is_note(m) && !m.pinned && now - m.created_at > NOTE_DAYS * 86_400
+}
+
+/// The columns [`row_to_memory`] reads, in its order.
+const ROW: &str =
+    "id, content, tags, created_at, superseded_by, recall_count, last_recalled_at, pinned, source";
+/// [`ROW`] of the `m` alias.
+const M_ROW: &str = "m.id, m.content, m.tags, m.created_at, m.superseded_by, m.recall_count, m.last_recalled_at, m.pinned, m.source";
+
+/// A pinned fact's score counts this many times over its peers'.
+pub const PIN_BOOST: f64 = 2.0;
+
+fn boost(c: &Candidate) -> f64 {
+    if c.pinned {
+        PIN_BOOST
+    } else {
+        1.0
+    }
+}
+
+/// Whether `m` is a failure note.
+pub fn is_note(m: &Memory) -> bool {
+    m.tags.iter().any(|t| t == FAILURE_NOTE)
+}
+
 /// The most profile facts the session-start block carries, whatever the
 /// goal.
 const PROFILE_FACTS: usize = 10;
@@ -64,6 +106,15 @@ pub struct Memory {
     pub score: f64,
     /// The row that replaced this one; `None` while the fact is live.
     pub superseded_by: Option<i64>,
+    /// How many times recall put it in a prompt ([`MemoryStore::mark_recalled`]).
+    pub recalls: u64,
+    /// When it last did, Unix seconds.
+    pub last_recalled: Option<i64>,
+    /// The owner pinned it: it never fades and outranks its peers.
+    pub pinned: bool,
+    /// Who wrote it (`owner`, `agent`, `failure-note`, `learned`, …);
+    /// `None` for a fact from before sources were kept.
+    pub source: Option<String>,
 }
 
 /// What [`MemoryStore::insert`] did with a fact.
@@ -143,15 +194,17 @@ impl MemoryStore {
             migrate(&conn)?;
         }
         ensure_vector_column(&conn)?;
+        ensure_use_columns(&conn)?;
         Ok(Self { conn })
     }
 
     /// Plain insert, no decision: the pre-M15 behaviour, kept for callers
-    /// that want every call to be a new row.
+    /// that want every call to be a new row (`ferrule memory add`: the
+    /// owner's, so its source is [`OWNER`]).
     pub fn remember(&self, content: &str, tags: &[&str]) -> Result<i64, MemoryError> {
         self.conn.execute(
-            "INSERT INTO memories (content, tags, created_at) VALUES (?1, ?2, ?3)",
-            params![content, tags.join(","), now_secs()],
+            "INSERT INTO memories (content, tags, created_at, source) VALUES (?1, ?2, ?3, ?4)",
+            params![content, tags.join(","), now_secs(), OWNER],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -166,6 +219,18 @@ impl MemoryStore {
         content: &str,
         tags: &[&str],
         replaces: &[i64],
+    ) -> Result<Inserted, MemoryError> {
+        self.insert_from(content, tags, replaces, None)
+    }
+
+    /// [`MemoryStore::insert`], saying who wrote it (`owner`, `agent`,
+    /// `failure-note`, `learned`, …) on the row it makes.
+    pub fn insert_from(
+        &self,
+        content: &str,
+        tags: &[&str],
+        replaces: &[i64],
+        source: Option<&str>,
     ) -> Result<Inserted, MemoryError> {
         let content = content.trim();
         if content.is_empty() {
@@ -248,8 +313,8 @@ impl MemoryStore {
             tags.iter().map(|t| t.to_string()).collect()
         };
         self.conn.execute(
-            "INSERT INTO memories (content, tags, created_at) VALUES (?1, ?2, ?3)",
-            params![content, tags.join(","), now_secs()],
+            "INSERT INTO memories (content, tags, created_at, source) VALUES (?1, ?2, ?3, ?4)",
+            params![content, tags.join(","), now_secs(), source],
         )?;
         let id = self.conn.last_insert_rowid();
         self.mark_superseded(&replaces, id)?;
@@ -282,10 +347,10 @@ impl MemoryStore {
         let Some(first) = tags.first() else {
             return Ok(Vec::new());
         };
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, tags, created_at, superseded_by FROM memories
-             WHERE superseded_by IS NULL AND instr(tags, ?1) > 0 ORDER BY id",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ROW} FROM memories
+                 WHERE superseded_by IS NULL AND instr(tags, ?1) > 0 ORDER BY id"
+        ))?;
         let rows = stmt.query_map(params![first], row_to_memory)?;
         let mut out = Vec::new();
         for m in rows {
@@ -294,6 +359,126 @@ impl MemoryStore {
                 out.push(m);
             }
         }
+        Ok(out)
+    }
+
+    /// Recall put `ids` in a prompt: each one's count goes up and its time
+    /// is now. The page's own list and search don't count.
+    pub fn mark_recalled(&self, ids: &[i64]) -> Result<(), MemoryError> {
+        let now = now_secs();
+        for id in ids {
+            self.conn.execute(
+                "UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Pins or unpins live fact `id`; `false` when there's no such fact.
+    pub fn set_pinned(&self, id: i64, pinned: bool) -> Result<bool, MemoryError> {
+        let n = self.conn.execute(
+            "UPDATE memories SET pinned = ?1 WHERE id = ?2 AND superseded_by IS NULL",
+            params![i64::from(pinned), id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// The owner's edit of live fact `id`: the new text replaces it (the
+    /// old one stays as history, as M15's UPDATE keeps it), with its tags,
+    /// its pin and its use counts; `source` is who edited it.
+    pub fn edit(&self, id: i64, content: &str, source: &str) -> Result<Inserted, MemoryError> {
+        let old = match self.get(id)? {
+            Some(m) if m.superseded_by.is_none() => m,
+            Some(_) => {
+                let head = self.head(id)?.unwrap_or(id);
+                return Err(MemoryError::Refused(format!(
+                    "#{id} was already replaced by #{head}: edit #{head} instead"
+                )));
+            }
+            None => return Err(MemoryError::Refused(format!("there is no memory #{id}"))),
+        };
+        let tags: Vec<&str> = old.tags.iter().map(String::as_str).collect();
+        let ins = self.insert_from(content, &tags, &[id], Some(source))?;
+        if ins.id != id {
+            self.conn.execute(
+                "UPDATE memories SET pinned = ?1, recall_count = recall_count + ?2,
+                 last_recalled_at = COALESCE(last_recalled_at, ?3) WHERE id = ?4",
+                params![
+                    i64::from(old.pinned),
+                    old.recalls as i64,
+                    old.last_recalled,
+                    ins.id
+                ],
+            )?;
+        }
+        Ok(ins)
+    }
+
+    /// Live facts older than `days` that recall never put in a prompt,
+    /// oldest first, at most `limit`: the memory page's "stale" view.
+    /// Pinned ones aren't stale.
+    pub fn stale(&self, days: i64, limit: usize) -> Result<Vec<Memory>, MemoryError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ROW} FROM memories
+             WHERE superseded_by IS NULL AND recall_count = 0 AND pinned = 0
+               AND created_at < ?1
+             ORDER BY id LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(
+            params![now_secs() - days * 86_400, limit as i64],
+            row_to_memory,
+        )?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Upkeep without a model: live facts that read the same once case,
+    /// spacing and a trailing stop are set aside are one fact. The newest
+    /// of each such set stays; the others become its history (M15's
+    /// UPDATE: `superseded_by`, reversible with
+    /// [`MemoryStore::undo_update`]), and it takes their pins and use
+    /// counts. Returns (kept, replaced) per set. Facts that only resemble
+    /// each other need judgment, a model call: the learning pass's merge.
+    pub fn merge_duplicates(&self) -> Result<Vec<(i64, Vec<i64>)>, MemoryError> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ROW} FROM memories WHERE superseded_by IS NULL ORDER BY id DESC"
+        ))?;
+        let live: Vec<Memory> = stmt
+            .query_map([], row_to_memory)?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let mut groups: std::collections::HashMap<(String, String), Vec<&Memory>> =
+            std::collections::HashMap::new();
+        for m in &live {
+            let mut tags = m.tags.clone();
+            tags.sort();
+            groups
+                .entry((normalize(&m.content), tags.join(",")))
+                .or_default()
+                .push(m);
+        }
+        let mut out = Vec::new();
+        for set in groups.values().filter(|g| g.len() > 1) {
+            // Newest first: the first stays.
+            let keep = set[0];
+            let rest: Vec<i64> = set[1..].iter().map(|m| m.id).collect();
+            self.mark_superseded(&rest, keep.id)?;
+            let pinned = set.iter().any(|m| m.pinned);
+            let recalls: u64 = set[1..].iter().map(|m| m.recalls).sum();
+            let last = set.iter().filter_map(|m| m.last_recalled).max();
+            self.conn.execute(
+                "UPDATE memories SET pinned = ?1, recall_count = recall_count + ?2,
+                 last_recalled_at = ?3 WHERE id = ?4",
+                params![i64::from(pinned), recalls as i64, last, keep.id],
+            )?;
+            out.push((keep.id, rest));
+        }
+        tx.commit()?;
+        out.sort();
         Ok(out)
     }
 
@@ -320,9 +505,9 @@ impl MemoryStore {
 
     /// One row by id, live or not.
     pub fn get(&self, id: i64) -> Result<Option<Memory>, MemoryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, tags, created_at, superseded_by FROM memories WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {ROW} FROM memories WHERE id = ?1"))?;
         let mut rows = stmt.query_map(params![id], row_to_memory)?;
         Ok(rows.next().transpose()?)
     }
@@ -356,12 +541,12 @@ impl MemoryStore {
         if query.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT m.id, m.content, m.tags, m.created_at, m.superseded_by
-             FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
-             WHERE memories_fts MATCH ?1 AND m.superseded_by IS NULL
-             ORDER BY bm25(memories_fts) LIMIT 20",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {M_ROW}
+                 FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
+                 WHERE memories_fts MATCH ?1 AND m.superseded_by IS NULL
+                 ORDER BY bm25(memories_fts) LIMIT 20"
+        ))?;
         let rows = stmt.query_map(params![query], row_to_memory)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -379,7 +564,15 @@ impl MemoryStore {
         let scored = self
             .bm25_candidates(query, limit * 5 + 20)?
             .into_iter()
-            .map(|c| (c.id, c.created_at, c.superseded_by, -c.rank, c.durable))
+            .map(|c| {
+                (
+                    c.id,
+                    c.created_at,
+                    c.superseded_by,
+                    -c.rank * boost(&c),
+                    c.durable,
+                )
+            })
             .collect();
         self.rank_heads(scored, limit)
     }
@@ -392,7 +585,7 @@ impl MemoryStore {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT m.id, m.created_at, m.superseded_by, bm25(memories_fts) AS rank, m.tags
+            "SELECT m.id, m.created_at, m.superseded_by, bm25(memories_fts) AS rank, m.tags, m.pinned
              FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
              WHERE memories_fts MATCH ?1
              ORDER BY rank LIMIT ?2",
@@ -403,7 +596,8 @@ impl MemoryStore {
                 created_at: row.get(1)?,
                 superseded_by: row.get(2)?,
                 rank: row.get(3)?,
-                durable: durable(&row.get::<_, String>(4)?),
+                durable: durable(&row.get::<_, String>(4)?) || row.get::<_, i64>(5)? != 0,
+                pinned: row.get::<_, i64>(5)? != 0,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -438,11 +632,17 @@ impl MemoryStore {
             }
         }
         best.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        best.truncate(limit);
 
-        let mut out = Vec::with_capacity(best.len());
+        let mut out = Vec::with_capacity(limit.min(best.len()));
         for (id, score) in best {
+            if out.len() == limit {
+                break;
+            }
             if let Some(mut m) = self.get(id)? {
+                // A failure note older than a week is no longer recalled.
+                if faded(&m, now as i64) {
+                    continue;
+                }
                 m.score = score;
                 out.push(m);
             }
@@ -452,10 +652,10 @@ impl MemoryStore {
 
     /// Most recent live memories, for session-start context assembly.
     pub fn recent(&self, limit: usize) -> Result<Vec<Memory>, MemoryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, tags, created_at, superseded_by FROM memories
-             WHERE superseded_by IS NULL ORDER BY id DESC LIMIT ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ROW} FROM memories
+                 WHERE superseded_by IS NULL ORDER BY id DESC LIMIT ?1"
+        ))?;
         let rows = stmt.query_map(params![limit as i64], row_to_memory)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -493,9 +693,11 @@ impl MemoryStore {
     /// newest first: the owner's profile (M56.4).
     pub fn profile(&self, limit: usize) -> Result<Vec<Memory>, MemoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, tags, created_at, superseded_by FROM memories
-             WHERE superseded_by IS NULL AND (instr(tags, 'profile') > 0 OR instr(tags, 'preference') > 0)
-             ORDER BY id DESC",
+            &format!(
+                "SELECT {ROW} FROM memories
+                 WHERE superseded_by IS NULL AND (instr(tags, 'profile') > 0 OR instr(tags, 'preference') > 0)
+                 ORDER BY id DESC"
+            ),
         )?;
         let rows = stmt.query_map([], row_to_memory)?;
         let mut out = Vec::new();
@@ -549,8 +751,11 @@ impl MemoryStore {
                 push(&m);
             }
         }
-        for m in self.recent(5)? {
-            push(&m);
+        // The newest facts fill the budget; a failure note only comes when
+        // the goal matches it.
+        let newest = self.recent(5 + RECENT_NOTES)?;
+        for m in newest.iter().filter(|m| !is_note(m)).take(5) {
+            push(m);
         }
         Ok(parts.join("\n"))
     }
@@ -778,8 +983,10 @@ struct Candidate {
     superseded_by: Option<i64>,
     /// bm25 for a keyword match, cosine for a vector match.
     rank: f64,
-    /// Tagged with a [`DURABLE_TAGS`] tag: no time decay.
+    /// Tagged with a [`DURABLE_TAGS`] tag, or pinned: no time decay.
     durable: bool,
+    /// Pinned by the owner: its score counts [`PIN_BOOST`] times.
+    pinned: bool,
 }
 
 /// `(id, created_at, superseded_by, score before decay, durable)`.
@@ -861,7 +1068,7 @@ impl MemoryStore {
         n: usize,
     ) -> Result<Vec<Candidate>, MemoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, superseded_by, embedding, tags FROM memories
+            "SELECT id, created_at, superseded_by, embedding, tags, pinned FROM memories
              WHERE embedding_model = ?1 AND embedding IS NOT NULL",
         )?;
         let mut rows = stmt.query(params![query.model])?;
@@ -877,7 +1084,8 @@ impl MemoryStore {
                     created_at: row.get(1)?,
                     superseded_by: row.get(2)?,
                     rank: f64::from(cos),
-                    durable: durable(&row.get::<_, String>(4)?),
+                    durable: durable(&row.get::<_, String>(4)?) || row.get::<_, i64>(5)? != 0,
+                    pinned: row.get::<_, i64>(5)? != 0,
                 });
             }
         }
@@ -918,8 +1126,14 @@ impl MemoryStore {
         // id → (created_at, superseded_by, keyword part + vector part, durable)
         let mut merged: Vec<Scored> = Vec::new();
         let mut add = |c: &Candidate, part: f64| match merged.iter_mut().find(|m| m.0 == c.id) {
-            Some(m) => m.3 += part,
-            None => merged.push((c.id, c.created_at, c.superseded_by, part, c.durable)),
+            Some(m) => m.3 += part * boost(c),
+            None => merged.push((
+                c.id,
+                c.created_at,
+                c.superseded_by,
+                part * boost(c),
+                c.durable,
+            )),
         };
         match hybrid.merge {
             Merge::Weighted { vector_weight } => {
@@ -1051,6 +1265,36 @@ fn ensure_vector_column(conn: &Connection) -> Result<(), MemoryError> {
     Ok(())
 }
 
+/// The memory page's columns: use counts, the pin, who wrote it. Added in
+/// place when missing, without a schema version: an older ferrule opens
+/// the file still (it never names them, and they have defaults).
+fn ensure_use_columns(conn: &Connection) -> Result<(), MemoryError> {
+    let cols = |conn: &Connection| -> Result<Vec<String>, MemoryError> {
+        let mut stmt = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    };
+    const WANT: &[(&str, &str)] = &[
+        ("recall_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_recalled_at", "INTEGER"),
+        ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+        ("source", "TEXT"),
+    ];
+    let have = cols(conn)?;
+    if WANT.iter().all(|(c, _)| have.iter().any(|h| h == c)) {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let have = cols(conn)?;
+    for (col, kind) in WANT {
+        if !have.iter().any(|h| h == col) {
+            conn.execute_batch(&format!("ALTER TABLE memories ADD COLUMN {col} {kind};"))?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// 0 → 1: the `superseded_by` / `superseded_at` columns, their index and an
 /// update trigger for FTS. Idempotent, and serialized across processes by
 /// `BEGIN IMMEDIATE`.
@@ -1095,6 +1339,10 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         created_at: row.get(3)?,
         score: 0.0,
         superseded_by: row.get(4)?,
+        recalls: row.get::<_, i64>(5)?.max(0) as u64,
+        last_recalled: row.get(6)?,
+        pinned: row.get::<_, i64>(7)? != 0,
+        source: row.get(8)?,
     })
 }
 

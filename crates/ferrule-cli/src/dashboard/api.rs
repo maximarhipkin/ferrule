@@ -78,6 +78,24 @@ pub(super) fn confirmed(body: &Value, question: String) -> Result<(), Answer> {
     }
 }
 
+/// M66: an id a child `ferrule` is given: letters, digits, `-` and `_`,
+/// never a leading `-` (it would read as a flag).
+pub(super) fn child_id(id: &str) -> bool {
+    (1..=200).contains(&id.len())
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Whether a run labelled `label` started from the page is still going.
+pub(super) fn still_running(ctx: &Ctx, label: &str) -> bool {
+    ctx.runs
+        .list()
+        .iter()
+        .any(|r| r["label"] == label && r["done"] == false)
+}
+
 pub(crate) fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
     body.get(key)
         .and_then(Value::as_str)
@@ -117,6 +135,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "models/choices" => super::models_page::choices(ctx),
             "models/provider/list" => super::models_page::provider_list(ctx, req).await,
             "plans/chatgpt/poll" => super::models_page::chatgpt_poll(ctx),
+            "plans/gemini/poll" => super::models_page::gemini_poll(ctx),
             "routing" => routing(ctx, req),
             "catalog" => catalog_list(ctx, req).await,
             "recommend" => recommend(ctx).await,
@@ -133,6 +152,14 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "console/parity" => super::console::parity(),
             "chat" => super::chat::view(ctx, req),
             "approvals" => super::chat::approvals(ctx),
+            // M66: the Control page, and a turn's steps.
+            "control" => super::control::view(ctx),
+            "turn" => super::turn::view(ctx, req),
+            "commands" => super::chat::commands(),
+            "plans" => super::plans::list(ctx),
+            "sessions" => super::sessions::list(ctx),
+            "instructions" => super::instructions::list(ctx),
+            "extensions/pending" => super::ext_inbox::pending(ctx),
             "grants" => grants_view(),
             "config" => super::config_page::get(ctx),
             "config/versions" => super::config_page::versions_view(ctx),
@@ -141,6 +168,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "memory" => super::memory::list(ctx, req).await,
             "backups" => super::backup_page::list(ctx),
             "proactive" => super::proactive_page::view(ctx),
+            // The learning page (learn_page.rs).
+            "learn" => super::learn_page::view(ctx),
             "files" => super::files_page::list(ctx, req),
             "files/upload" => super::files_page::upload_status(ctx, req),
             _ => None,
@@ -189,9 +218,16 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
             None => super::models_page::chatgpt_start(ctx).await,
         },
         "plans/chatgpt/cancel" => super::models_page::chatgpt_cancel(ctx),
+        "plans/gemini/start" => match crate::managed::kind_refusal("gemini-cli", "gemini-cli") {
+            Some(why) => bad(403, why),
+            None => super::models_page::gemini_start(ctx).await,
+        },
+        "plans/gemini/complete" => super::models_page::gemini_complete(ctx, body).await,
+        "plans/gemini/cancel" => super::models_page::gemini_cancel(ctx),
         "plans/claude" if crate::managed::on() => bad(403, crate::managed::NO_CLAUDE_PLAN),
         "plans/claude" => super::models_page::claude_token(ctx, body),
         "routing/set" | "routing/unset" => routing_op(ctx, path, body),
+        "routing/reset" => routing_reset(ctx, body),
         "catalog/add" => catalog_add(ctx, body).await,
         "catalog/fill-prices" => fill_prices(ctx).await,
         // An MCP address is a server the owner adds: managed mode's
@@ -231,11 +267,27 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "doctor/run" => doctor_run(ctx, body),
         "console/run" => super::console::run(ctx, body),
         "console/cancel" => super::console::cancel(ctx, body),
+        // The learning page (learn_page.rs) and the owner's 👍/👎 on a reply
+        // in the page's chat (feedback.rs). No chat op maps to these.
+        p if p.starts_with("learn/") => super::learn_page::post(ctx, p, body).await,
+        "chat/react" => super::feedback::react(ctx, body),
         "chat/send" => super::chat::send(ctx, body).await,
         "chat/photo" => super::chat::photo(ctx, body).await,
+        // M66: `/new` for the page's chat, from its own button.
+        "chat/new" => super::chat::new_conversation(ctx).await,
+        // M66: plan mode's plans, goal loops, the standing instructions,
+        // sub-agents and the extensions inbox. No chat op maps to these.
+        "plans/approve" => super::plans::approve(ctx, body),
+        "plans/reject" => super::plans::reject(ctx, body),
+        "sessions/resume" => super::sessions::resume(ctx, body),
+        "instructions/save" => super::instructions::save(ctx, body),
+        "agents/close" => agents_close(ctx, body).await,
+        "extensions/deny" => super::ext_inbox::deny(ctx, body),
         "backup" => super::backup_page::start(ctx),
         "backups/delete" => super::backup_page::delete(ctx, body),
         "memory/forget" => super::memory::forget(ctx, body).await,
+        // The memory page's upkeep (memory.rs): add, edit, pin.
+        "memory/add" | "memory/edit" | "memory/pin" => super::memory::post(ctx, path, body).await,
         "tasks/preview" => task_preview(body),
         "tasks/add" => task_add(ctx, body).await,
         "approvals/answer" => super::chat::answer(ctx, body),
@@ -343,6 +395,9 @@ pub fn health(ctx: &Ctx) -> Value {
                     "queued": l.queued,
                     "text": clip(&ctx.redactor.redact(&l.text), 80),
                     "stuck": stuck,
+                    // M66: `GET /api/turn?session=` has the steps themselves.
+                    "steps_n": if l.steps_last { 0 } else { l.steps.len() + l.steps_dropped },
+                    "resumable": l.resumable,
                 })
             })
             .collect();
@@ -573,7 +628,7 @@ pub(crate) fn url_host(url: &str) -> String {
 }
 
 /// Every `http(s)://host/path?query` in `text` as `http(s)://host/…`.
-fn url_paths_hidden(text: &str) -> String {
+pub(super) fn url_paths_hidden(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = ["http://", "https://"]
@@ -601,7 +656,7 @@ fn url_paths_hidden(text: &str) -> String {
     out
 }
 
-fn spend(hub: &ferrule_trust::Hub, problems: &mut Vec<Value>) -> Value {
+pub(super) fn spend(hub: &ferrule_trust::Hub, problems: &mut Vec<Value>) -> Value {
     let c = hub.config();
     let (day, _) = match hub.today(None) {
         Ok(v) => v,
@@ -769,7 +824,14 @@ fn kill(ctx: &Ctx, on: bool, body: &Value) -> Answer {
             .and_then(Value::as_str)
             .map(|r| clip(r, 200));
         match hub.engage(&by(), reason) {
-            Ok(_) => ok(json!({ "ok": true, "said": "The kill switch is on." })),
+            Ok(info) => ok(json!({
+                "ok": true,
+                "said": match &info.reason {
+                    Some(why) => format!("The kill switch is on ({why})."),
+                    None => "The kill switch is on.".to_string(),
+                },
+                "reason": info.reason,
+            })),
             Err(e) => bad(500, e),
         }
     } else {
@@ -1598,12 +1660,29 @@ fn routing(ctx: &Ctx, req: &Request) -> Answer {
         .and_then(|d| crate::ledger::read_records(&d.join("ledger.jsonl"), Some(since)).ok())
         .map(|(rows, _)| routing_admin::stats(&rows))
         .unwrap_or_default();
+    // M66: what each chat and task needed, and why each recent turn moved.
+    let (scopes, recent) = m.routing_memory_view();
     ok(json!({
         "routing": m.view().routing,
         "days": days,
         "stats": stats,
         "suggestion": routing_admin::suggest(&m.catalog(), &[], None),
+        "scopes": scopes,
+        "recent": recent,
     }))
+}
+
+/// M66: `POST /api/routing/reset {scope}`: the scope's turns start on
+/// their floor again, counting anew.
+fn routing_reset(ctx: &Ctx, body: &Value) -> Answer {
+    let Some(m) = &ctx.models else {
+        return missing("the models");
+    };
+    let scope = need!(arg(body, "scope"));
+    match m.reset_routing_scope(scope, &by()) {
+        Ok(said) => ok(json!({ "ok": true, "said": said })),
+        Err(why) => bad(404, why),
+    }
 }
 
 fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
@@ -2442,6 +2521,46 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     match done {
         Ok(d) => ok(json!({ "ok": true, "said": d.said, "view": d.view })),
         Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
+/// `POST /api/agents/close {id}`: `ferrule agents close`, from the page:
+/// the agent and everything it started. In the gateway its own supervisor
+/// closes them, so one running here stops too.
+async fn agents_close(ctx: &Ctx, body: &Value) -> Answer {
+    let id = need!(arg(body, "id"));
+    let (Some(cfg), Some(data)) = (config(ctx), &ctx.data) else {
+        return missing("the config");
+    };
+    let path = data.join("agents.db");
+    let known = path.exists()
+        && ferrule_agents::AgentStore::open(path)
+            .and_then(|s| s.get(id))
+            .is_ok_and(|r| r.is_some());
+    if !known {
+        return bad(
+            404,
+            format!("There is no agent {id}; the Agents list shows the open ones."),
+        );
+    }
+    need!(confirmed(
+        body,
+        format!("Close agent {id} and every agent it started? A running one stops now.")
+    ));
+    match crate::agents::close_text(&cfg.agents, data, id, crate::agents::live()).await {
+        Ok(said) => {
+            if let Some(hub) = &ctx.hub {
+                hub.audit().record(
+                    chrono::Utc::now(),
+                    "dashboard.agents.close",
+                    None,
+                    None,
+                    json!({ "by": by(), "id": id, "said": said }),
+                );
+            }
+            ok(json!({ "ok": true, "said": said }))
+        }
+        Err(e) => bad(409, format!("{e:#}")),
     }
 }
 

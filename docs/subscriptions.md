@@ -1,4 +1,4 @@
-# Subscriptions: a ChatGPT plan or a Claude plan
+# Subscriptions: ChatGPT, Claude, or Gemini plans
 
 Ferrule can run on a plan you already pay for, instead of an API key:
 
@@ -9,6 +9,12 @@ Ferrule can run on a plan you already pay for, instead of an API key:
   by the unmodified `claude` binary (Claude Code). Ferrule never calls the
   Anthropic API with your plan. Some ferrule features work differently
   (table below).
+- **Gemini plan** (Google One AI Pro / Ultra, Gemini Code Assist, or Google's
+  Antigravity subscription): ferrule signs in to your Google account via
+  OAuth 2.0 PKCE (`ferrule login gemini` or the dashboard's **Models** page),
+  seals the token in `<data>/private/plans/gemini.json`, and calls Google's
+  Cloud Code backend directly from ferrule's own loop. No `agy` or `gemini`
+  binary is required on the server, and every ferrule feature works.
 
 A plan turn costs **$0** on the ledger. What it spends is the plan's usage
 window. The design and the reasons behind it are in
@@ -190,6 +196,60 @@ When the plan's usage limit is reached, the next model in `[models]
 fallback` answers, and the owner is told when the plan resets. With no
 fallback, that message is the answer. `ferrule status`, `/status`, doctor
 and the dashboard show each plan's windows and when they reset.
+
+## Gemini plan
+
+Ferrule doesn't ship a Google OAuth client. Put the client's id and
+secret in `private/secrets.env` (or export them) before signing in:
+
+```sh
+FERRULE_GEMINI_CLIENT_ID=...apps.googleusercontent.com
+FERRULE_GEMINI_CLIENT_SECRET=...
+```
+
+The gateway reads the file when it starts, so restart it after adding
+them. They aren't a tool key: don't add them with the Safe's **Add a
+key**, which would let the agent's commands send them to the hosts you
+name. Without them, `ferrule login gemini` and the **Models** page's
+Google sign-in say so and send nothing to Google, and an existing
+sign-in is kept: its refresh fails with the same sentence until the
+client is back.
+
+```sh
+ferrule login gemini            # a browser on this machine comes back to localhost
+ferrule login gemini --paste    # sign in anywhere, paste back the address it lands on
+```
+
+The dashboard's **Models** page does the same. The browser comes back to
+`http://localhost:<port>/auth/callback`; ferrule listens there on
+127.0.0.1, and on ::1 too where the machine has it, on port 51121, 8085
+or a free one. A visit that isn't this sign-in's reply (an older tab's
+link) gets a short page, and the wait goes on.
+
+After the sign-in, ferrule asks Google (`loadCodeAssist`) for the
+account's Cloud Code project and tier, and onboards a new account
+(`onboardUser`, waiting up to 45 s for it to finish). When Google gives no
+project, the sign-in is kept and says so; ferrule asks again 5 minutes
+later, then after a wait that doubles up to 6 hours, not before every
+request.
+
+What a failure says:
+
+- the plan's usage limit: which model, and when it resets (from Google's
+  reply); the next model in `[models] fallback` answers meanwhile;
+- a sign-in Google refuses even after a refresh: sign in again;
+- a 403: the account has no Gemini Code Assist / Antigravity tier the
+  plan can use;
+- a blocked prompt, or an answer stopped for safety or recitation: a
+  refusal, with Google's reason;
+- a stream that ends without a finish reason: cut off, and tried again.
+
+Ferrule speaks as the Antigravity client, version 1.4.12;
+`FERRULE_GEMINI_CLIENT_VERSION` sets another. `[plans.gemini_cli]
+binary` (empty by default) runs that CLI (`agy` or `gemini`) instead of
+the native client. `[plans.gemini_cli] config_dir` may not hold ferrule's
+data folder: the CLI is let into its config dir, and `private/` stays
+hidden from it either way.
 
 ## Status and doctor
 

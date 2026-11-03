@@ -15,6 +15,7 @@ use ferrule_gateway::{
     Attachment, Button, ButtonAction, Channel, ChannelCapabilities, GatewayError, InboundMessage,
     OutboundMessage,
 };
+use ferrule_trust::approval::Scope;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -360,13 +361,21 @@ pub fn approvals(ctx: &Ctx) -> Answer {
                 // What kind of question: the admin op's name, else empty.
                 "subject": w.op.as_deref().and_then(|o| o.split(':').next()).unwrap_or(""),
                 "op": w.op,
+                // M66: a gated call's kind and tool, and how far an Allow
+                // may reach: the chat's "Allow for this run" and "Always here".
+                "kind": w.kind,
+                "tool": w.tool,
+                "can_run": w.for_run,
+                "can_always": w.remember,
             })
         })
         .collect();
     ok(json!({ "approvals": list }))
 }
 
-/// `POST /api/approvals/answer {code, allow}`, as the chat's button would.
+/// `POST /api/approvals/answer {code, allow, scope?}`, as the chat's
+/// buttons would: `scope` is `once` (Allow, the default), `run` (Allow for
+/// this run) or `here` (Always here), each only where the question offers it.
 pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
     let code = match arg(body, "code") {
         Ok(c) => c,
@@ -374,6 +383,18 @@ pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
     };
     let Some(allow) = body.get("allow").and_then(Value::as_bool) else {
         return bad(400, "`allow` is missing");
+    };
+    let scope = match body.get("scope").and_then(Value::as_str) {
+        None | Some("") => Scope::Once,
+        Some(s) => match Scope::parse(s) {
+            Some(scope) => scope,
+            None => {
+                return bad(
+                    400,
+                    format!("`scope` is `once`, `run` or `here`, not `{s}`; nothing was answered."),
+                )
+            }
+        },
     };
     let Some(hub) = &ctx.hub else {
         return bad(404, "nothing is waiting");
@@ -390,11 +411,13 @@ pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
             "This question is answered in your chat, not on the page: that's what shows it's you.",
         );
     }
-    let Some(said) = hub
+    let said = match hub
         .approvals()
-        .decide(code, allow, "refused on the dashboard")
-    else {
-        return bad(404, "that question was already answered or withdrawn");
+        .decide_in(code, allow, scope, "refused on the dashboard")
+    {
+        None => return bad(404, "that question was already answered or withdrawn"),
+        Some(Err(why)) => return bad(400, why),
+        Some(Ok(said)) => said,
     };
     hub.audit().record(
         chrono::Utc::now(),
@@ -405,9 +428,59 @@ pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
         },
         None,
         None,
-        json!({ "by": super::api::by(), "code": code }),
+        // A refusal reaches no further than this one question.
+        json!({
+            "by": super::api::by(),
+            "code": code,
+            "scope": if allow { scope.as_str() } else { "once" },
+        }),
     );
     ok(json!({ "ok": true, "said": ctx.redactor.redact(&said) }))
+}
+
+/// M66: `POST /api/chat/new`: the page's chat starts a new conversation,
+/// as `/new` typed there would. The old one is saved; memory stays.
+pub async fn new_conversation(ctx: &Ctx) -> Answer {
+    let Some(router) = ctx.live.as_ref().and_then(|l| l.router.upgrade()) else {
+        return bad(
+            503,
+            "chat from the page works when the dashboard runs inside the gateway (the service)",
+        );
+    };
+    let said = match router.reset(&super::turn::dashboard_session()).await {
+        Ok(reset) => reset.text(),
+        Err(e) => {
+            return bad(
+                500,
+                format!(
+                    "I couldn't start a new conversation: {}",
+                    ctx.redactor.redact(&e.to_string())
+                ),
+            )
+        }
+    };
+    // As `/new`'s answer would, it shows in the chat itself.
+    if let Some(ch) = &ctx.chat {
+        ch.push(false, &said, Vec::new());
+    }
+    ok(json!({ "ok": true, "said": said }))
+}
+
+/// M66: `GET /api/commands`: the owner's slash commands this page's chat
+/// answers, from the commands' one list (`/help` and Telegram's menu read
+/// it too). The others are read only in a chat app.
+pub fn commands() -> Answer {
+    let list: Vec<Value> = crate::self_service::menu::in_page_chat()
+        .iter()
+        .map(|c| {
+            json!({
+                "cmd": format!("/{}", c.name),
+                "args": c.args.trim(),
+                "what": c.help,
+            })
+        })
+        .collect();
+    ok(json!({ "commands": list }))
 }
 
 fn button_json(b: &Button) -> Value {
@@ -450,13 +523,27 @@ impl Channel for DashboardChannel {
         Ok(Some(self.push(false, &msg.text, Vec::new()).to_string()))
     }
 
+    /// M66: a reply sent whole (streaming off) keeps its entry's id, as a
+    /// streamed one does, so 👍/👎 on it (`chat/react`) names that reply.
+    async fn send_with_id(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.post(msg).await
+    }
+
     async fn send_buttons(
         &self,
         msg: OutboundMessage,
         buttons: &[Button],
     ) -> Result<(), GatewayError> {
-        self.push(false, &msg.text, buttons.iter().map(button_json).collect());
-        Ok(())
+        self.send_buttons_with_id(msg, buttons).await.map(drop)
+    }
+
+    async fn send_buttons_with_id(
+        &self,
+        msg: OutboundMessage,
+        buttons: &[Button],
+    ) -> Result<Option<String>, GatewayError> {
+        let id = self.push(false, &msg.text, buttons.iter().map(button_json).collect());
+        Ok(Some(id.to_string()))
     }
 
     async fn edit(&self, _chat_id: &str, message_id: &str, text: &str) -> Result<(), GatewayError> {
@@ -545,6 +632,22 @@ mod tests {
         let all = ch.since(0);
         let e = all["entries"].as_array().unwrap();
         assert_eq!(e.len(), 3);
+        // M66: a reply sent whole, or with buttons, says which entry it is.
+        let whole = ch.send_with_id(out("whole")).await.unwrap().unwrap();
+        let asked = ch
+            .send_buttons_with_id(out("again?"), &[])
+            .await
+            .unwrap()
+            .unwrap();
+        let v = ch.since(0);
+        let ids: Vec<String> = v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].to_string())
+            .collect();
+        assert_eq!(ids[3..], [whole.clone(), asked.clone()]);
+        assert_ne!(whole, asked);
         assert_eq!(e[0]["who"], "you");
         assert_eq!(e[2]["buttons"][0]["send"], "yes k7");
         drop(rx);

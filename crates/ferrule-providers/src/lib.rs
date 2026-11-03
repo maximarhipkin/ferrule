@@ -11,6 +11,7 @@
 //! [`build`] is the one place a caller turns config into a driver.
 
 pub mod anthropic;
+pub mod cloudcode;
 pub mod codex;
 mod common;
 pub mod openai_compat;
@@ -20,6 +21,7 @@ mod stream_tests;
 pub mod vision;
 
 pub use anthropic::AnthropicProvider;
+pub use cloudcode::CloudCodeProvider;
 pub use codex::{CodexProvider, PlanAuth, PlanCredentials, RateLimits};
 pub use openai_compat::OpenAiCompatProvider;
 pub use responses::ResponsesProvider;

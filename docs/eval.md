@@ -399,6 +399,25 @@ ferrule eval run evals/starter --ablate verify --ablate stuck --tag verify
 run" compares `ablated` only with an earlier run that left out the same
 parts.
 
+### The weekly playbook eval (the learning page)
+
+`[learning] weekly_eval = true` (off by default) runs `--ablate playbook`
+every week (`eval_schedule`, default `43 4 * * 0`, in `[learning]
+timezone`), on the learning pass's model, capped by `eval_usd_cap`
+(default $1.00; 0 runs none) and a 2,000,000-token cap, and under your M19
+caps, gates and kill switch (as `owner_trust = true` does). Its tasks: each
+kept lesson whose pass had a check and came from a scheduled task still
+there, as one task (the task's prompt, a copy of the pass's workspace
+within the gate's 20,000 files / 200 MB, the check as both check and
+grader), written to `<data>/learn/weekly-eval/suite.toml`; with none, the
+starter suite's `smoke` tasks. The engineered arm gets the playbook's
+global lessons, the ablated arm doesn't. Each run is saved under
+`<data>/eval/<run id>/run.json` and one line in `<data>/learn/evals.jsonl`
+(pass rate with and without, tasks, spend); the learning page shows the
+last one and the trend (with − without). `POST /api/learn/eval` runs one
+now; it is refused, in words, with the cap at 0, a spent cap or the kill
+switch, an empty playbook, or one already running.
+
 ### The grader-leak tripwire (M58.5)
 
 The agent must never see how it's graded. One of Harness²'s rollouts

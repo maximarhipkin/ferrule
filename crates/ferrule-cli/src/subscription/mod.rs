@@ -4,6 +4,7 @@
 //! lines status and doctor print.
 
 pub mod claude;
+pub mod gemini;
 pub mod login;
 
 use crate::config::Plan;
@@ -75,10 +76,38 @@ pub async fn chatgpt_models(issuer: &str) -> Vec<String> {
 /// The Claude Code engine's model names (claude's own aliases).
 pub const CLAUDE_CODE_MODELS: &[&str] = &["sonnet", "opus", "haiku"];
 
+/// The Gemini / Antigravity plan's built-in model names (used before sign-in
+/// or when offline; once signed in, `gemini_models` fetches the live list).
+pub const GEMINI_CLI_MODELS: &[&str] = &[
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-4-argon-low",
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3-flash",
+    "gemini-2.5-pro",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
+    "claude-opus-5-5-medium",
+    "claude-opus-5-5-high",
+];
+
+/// Models on the Gemini / Antigravity plan: the account's live list when
+/// signed in (`v1internal:fetchAvailableModels`), else [`GEMINI_CLI_MODELS`].
+pub async fn gemini_models(issuer: &str) -> Vec<String> {
+    gemini::models(issuer).await
+}
+
 /// Setup's Claude plan choice. `false`: nothing was set up, so the caller
 /// can offer another way.
 pub async fn claude_setup_step(t: &mut crate::setup::Target) -> anyhow::Result<bool> {
     claude::setup_step(t).await
+}
+
+/// Setup's Gemini plan choice.
+pub async fn gemini_setup_step(t: &mut crate::setup::Target) -> anyhow::Result<bool> {
+    gemini::setup_step(t).await
 }
 
 /// The plan's models at the pinned Codex commit.
@@ -100,6 +129,7 @@ pub fn client(
             Err(e) => unavailable(name, format!("the ChatGPT plan: {e:#}")),
         },
         Plan::ClaudeCode => claude::client(name, model),
+        Plan::GeminiCli => gemini::client(name, base_url, model, options, issuer),
     }
 }
 
@@ -133,6 +163,7 @@ pub fn not_signed_in(plan: Plan) -> &'static str {
     match plan {
         Plan::Chatgpt => ferrule_plans::chatgpt::NOT_SIGNED_IN,
         Plan::ClaudeCode => "not signed in to the Claude plan: run `ferrule login claude`",
+        Plan::GeminiCli => "not signed in to the Gemini plan: run `ferrule login gemini`",
     }
 }
 
@@ -191,6 +222,7 @@ pub fn state(plan: Plan) -> SignIn {
             Err(e) => SignIn::Unreadable(format!("{e:#}")),
         },
         Plan::ClaudeCode => claude::state(),
+        Plan::GeminiCli => gemini::state(),
     }
 }
 
@@ -209,6 +241,7 @@ fn words(plan: Plan, state: SignIn) -> String {
             match plan {
                 Plan::Chatgpt => "send /login chatgpt",
                 Plan::ClaudeCode => "sign in again on the dashboard's Models page",
+                Plan::GeminiCli => "run `ferrule login gemini`",
             }
         ),
     }
@@ -240,6 +273,10 @@ pub fn status_lines_at(
         .map(|plan| {
             let signed = match plan {
                 Plan::Chatgpt => chatgpt_state_at(private),
+                Plan::GeminiCli => match gemini::state_at(private) {
+                    SignIn::Out => state(Plan::GeminiCli),
+                    other => other,
+                },
                 other => state(other),
             };
             let mut line = format!("{plan}: {}", words(plan, signed));

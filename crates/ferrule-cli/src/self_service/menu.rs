@@ -139,6 +139,21 @@ pub fn all(dashboard: bool) -> Vec<Command> {
         .collect()
 }
 
+/// M66: the commands the page's own chat answers: every owner command
+/// but those whose door reads only a chat app: `/dashboard` (the page is
+/// open already) and `/connect`, `/connections`, `/disconnect` (a sign-in's
+/// news goes to the chat apps; the Connections page does them here).
+pub fn in_page_chat() -> Vec<Command> {
+    let elsewhere: [&[&str]; 2] = [
+        crate::dashboard::door::DashboardDoor::HANDLES,
+        crate::connections::ConnectionsDoor::HANDLES,
+    ];
+    all(true)
+        .into_iter()
+        .filter(|c| !elsewhere.iter().any(|d| d.contains(&c.name)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +183,89 @@ mod tests {
         assert_eq!(in_menu.len(), 24);
         assert!(in_menu.contains(&"dashboard"), "/dashboard is in the menu");
         assert!(!all(false).iter().any(|c| c.name == "dashboard"));
+    }
+
+    #[tokio::test]
+    async fn the_page_chat_lists_what_its_doors_answer_there() {
+        use crate::trust::OwnerDoor;
+        let names: Vec<&str> = in_page_chat().iter().map(|c| c.name).collect();
+        for here in [
+            "new",
+            "status",
+            "help",
+            "stop",
+            "resume",
+            "plan",
+            "goal",
+            "graph",
+            "undo",
+            "model",
+            "update",
+            "restart",
+            "doctor",
+            "login",
+            "logout",
+            "skills",
+            "mcp",
+            "hooks",
+            "caps",
+            "commitments",
+            "proactive",
+        ] {
+            assert!(names.contains(&here), "/{here}: {names:?}");
+        }
+        for elsewhere in ["dashboard", "connect", "connections"] {
+            assert!(!names.contains(&elsewhere), "/{elsewhere}");
+        }
+        assert_eq!(names.len(), all(true).len() - 3);
+        let dir = tempfile::tempdir().unwrap();
+        let hub = std::sync::Arc::new(
+            ferrule_trust::Hub::new(
+                Default::default(),
+                dir.path(),
+                &dir.path().join("ledger.jsonl"),
+                std::sync::Arc::new(ferrule_trust::SystemClock),
+                vec![],
+            )
+            .unwrap(),
+        );
+        let door = OwnerDoor {
+            hub: hub.clone(),
+            plan: Some(std::sync::Arc::new(|chat, task| {
+                format!("planning {task} for {chat}")
+            })),
+            undo: Some(std::sync::Arc::new(|| "undone".to_string())),
+        };
+        let from = |chat: &str, text: &str| ferrule_gateway::InboundMessage {
+            channel: "dashboard".into(),
+            chat_id: chat.into(),
+            sender: "owner".into(),
+            sender_id: Some(chat.into()),
+            message_id: "1".into(),
+            text: text.into(),
+            attachments: vec![],
+            reply_to: None,
+            ts: 0,
+        };
+        use ferrule_gateway::Interceptor;
+        let said = |r: Option<String>| r.unwrap_or_default();
+        assert_eq!(
+            said(door.intercept(&from("owner", "/plan tidy up")).await),
+            "planning tidy up for dashboard chat owner"
+        );
+        assert_eq!(
+            said(door.intercept(&from("owner", "/undo")).await),
+            "undone"
+        );
+        assert!(said(door.intercept(&from("owner", "/stop")).await).starts_with("Stopped"));
+        assert!(hub.stopped().is_some());
+        assert_eq!(
+            said(door.intercept(&from("owner", "/resume")).await),
+            "Resumed: runs can start again."
+        );
+        // Only the owner's own page chat: no other chat on that channel.
+        assert!(door.intercept(&from("someone", "/stop")).await.is_none());
+        assert!(hub.stopped().is_none());
     }
 
     #[test]

@@ -827,6 +827,38 @@ pub async fn check_model(
     out
 }
 
+/// Whether an OpenAI-compatible server answers `GET {base_url}/models`
+/// with a model list: one that isn't one of the four (mlx-lm, vMLX, a
+/// proxy) is up all the same.
+pub async fn lists_models(http: &reqwest::Client, base_url: &str) -> bool {
+    get(http, format!("{}/models", base_url.trim_end_matches('/')))
+        .await
+        .is_some_and(|v| v["data"].is_array() || v["models"].is_array())
+}
+
+/// One look at the default model's local server: a line for each thing
+/// that's wrong, none when nothing is. A server that answers `/models` but
+/// isn't one of the four is up; only its window and tools go unchecked.
+pub async fn status_lines(
+    http: &reqwest::Client,
+    origin: &str,
+    base_url: &str,
+    key: &str,
+    model: &str,
+    planned: usize,
+    probe: bool,
+) -> Vec<String> {
+    match identify(http, origin).await {
+        Some(server) => check_model(http, &server, base_url, key, model, planned, probe)
+            .await
+            .into_iter()
+            .filter_map(|f| f.status)
+            .collect(),
+        None if lists_models(http, base_url).await => Vec::new(),
+        None => vec![format!("local: nothing answers at {origin} for {model}")],
+    }
+}
+
 /// The gateway's local-model lines, for `/status` and the dashboard.
 static LINES: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
 
@@ -861,25 +893,16 @@ fn watch(
         let key = entry.key().unwrap_or_else(|| "none".into());
         let mut first = true;
         loop {
-            let now = match identify(&http, &origin).await {
-                None => vec![format!(
-                    "local: nothing answers at {origin} for {}",
-                    entry.model
-                )],
-                Some(server) => check_model(
-                    &http,
-                    &server,
-                    &entry.base_url,
-                    &key,
-                    &entry.model,
-                    planned,
-                    first,
-                )
-                .await
-                .into_iter()
-                .filter_map(|f| f.status)
-                .collect(),
-            };
+            let now = status_lines(
+                &http,
+                &origin,
+                &entry.base_url,
+                &key,
+                &entry.model,
+                planned,
+                first,
+            )
+            .await;
             // The probe's verdict stands until the gateway restarts.
             {
                 let mut held = lines.lock().unwrap_or_else(|p| p.into_inner());
@@ -1238,6 +1261,57 @@ mod tests {
         )
         .unwrap();
         assert!(watch(&hosted, http()).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_openai_server_that_isnt_one_of_the_four_is_up_and_a_dead_one_says_so() {
+        // mlx-lm and vMLX answer `/v1/models` and nothing else of the four.
+        let other = serve(vec![(
+            "GET",
+            "/v1/models",
+            200,
+            r#"{"object":"list","data":[{"id":"mlx-community/Qwen3-8B-4bit","object":"model","owned_by":"mlx"}]}"#.into(),
+        )]);
+        assert!(identify(&http(), &other).await.is_none());
+        let base = format!("{other}/v1");
+        assert!(lists_models(&http(), &base).await);
+        let lines = status_lines(&http(), &other, &base, "none", "m", 128_000, true).await;
+        assert!(lines.is_empty(), "{lines:?}");
+        // Nothing listening: the one real problem.
+        let dead = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", l.local_addr().unwrap())
+        };
+        let lines = status_lines(
+            &http(),
+            &dead,
+            &format!("{dead}/v1"),
+            "none",
+            "m",
+            128_000,
+            false,
+        )
+        .await;
+        assert_eq!(lines, [format!("local: nothing answers at {dead} for m")]);
+        // A page that isn't a model list doesn't count as up.
+        let html = serve(vec![("GET", "/v1/models", 200, r#"{"ok":true}"#.into())]);
+        assert!(!lists_models(&http(), &format!("{html}/v1")).await);
+        // One of the four still gets its checks.
+        let o = ollama_server(
+            r#"{"models":[{"name":"qwen3-coder:30b","model":"qwen3-coder:30b","context_length":4096}]}"#,
+        );
+        let lines = status_lines(
+            &http(),
+            &o,
+            &format!("{o}/v1"),
+            "none",
+            "qwen3-coder:30b",
+            128_000,
+            false,
+        )
+        .await;
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("window 4096 < 128000"), "{lines:?}");
     }
 
     #[test]

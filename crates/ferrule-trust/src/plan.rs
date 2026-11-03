@@ -128,20 +128,43 @@ impl PlanStore {
         plans
     }
 
-    /// Moves a proposed plan on; only a proposed plan can be decided.
+    /// Moves a proposed plan on; only a proposed plan can be decided, and
+    /// only once: the first to claim `<id>.decided` (created, never
+    /// overwritten, across processes) decides it, any other is refused.
     pub fn decide(&self, id: &str, status: PlanStatus) -> Result<Plan, String> {
         let mut plan = self.get(id)?;
-        if plan.status != PlanStatus::Proposed {
-            return Err(format!(
+        let already = |s: PlanStatus| {
+            format!(
                 "plan `{id}` is already {}",
-                serde_json::to_value(plan.status)
+                serde_json::to_value(s)
                     .unwrap()
                     .as_str()
                     .unwrap_or("decided")
-            ));
+            )
+        };
+        if plan.status != PlanStatus::Proposed {
+            return Err(already(plan.status));
+        }
+        let claim = self.path(id)?.with_extension("decided");
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&claim)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(match self.get(id) {
+                    Ok(p) if p.status != PlanStatus::Proposed => already(p.status),
+                    _ => format!("plan `{id}` is being decided elsewhere right now"),
+                });
+            }
+            Err(e) => return Err(format!("{}: {e}", claim.display())),
         }
         plan.status = status;
-        self.save(&plan).map_err(|e| e.to_string())?;
+        if let Err(e) = self.save(&plan) {
+            let _ = std::fs::remove_file(&claim);
+            return Err(e.to_string());
+        }
         Ok(plan)
     }
 }
@@ -169,6 +192,30 @@ mod tests {
             .unwrap_err()
             .contains("already approved"));
         assert!(execution_prompt(&store.get(&p.id).unwrap()).contains("2. write"));
+
+        // Only one of many deciding at once wins, whatever each decides.
+        let q = store
+            .propose("race", Path::new("/w"), "s2", "1. go")
+            .unwrap();
+        let won: Vec<bool> = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..8)
+                .map(|i| {
+                    let (store, id) = (&store, q.id.clone());
+                    scope.spawn(move || {
+                        let to = if i % 2 == 0 {
+                            PlanStatus::Approved
+                        } else {
+                            PlanStatus::Rejected
+                        };
+                        store.decide(&id, to).is_ok()
+                    })
+                })
+                .collect();
+            racers.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert_eq!(won.iter().filter(|w| **w).count(), 1, "{won:?}");
+        assert_ne!(store.get(&q.id).unwrap().status, PlanStatus::Proposed);
+        assert_eq!(store.list().len(), 2, "the claim isn't a plan");
 
         let mut tampered = store.get(&p.id).unwrap();
         tampered.text.push_str("\n3. rm -rf /");

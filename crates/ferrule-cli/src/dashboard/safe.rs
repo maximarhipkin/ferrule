@@ -231,6 +231,22 @@ fn groups(ctx: &Ctx, cfg: &Config, place: &crate::connections_setup::Place) -> V
         it.last_note = Some("not tracked".into());
         brain.push(it);
     }
+    if let Ok(Some(m)) = ferrule_plans::gemini::store::Store::new(private).meta() {
+        let mut it = Item::new(
+            "plan:gemini".into(),
+            "Gemini / Antigravity sign-in",
+            "the Gemini plan",
+        );
+        it.stored = "sealed (AES-256-GCM) in private/plans/gemini.json".into();
+        it.created = Some(m.signed_in_at as i64);
+        it.used_by = vec![match m.email {
+            Some(e) => format!("the Gemini plan, as {e}"),
+            None => "the Gemini plan".into(),
+        }];
+        it.hosts_note = Some("ferrule's own client sends it to Google Cloud Code".into());
+        it.last_note = Some("not tracked; Usage shows the plan's windows".into());
+        brain.push(it);
+    }
 
     // Channels: the tokens each configured channel names.
     let mut channels = Vec::new();
@@ -596,6 +612,26 @@ pub async fn delete(ctx: &Ctx, body: &Value) -> Answer {
                     )
                 }
                 Err(e) => bad(500, format!("the token couldn't be deleted: {e:#}")),
+            }
+        }
+        "plan:gemini" => {
+            need!(confirmed(
+                body,
+                "Sign out of the Gemini plan? A brain on it stops until you sign in again from Models.".into()
+            ));
+            let store = ferrule_plans::gemini::store::Store::new(&private);
+            match store.forget() {
+                Ok(_) => {
+                    audit(
+                        ctx,
+                        "dashboard.secret.delete",
+                        json!({ "name": "gemini", "kind": "plan" }),
+                    );
+                    ok(
+                        json!({ "ok": true, "said": "Deleted the Gemini sign-in from this machine (`ferrule logout gemini` also revokes it with Google)." }),
+                    )
+                }
+                Err(e) => bad(500, format!("the sign-in couldn't be deleted: {e:#}")),
             }
         }
         "sign-ins" => {

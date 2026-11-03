@@ -13,7 +13,7 @@ pub struct DashboardDoor {
 }
 
 impl DashboardDoor {
-    #[cfg(test)]
+    /// The commands read here (M66: what the page's chat leaves out).
     pub const HANDLES: &'static [&'static str] = &["dashboard"];
 
     fn owner_chat(&self, msg: &InboundMessage) -> Option<bool> {

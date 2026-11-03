@@ -42,7 +42,7 @@ fn model_step(ctx: &Ctx) -> Value {
         }),
         None => json!({
             "id": "model", "done": false, "label": label,
-            "detail": "Add a provider key, or sign in with a ChatGPT plan, so the bot can think.",
+            "detail": "Sign in with a ChatGPT, Google or Claude plan, or paste a provider key, so the bot can think.",
         }),
     }
 }

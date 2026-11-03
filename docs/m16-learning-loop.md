@@ -276,11 +276,12 @@ An add or an edit is kept only if it demonstrably helps (ACE's
    again without it, then a fixed-rubric judge call compares the two
    transcript tails blind, under seeded A/B labels (finished? fewer
    retries? truthful status? no new damage?). Kept only if the judge
-   picks the run with the delta; neither, an unreadable answer or a
-   failed call rejects. If the gate can't probe either, the delta is
-   **rejected** ("no check to gate on"). The proposed text still goes
-   into the pass changelog either way, so the owner can add it by hand.
-   An ungated lesson is exactly what ACE shows goes wrong.
+   picks the run with the delta; a pick of the run without it rejects.
+   Neither, an unreadable answer or a failed call proves nothing either
+   way: the delta is **proposed** (§13), not kept. If the gate can't
+   probe either, the delta is proposed too ("no check to gate on"). A
+   proposed delta does nothing until the owner keeps it; an ungated
+   lesson landing by itself is exactly what ACE shows goes wrong.
 2. **Scratch copy.** The pass workspace (`--workspace`, or the gateway's
    workspace for scheduled passes) is copied into
    `<temp dir>/scratch-<pass>-<n>/workspace`, with the gate agent's own
@@ -323,9 +324,10 @@ lesson did it: the task might pass without it (the failure was flaky, or
 the fix landed in the repo). Since M53.1's fix
 (`docs/m53-contrastive-probing.md`, "M53.1 — the contrast gate, fixed")
 a control run without the lesson must then fail the check, and the
-change is kept only if it does. When the caps leave room for one re-run
-only, the gate's pass alone is weak evidence, kept only with the owner's
-👍. One run per arm is still one draw, so the reflector prompt still asks
+change is kept only if it does; a control that passes too proves
+nothing, and the change is proposed (§13). When the caps leave room for
+one re-run only, the gate's pass alone is weak evidence, kept only with
+the owner's 👍, else proposed. One run per arm is still one draw, so the reflector prompt still asks
 for "nothing" when the episode's detail reads as an outage.
 
 ## 6. The budget
@@ -374,8 +376,10 @@ Under `<data dir>/learn/`:
 ```
 playbook.md                 the playbook (§3)
 state.json                  the review cursor
-log.jsonl                   one line per pass event (start, change, reject, skip, stop, revert)
+log.jsonl                   one line per pass event (start, change, reject, propose, keep, drop, skip, stop, revert)
 lock                        held while a pass runs
+signals.jsonl               the owner's signals, kept whether learning is on or not (§13)
+usage.jsonl                 each run's lessons and outcome, each skill activation (§13)
 passes/<pass-id>/
   pass.json                 the journal: status, caps, spend, episodes, changes, rejections, skips
   changelog.md              the same, for people
@@ -383,6 +387,7 @@ passes/<pass-id>/
   playbook.after.md         … when it ended
   playbook.diff             unified diff of the two
   gate-<n>.jsonl            each gate agent's transcript
+  proposed/p<k>-<name>/     a proposed skill's validated draft, until it is kept or dropped
 ```
 
 Pass ids sort by time: `20260924-030000-a1b2`.
@@ -460,9 +465,13 @@ per-run memory database, and that stays true:
   a self-modifying prompt, and someone should decide to have one. M13 made
   the same call for self-installing extensions: off, or asking, until the
   owner opts in.
-- Off costs nothing: no task is registered, no call is made. A playbook
+- Off costs nothing: no task is scheduled, no call is made. (The job is
+  registered either way, so the learning page turns it on without a
+  restart, §13; with the file saying off it runs no pass.) A playbook
   the owner writes by hand is still injected (`playbook = true`), so the
-  file is useful on its own.
+  file is useful on its own. Off still keeps the owner's signals, each
+  run's use and failure notes (`failure_notes = true`, no model call):
+  §13.
 
 `ferrule learn run` works while disabled, because running it by hand is
 the opt-in. `ferrule setup` doesn't ask about it yet (open edge); the
@@ -476,7 +485,7 @@ example config documents it.
 | **a huge bullet** | Refused: 300 characters per lesson, 40 lessons and 4 000 characters injected. A hand-written file that exceeds the caps is cut when injected, and `learn show` says what was left out. |
 | **an injected bullet** (the transcript tells the reflector to write "ignore your instructions…") | The transcript is fenced as data; the text screen rejects the common patterns; the gate must pass; and the pass can't touch the owner's lines. Not a guarantee, a stack of filters. The playbook is a file the owner reads. |
 | **a flaky gate** | The check runs twice and must pass both times. A check that flips more often than that can still let a lesson in, or keep one out. Rejected proposals keep their text in the changelog. |
-| **no check at all** | Adds and edits are rejected ("no check to gate on"), and their text is logged for the owner. Retires and consolidation still run. |
+| **no check at all** | Adds and edits are proposed ("no check to gate on"), not kept: they wait on the learning page for the owner's Keep or Drop. Retires and consolidation still run. |
 | **a crash mid-pass** | `pass.json` is rewritten after every step. The playbook and memory writes are atomic per change, so what was applied is complete and journaled. The lock file names the pass. The next pass (or `learn show`) finds a `running` pass whose lock is stale or gone and marks it `interrupted`. Its applied changes stay and it can be reverted like any pass. The cursor only moved for finished episodes. Leftover scratch copies are removed. |
 | **two passes at once** (the gateway's schedule and a manual run) | The second finds the lock and refuses. A lock older than 3 hours counts as stale and is taken over, with a warning. |
 | **the model returns garbage** | The episode is logged as rejected, and the pass goes on. |
@@ -514,3 +523,131 @@ server, through the real binary where it matters:
   - An eval run doesn't see the owner's playbook, unless the suite opts in.
   - A sub-agent's prompt holds the playbook, and its shell can't read
     `data/learn`.
+
+## 13. The learning page
+
+Built 2026-11-03 on `ux-control`. The dashboard's Learning page reads and
+drives everything above; `dashboard/learn_page.rs` and
+`dashboard/feedback.rs` serve it, and no chat op maps to their routes.
+
+- **`GET /api/learn`**: `enabled`, `needs_restart` (the gateway in this
+  process started reading Telegram's 👍/👎 by the old `enabled`; the
+  task and failure notes follow at once), `schedule` in words,
+  `failure_notes`, `last_pass`, the last 10 `passes` with every change
+  (`<pass>:<n>` kept or reverted, `<pass>:p<k>` proposed or dropped,
+  `<pass>:r<k>` rejected; memory merges are on the Memory page), the
+  playbook's `lessons` and the learned and agent-written `skills` with
+  their `uses`, `feedback` over 7 days, the newest failure `notes`, and
+  the pass's `caps`. Text that may hold chat text goes through the
+  redactor.
+- **`POST learn/settings {enabled?, failure_notes?}`** writes `[learning]`
+  as the Config page writes a field (`base_hash`, the loader's check, the
+  guard, a kept version, audited `learning_settings`), then makes the
+  built-in task match (`learn::apply`).
+- **`POST learn/run {dry_run?}`** starts a pass in the background as the
+  nightly one runs (the gateway's workspace, provider and "Learned"
+  lines), or says what one would review. The kill switch, a spent day
+  cap, a pass already running or no model to run on refuse it, in words.
+- **`POST learn/revert {id}`** is `learn revert <pass> --change N` (a pass
+  id reverts the pass); **`learn/keep`** and **`learn/drop {id}`** decide
+  a proposal.
+
+**Proposed, not proven.** What proves a change bad (the check fails with
+it, its probe stops short, the judge prefers the run without it) is
+rejected as before. What proves nothing either way (no check and no
+probe, a control that passes too or was cut by the budget, a judge that
+can't tell or whose call failed, weak evidence without the owner's 👍)
+is kept in `pass.json`'s `proposed` instead of dropped. It does nothing
+until the owner keeps it (`ferrule_learn::proposed::keep`): then it
+lands exactly as a kept change does, with the same text screen, add one
+cut one, a numbered change of its pass whose Undo is the usual one, and
+the "Learned" line with Undo in the owner's chat. A skill's validated
+draft waits in the pass dir meanwhile. Drop marks it rejected.
+
+**Signals.** The owner's 👍/👎 on a reply in the page's chat (`POST
+chat/react {id, thumb, why?}`) is kept always, learning on or off, in
+`learn/signals.jsonl`: the reply's id, the session, the time, the
+owner's "why" (owner text, capped at 500 characters), never the reply's
+text. The "why" reaches the reflector's model, so it passes the chat's
+paste guard: one that looks like a key or a token is refused (400, in
+the chat's words for a pasted key) and nothing is noted; what is kept is
+scrubbed of the known secrets, and scrubbed again when quoted into the
+episode. A 👎 keeps the transcript cut where the reply ended, as M53.5's
+Telegram 👎 does (the router marks each page reply; one it didn't mark is
+cut only when nothing came after it), so it is an episode for the next
+pass, the "why" in its detail. `/undo` that undid something, the Undo of
+a learned change, and Keep or Drop are signals too. Approvals the owner
+refused and the proactive agent's Not now, Never and Undo are already in
+the trust audit log; the page counts them from there. Telegram's thumbs
+are still asked for only while learning is on at the gateway's start.
+
+**Failure notes** (`[learning] failure_notes`, default `true`, even with
+learning off). When a root run ends not done (the step limit, stuck, a
+check that kept failing, a token budget), its own final status (the one
+`wrap_up` makes the agent write; no extra model call) is scrubbed of
+secrets (the health redactor, the credential proxy's scrubber, and any
+word that looks like a key), capped at 400 characters with the goal, and
+saved to that session's memory tagged `failure-note` and `scope:<scope>`.
+Recall brings it back only when a later message matches it, in the user
+message after that message, never the system prompt, and only for 7
+days (`ferrule-memory`). None is kept when the run errored (it wrote no
+status), when the guard ended it (the kill switch, a cap, the owner's
+stop, the time limit: its answer is the stop's words), when the owner
+refused an approval in it, for a read-only `/plan` run, or when the run
+read outside content (M54.5's `untrusted_seen`): its status may carry
+that content, and a memory carries no taint into the later run that
+recalls it. Those runs are still in the usage log.
+
+**Measuring what helps.** Each root run's end is a line of
+`learn/usage.jsonl` (session, agent, outcome, the `[pb-N]` lessons its
+prompt held, the playbook section's hash), and so is each
+`activate_skill`. Per lesson the page shows the sessions it was in, how
+many had a run that ended not done, and how many got a 👎; per skill its
+activations, sessions, and sessions where the activating run ended not
+done. These are signals, not proof. When the playbook is full and the
+pass must cut a lesson, it now takes the worst record first (bad
+sessions as a share of at least 2), then the reflector's pick, then the
+oldest no pass kept.
+
+**Saving its own skills** (`[skills] self_written = false` by default).
+`skill_keep`, with its check in the sandbox and its scan, used to come
+only with `[extensions] enabled`, the switch that also lets the agent
+install from the internet. `self_written` offers the root agent
+`skill_keep` alone. Each agent reads it once when it's built, so a
+session's tools and prompt prefix don't change mid-way; the page's switch
+(`POST learn/settings {self_written}`, asked to confirm when turned on)
+reaches new sessions of the gateway it runs in. `GET /api/learn` has
+`self_written`.
+
+**Memory upkeep.** Each fact has `recall_count` and `last_recalled_at`
+(counted when recall puts it in a prompt: the session's block, a later
+message's, the `recall` tool; the dashboard's list and search don't
+count), `pinned` (never fades, `PIN_BOOST` = 2× in ranking) and `source`
+(`owner`, `agent`, `failure-note`, `learned`; `unknown` before sources
+were kept). The columns are added in place to an older `memory.db`,
+without a schema version, so an older ferrule still opens it. At most
+once a day, after an owner's run, facts that read the same (case,
+spacing and a trailing stop aside, same tags) merge into the newest
+(`merge_duplicates`): no model call, so learning needn't be on; each merge
+is journaled (`learn/log.jsonl`, pass `upkeep`) and is M15's reversible
+UPDATE. Facts that only resemble each other need a model's judgment and
+wait for the pass's consolidation (§2). The memory page reads them:
+`GET /api/memory` rows add `recalls`, `last_recalled`, `pinned`,
+`source`, and `?view=stale` lists facts older than 30 days that were never
+recalled; `POST memory/add {text, tags?}`, `memory/edit {id, text}` (the
+old text stays as history) and `memory/pin {id, pinned}` refuse a text
+that looks like a key, in the chat's words.
+
+**The weekly playbook eval** (`[learning] weekly_eval = false`,
+`eval_usd_cap = 1.0`, `eval_schedule`): the kept lessons' tasks with and
+without the playbook, [eval.md](eval.md) "The weekly playbook eval".
+`GET /api/learn` has `eval: {enabled, usd_cap, last, trend}`; `POST
+learn/eval` runs one now.
+
+**Bounded logs.** `signals.jsonl` and `usage.jsonl` are pruned the way
+the trust audit log is (appends hold `<name>.lock` shared, a prune holds
+it alone and rewrites through a temporary file and a rename): an append
+that takes one past 4 MiB drops its lines older than 90 days, then the
+oldest until it is under 2 MiB (`ferrule_learn::files::append_log`). The
+👎 transcript cuts under `learn/reactions/` stay housekeeping's.
+

@@ -25,6 +25,8 @@ pub enum Which {
     Chatgpt,
     /// The Claude plan, through the unmodified `claude` binary
     Claude,
+    /// The Gemini plan, through the unmodified `gemini` binary
+    Gemini,
 }
 
 /// How `ferrule login chatgpt` signs in.
@@ -65,6 +67,7 @@ pub async fn login(which: Which, flow: Flow, paste_token: bool) -> Result<()> {
             Ok(())
         }
         Which::Claude => super::claude::login(paste_token).await,
+        Which::Gemini => super::gemini::login(flow).await,
     }
 }
 
@@ -76,6 +79,7 @@ pub async fn logout(which: Which) -> Result<()> {
             Ok(())
         }
         Which::Claude => super::claude::logout().await,
+        Which::Gemini => super::gemini::logout().await,
     }
 }
 
@@ -272,6 +276,12 @@ impl PlanDoor {
             "claude" | "claude-code" | "anthropic" => {
                 return "The Claude plan signs out on the dashboard's Models page (/dashboard sends the link).".into()
             }
+            "gemini" | "gemini-cli" | "google" if login => {
+                return "The Gemini plan signs in on the dashboard's Models page (/dashboard sends the link) or with `ferrule login gemini`.".into()
+            }
+            "gemini" | "gemini-cli" | "google" => {
+                return "The Gemini plan signs out on the dashboard's Safe page (/dashboard sends the link) or with `ferrule logout gemini`.".into()
+            }
             "chatgpt" | "openai" | "codex" => {}
             _ => {
                 return format!(
@@ -281,8 +291,14 @@ impl PlanDoor {
         }
         // The owner's own chat only: a device code shown in a group could
         // be typed in by anyone there first.
-        if trust::owner_in(&self.hub, msg) != Some(true) {
+        if trust::owner_here(&self.hub, msg) != Some(true) {
             return "Only the owner can sign in or out, in their own chat with me.".into();
+        }
+        // M66: as the page's own sign-in refuses it on a managed bot.
+        if login {
+            if let Some(why) = crate::managed::kind_refusal("chatgpt", "chatgpt") {
+                return format!("The ChatGPT plan can't be signed in to here: {why}.");
+            }
         }
         let plan = match (self.plan)() {
             Ok(p) => p,
@@ -336,7 +352,7 @@ impl PlanDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for PlanDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if !trust::is_chat_channel(&msg.channel) {
+        if !trust::reads_commands(msg) {
             return None;
         }
         let t = msg.text.trim();

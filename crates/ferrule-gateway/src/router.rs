@@ -150,6 +150,222 @@ struct LaneState {
     /// M56.6: the bot's last reply in this chat, which `edit_message`
     /// edits, when the channel gave its id.
     last_reply: Option<String>,
+    /// M66: the running turn's steps, from its agent's events.
+    steps: Steps,
+    /// M66: the last finished turn's steps, shown after its reply.
+    last_steps: Option<Steps>,
+}
+
+/// M66: the most steps a turn keeps; past it the oldest go, counted.
+pub const MAX_STEPS: usize = 80;
+/// M66: a step's name and summary are kept raw up to this many characters
+/// and an ellipsis; the page redacts them first and cuts them shorter after
+/// ([`STEP_RAW_CUT`] says it was cut here).
+pub const STEP_RAW: usize = 1000;
+/// M66: what ends a step's text that [`STEP_RAW`] cut.
+pub const STEP_RAW_CUT: char = '…';
+
+/// M66: one step of a turn, for the dashboard's live view: a model call, a
+/// tool call (its name and the argument the `activity` line shows, never
+/// its output), a check, or a retry, fallback or escalation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnStep {
+    /// Since the turn started.
+    pub at: Duration,
+    /// `model`, `tool`, `verify`, `retry`, `fallback` or `escalate`.
+    pub kind: &'static str,
+    /// The tool, the model (`model` until a fallback names one), the check.
+    pub name: String,
+    /// Unredacted, at most [`STEP_RAW`] characters: redact before showing.
+    pub summary: String,
+    /// `running`, `ok` or `error`.
+    pub status: &'static str,
+    /// How long it took, once it finished.
+    pub took: Option<Duration>,
+    /// The tool call it is, to match its end.
+    call_id: Option<String>,
+}
+
+/// M66: a turn's steps, bounded.
+#[derive(Debug, Clone, Default)]
+struct Steps {
+    list: VecDeque<TurnStep>,
+    /// Steps that fell off the front.
+    dropped: usize,
+    /// Model tokens in and out, once a call reported them.
+    tokens: Option<(u64, u64)>,
+    /// What a model step is called: a fallback's or an escalation's target.
+    model: Option<String>,
+}
+
+impl Steps {
+    fn push(&mut self, step: TurnStep) {
+        if self.list.len() >= MAX_STEPS {
+            self.list.pop_front();
+            self.dropped += 1;
+        }
+        self.list.push_back(step);
+    }
+
+    fn model_name(&self) -> String {
+        self.model.clone().unwrap_or_else(|| "model".into())
+    }
+
+    /// The latest running step of `kind` (and `name`, when given).
+    fn running(&mut self, kind: &str, name: Option<&str>) -> Option<&mut TurnStep> {
+        self.list
+            .iter_mut()
+            .rev()
+            .find(|s| s.kind == kind && s.status == "running" && name.is_none_or(|n| s.name == n))
+    }
+
+    fn end(step: &mut TurnStep, ok: bool, at: Duration) {
+        step.status = if ok { "ok" } else { "error" };
+        step.took = Some(at.saturating_sub(step.at));
+    }
+
+    /// Ends every step still running: the turn is over (stopped, failed).
+    fn end_all(&mut self, at: Duration) {
+        for s in self.list.iter_mut().filter(|s| s.status == "running") {
+            Self::end(s, false, at);
+        }
+    }
+
+    fn open(&mut self, kind: &'static str, name: String, summary: String, at: Duration) {
+        let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.push(TurnStep {
+            at,
+            kind,
+            name: crate::health::clip(&name, STEP_RAW),
+            summary: crate::health::clip(&summary, STEP_RAW),
+            status: "running",
+            took: None,
+            call_id: None,
+        });
+    }
+
+    /// A step that is over as it happens (a retry, a fallback).
+    fn mark(&mut self, kind: &'static str, name: String, summary: String, ok: bool, at: Duration) {
+        self.open(kind, name, summary, at);
+        if let Some(s) = self.list.back_mut() {
+            Self::end(s, ok, at);
+        }
+    }
+
+    /// One agent event, `at` into the turn.
+    fn record(&mut self, ev: &AgentEvent, at: Duration) {
+        match ev {
+            AgentEvent::ContextReady { est_tokens, .. } => {
+                let summary = format!("about {est_tokens} tokens of context");
+                match self.running("model", None) {
+                    Some(s) => s.summary = summary,
+                    None => self.open("model", self.model_name(), summary, at),
+                }
+            }
+            AgentEvent::Compacted {
+                folded_messages, ..
+            } => self.before_call(format!("compacted {folded_messages} messages first"), at),
+            AgentEvent::Truncated {
+                dropped_messages, ..
+            } => self.before_call(
+                format!("dropped the {dropped_messages} oldest messages first"),
+                at,
+            ),
+            AgentEvent::ToolResultsShortened { shortened, .. } => {
+                self.before_call(format!("shortened {shortened} old tool results first"), at)
+            }
+            AgentEvent::Usage {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
+                let (i, o) = self.tokens.unwrap_or_default();
+                self.tokens = Some((i + input_tokens, o + output_tokens));
+                if let Some(s) = self.running("model", None) {
+                    Self::end(s, true, at);
+                }
+            }
+            AgentEvent::ToolCallStarted {
+                id,
+                name,
+                arguments,
+            } => {
+                if let Some(s) = self.running("model", None) {
+                    Self::end(s, true, at);
+                }
+                self.open("tool", name.clone(), tool_detail_whole(arguments), at);
+                if let Some(s) = self.list.back_mut() {
+                    s.call_id = (!id.is_empty()).then(|| id.clone());
+                }
+            }
+            AgentEvent::ToolCallFinished { id, name, ok, .. } => {
+                let by_id = self.list.iter_mut().rev().find(|s| {
+                    s.kind == "tool" && s.status == "running" && s.call_id.as_deref() == Some(id)
+                });
+                let step = match by_id {
+                    Some(s) => Some(s),
+                    None => self.running("tool", Some(name)),
+                };
+                if let Some(s) = step {
+                    Self::end(s, *ok, at);
+                }
+            }
+            AgentEvent::VerifyStarted { check } => {
+                self.open("verify", check.clone(), String::new(), at)
+            }
+            AgentEvent::VerifyFinished { check, ok } => {
+                if let Some(s) = self.running("verify", Some(check)) {
+                    Self::end(s, *ok, at);
+                }
+            }
+            AgentEvent::ProviderRetry {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error,
+            } => {
+                let secs = Duration::from_millis(*delay_ms).as_secs_f64().ceil() as u64;
+                let summary = format!(
+                    "attempt {attempt} of {max_attempts} failed; again in {secs} s: {error}"
+                );
+                self.mark("retry", self.model_name(), summary, false, at);
+            }
+            AgentEvent::ModelFallback { from, to, error } => {
+                if let Some(s) = self.running("model", None) {
+                    Self::end(s, false, at);
+                }
+                self.mark(
+                    "fallback",
+                    to.clone(),
+                    format!("{from} kept failing: {error}"),
+                    true,
+                    at,
+                );
+                self.model = Some(to.clone());
+                self.open("model", to.clone(), format!("again, on {to}"), at);
+            }
+            AgentEvent::Escalated { from, to, reason } => {
+                self.mark(
+                    "escalate",
+                    to.clone(),
+                    format!("from {from}: {reason}"),
+                    true,
+                    at,
+                );
+                self.model = Some(to.clone());
+            }
+            AgentEvent::RunIncomplete { .. } | AgentEvent::Error { .. } => self.end_all(at),
+            _ => {}
+        }
+    }
+
+    /// Context work before a model call: the call's step says so.
+    fn before_call(&mut self, summary: String, at: Duration) {
+        match self.running("model", None) {
+            Some(s) => s.summary = crate::health::clip(&summary, STEP_RAW),
+            None => self.open("model", self.model_name(), summary, at),
+        }
+    }
 }
 
 /// What `/new` did (M41).
@@ -223,12 +439,29 @@ pub struct LaneSnapshot {
     pub text: String,
     /// M56.5: a restart that cuts this turn short takes it up again.
     pub resumable: bool,
+    /// M66: the running turn's steps, oldest first; while idle, the last
+    /// finished turn's (`steps_last`).
+    pub steps: Vec<TurnStep>,
+    /// M66: steps that fell off the front of `steps` ([`MAX_STEPS`]).
+    pub steps_dropped: usize,
+    /// M66: `steps` are the last finished turn's, not a running one's.
+    pub steps_last: bool,
+    /// M66: model tokens in and out over those steps, when calls said.
+    pub tokens: Option<(u64, u64)>,
 }
 
 impl LaneSnapshot {
     fn of(session_id: &str, lane: &Lane, now: Instant) -> Self {
         let st = lane.state.lock().unwrap();
+        let (shown, steps_last) = match (&st.busy_since, &st.last_steps) {
+            (None, Some(last)) => (last, true),
+            _ => (&st.steps, false),
+        };
         Self {
+            steps: shown.list.iter().cloned().collect(),
+            steps_dropped: shown.dropped,
+            steps_last,
+            tokens: shown.tokens,
             session_id: session_id.to_string(),
             channel: lane.channel.clone(),
             chat_id: lane.chat_id.clone(),
@@ -592,6 +825,13 @@ impl Router {
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
         }
+    }
+
+    /// M66: `session_id`'s lane, busy or idle; `None` when it has none.
+    pub fn lane(&self, session_id: &str) -> Option<LaneSnapshot> {
+        let lanes = self.lanes.lock().unwrap();
+        let lane = lanes.get(session_id)?;
+        Some(LaneSnapshot::of(session_id, lane, Instant::now()))
     }
 
     /// Every lane that is running a turn or has messages waiting.
@@ -1139,11 +1379,13 @@ async fn run_lane(
         // never waits: `Agent::emit` blocks while a live receiver's buffer
         // is full, and a stalled drain once stalled the lane for good.
         let (etx, erx) = mpsc::channel(256);
+        let (stop_drain, drain_stops) = oneshot::channel();
         let drain = tokio::spawn(drain_events(
             erx,
             watch.state.clone(),
             watch.changed.clone(),
             watch.marker.clone(),
+            drain_stops,
         ));
         let out = OutboundMessage {
             channel: inbound.channel.clone(),
@@ -1216,6 +1458,16 @@ async fn run_lane(
         } else {
             agent.run(&goal, etx).await
         };
+        // M66: the events the agent sent before it ended are read first
+        // (the turn's last steps); a second is plenty, or they're dropped.
+        let _ = stop_drain.send(());
+        let abort_drain = drain.abort_handle();
+        if tokio::time::timeout(Duration::from_secs(1), drain)
+            .await
+            .is_err()
+        {
+            abort_drain.abort();
+        }
         let steered = watch.steer.close();
         // M56.5: a turn a restart ended keeps its marker for the next start.
         watch
@@ -1223,9 +1475,6 @@ async fn run_lane(
             .end(watch.guard.for_restart() && agent.incomplete.is_some());
         watch.guard.disarm();
         agent.set_reply_stream(None);
-        // Whatever still holds a sender (a sub-agent) now finds it closed
-        // rather than feeding the next turn's state.
-        drain.abort();
         // A turn may end without a word: `NO_REPLY` anywhere, and an empty
         // answer in a group, where it reads every message.
         let group = is_group_chat(&inbound.channel, &inbound.chat_id);
@@ -1450,6 +1699,7 @@ impl LaneWatch {
             st.activity = "starting".into();
             st.last_progress = Some(Instant::now());
             st.stall_reported = false;
+            st.steps = Steps::default();
         }
         self.changed.notify_waiters();
     }
@@ -1457,6 +1707,14 @@ impl LaneWatch {
     fn finish(&self) {
         {
             let mut st = self.state.lock().unwrap();
+            // M66: what still runs ended with the turn; it's the last one now.
+            let took = st
+                .busy_since
+                .map(|(at, _)| at.elapsed())
+                .unwrap_or_default();
+            st.steps.end_all(took);
+            let steps = std::mem::take(&mut st.steps);
+            st.last_steps = Some(steps);
             st.busy_since = None;
             st.text.clear();
             st.activity.clear();
@@ -1469,68 +1727,119 @@ impl LaneWatch {
     }
 }
 
+/// Feeds the lane's state from its agent's events until `stop`; then what
+/// is already buffered is read too (M66: a turn's last steps), and the
+/// channel closes, so a sender still held (a sub-agent) finds it closed.
 async fn drain_events(
     mut rx: mpsc::Receiver<AgentEvent>,
     state: Arc<Mutex<LaneState>>,
     changed: Arc<Notify>,
     marker: Arc<Marker>,
+    mut stop: oneshot::Receiver<()>,
 ) {
-    while let Some(ev) = rx.recv().await {
-        if let AgentEvent::ToolCallStarted { name, .. } = &ev {
-            marker.called(name);
+    loop {
+        // The stop first: a sender that keeps sending can't hold it off;
+        // closing first, then reading what's left, ends it.
+        tokio::select! {
+            biased;
+            _ = &mut stop => {
+                rx.close();
+                while let Ok(ev) = rx.try_recv() {
+                    take_event(&ev, &state, &changed, &marker);
+                }
+                break;
+            }
+            ev = rx.recv() => match ev {
+                Some(ev) => take_event(&ev, &state, &changed, &marker),
+                None => break,
+            },
         }
-        let activity = match &ev {
-            AgentEvent::RunStarted { .. }
-            | AgentEvent::ToolCallFinished { .. }
-            | AgentEvent::VerifyFinished { .. } => Some("a model call".to_string()),
-            AgentEvent::ToolCallStarted {
-                name, arguments, ..
-            } => Some(tool_activity(name, arguments)),
-            AgentEvent::VerifyStarted { check } => Some(format!("the check `{check}`")),
+    }
+}
+
+fn take_event(
+    ev: &AgentEvent,
+    state: &Arc<Mutex<LaneState>>,
+    changed: &Arc<Notify>,
+    marker: &Arc<Marker>,
+) {
+    if let AgentEvent::ToolCallStarted { name, .. } = ev {
+        marker.called(name);
+    }
+    let activity = match ev {
+        AgentEvent::RunStarted { .. }
+        | AgentEvent::ToolCallFinished { .. }
+        | AgentEvent::VerifyFinished { .. } => Some("a model call".to_string()),
+        AgentEvent::ToolCallStarted {
+            name, arguments, ..
+        } => Some(tool_activity(name, arguments)),
+        AgentEvent::VerifyStarted { check } => Some(format!("the check `{check}`")),
+        AgentEvent::ProviderRetry {
+            attempt,
+            max_attempts,
+            ..
+        } => Some(format!("a model call (retry {attempt} of {max_attempts})")),
+        AgentEvent::ModelFallback { to, .. } => Some(format!("a model call (on {to})")),
+        AgentEvent::Escalated { to, .. } => Some(format!("a model call (moved up to {to})")),
+        _ => None,
+    };
+    let moved = {
+        let mut st = state.lock().unwrap();
+        st.last_progress = Some(Instant::now());
+        st.stall_reported = false;
+        if let Some((started, _)) = st.busy_since {
+            st.steps.record(ev, started.elapsed());
+        }
+        st.retry_at = match ev {
             AgentEvent::ProviderRetry {
                 attempt,
-                max_attempts,
+                delay_ms,
+                error,
                 ..
-            } => Some(format!("a model call (retry {attempt} of {max_attempts})")),
-            AgentEvent::ModelFallback { to, .. } => Some(format!("a model call (on {to})")),
-            AgentEvent::Escalated { to, .. } => Some(format!("a model call (moved up to {to})")),
+            } => Some((
+                Instant::now() + Duration::from_millis(*delay_ms),
+                *attempt,
+                rate_limited(error),
+            )),
             _ => None,
         };
-        let moved = {
-            let mut st = state.lock().unwrap();
-            st.last_progress = Some(Instant::now());
-            st.stall_reported = false;
-            st.retry_at = match &ev {
-                AgentEvent::ProviderRetry {
-                    attempt,
-                    delay_ms,
-                    error,
-                    ..
-                } => Some((
-                    Instant::now() + Duration::from_millis(*delay_ms),
-                    *attempt,
-                    rate_limited(error),
-                )),
-                _ => None,
-            };
-            match activity {
-                Some(a) if a != st.activity => {
-                    st.activity = a;
-                    true
-                }
-                _ => false,
+        match activity {
+            Some(a) if a != st.activity => {
+                st.activity = a;
+                true
             }
-        };
-        // The status file shows what the lane is doing now, not 5 s ago.
-        if moved {
-            changed.notify_waiters();
+            _ => false,
         }
+    };
+    // The status file shows what the lane is doing now, not 5 s ago.
+    if moved {
+        changed.notify_waiters();
     }
 }
 
 /// "tool `shell` (sleep 100)": the tool and the one argument that says
 /// what it's doing, cut short.
 pub fn tool_activity(name: &str, args: &serde_json::Value) -> String {
+    let detail = tool_detail(args);
+    if detail.is_empty() {
+        return format!("tool `{name}`");
+    }
+    format!("tool `{name}` ({detail})")
+}
+
+/// The one argument that says what a tool call is doing, cut short: what
+/// [`tool_activity`] puts in brackets.
+pub fn tool_detail(args: &serde_json::Value) -> String {
+    let detail = tool_detail_whole(args);
+    if detail.is_empty() {
+        return detail;
+    }
+    crate::health::clip(&detail, 60)
+}
+
+/// [`tool_detail`] uncut (a turn step's summary, M66: cut only after it
+/// is redacted, so a cut never leaves part of a key).
+pub fn tool_detail_whole(args: &serde_json::Value) -> String {
     let key = [
         "command", "path", "url", "query", "pattern", "task", "name", "id",
     ]
@@ -1541,11 +1850,7 @@ pub fn tool_activity(name: &str, args: &serde_json::Value) -> String {
         None if args.as_object().is_some_and(|o| o.is_empty()) || args.is_null() => String::new(),
         None => args.to_string(),
     };
-    let detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    if detail.is_empty() {
-        return format!("tool `{name}`");
-    }
-    format!("tool `{name}` ({})", crate::health::clip(&detail, 60))
+    detail.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A guard in front of the agent's own that halts the turn the way the
@@ -2468,6 +2773,169 @@ mod tests {
             .unwrap();
         assert!((29..=30).contains(&secs), "{activity}");
         assert!(recorder.texts().is_empty(), "nothing's final yet");
+    }
+
+    /// Calls `missing` once (a shell-looking argument, a secret-looking
+    /// output never seen), then answers; every call reports its tokens.
+    struct OneToolProvider(AtomicUsize);
+    #[async_trait]
+    impl Provider for OneToolProvider {
+        fn name(&self) -> &str {
+            "one-tool"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let n = self.0.fetch_add(1, Ordering::SeqCst);
+            let message = if n == 0 {
+                let call = ferrule_core::ToolCall {
+                    id: "call-7".into(),
+                    name: "missing".into(),
+                    arguments: serde_json::json!({ "command": "ls   -la\n/tmp", "body": "x".repeat(500) }),
+                };
+                Message::assistant(None, vec![call], None)
+            } else {
+                Message::assistant(Some("done".into()), vec![], None)
+            };
+            Ok(CompletionResponse {
+                message,
+                usage: Usage {
+                    input_tokens: 100,
+                    output_tokens: 7,
+                    ..Usage::default()
+                },
+                stop_reason: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turns_steps_are_kept_and_the_last_ones_stay_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let factory: AgentFactory = Arc::new(|_sid, transcript| {
+            Ok(Agent::new(
+                Arc::new(OneToolProvider(AtomicUsize::new(0))),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
+        });
+        let router = Router::new(dir.path(), factory, HashMap::new());
+        let sid = session::session_id("test", "chat-1");
+        assert!(router.lane(&sid).is_none(), "no lane before a message");
+        let reply = router
+            .dispatch_and_wait(inbound("chat-1", "go"))
+            .await
+            .unwrap();
+        assert_eq!(reply.text, "done");
+        // The lane is idle: its last turn's steps, marked so.
+        let lane = router.lane(&sid).unwrap();
+        assert!(lane.busy_for.is_none() && lane.steps_last);
+        let kinds: Vec<(&str, &str, &str)> = lane
+            .steps
+            .iter()
+            .map(|s| (s.kind, s.name.as_str(), s.status))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("model", "model", "ok"),
+                ("tool", "missing", "error"),
+                ("model", "model", "ok")
+            ]
+        );
+        // The tool's summary is the activity line's argument, not its body.
+        assert_eq!(lane.steps[1].summary, "ls -la /tmp");
+        assert!(lane.steps.iter().all(|s| s.took.is_some()));
+        assert!(lane.steps.windows(2).all(|w| w[0].at <= w[1].at));
+        assert_eq!(lane.tokens, Some((200, 14)));
+        assert_eq!(lane.steps_dropped, 0);
+        // An idle lane isn't in the busy snapshot.
+        assert!(router.snapshot().is_empty());
+    }
+
+    #[test]
+    fn a_turns_steps_are_bounded_and_a_retry_and_fallback_say_so() {
+        let mut steps = Steps::default();
+        let at = Duration::from_secs(1);
+        for i in 0..(MAX_STEPS + 5) {
+            steps.record(
+                &AgentEvent::ToolCallStarted {
+                    id: format!("c{i}"),
+                    name: "read".into(),
+                    arguments: serde_json::json!({ "path": format!("f{i}") }),
+                },
+                at,
+            );
+        }
+        assert_eq!(steps.list.len(), MAX_STEPS);
+        assert_eq!(steps.dropped, 5);
+        // A dropped call's end matches nothing; a kept one's, by its id.
+        steps.record(
+            &AgentEvent::ToolCallFinished {
+                id: "c84".into(),
+                name: "read".into(),
+                ok: true,
+                output_chars: 9,
+            },
+            Duration::from_secs(3),
+        );
+        let last = steps.list.back().unwrap();
+        assert_eq!(
+            (last.status, last.took),
+            ("ok", Some(Duration::from_secs(2)))
+        );
+
+        let mut steps = Steps::default();
+        steps.record(
+            &AgentEvent::ContextReady {
+                est_tokens: 1200,
+                threshold_tokens: 9000,
+            },
+            Duration::ZERO,
+        );
+        steps.record(
+            &AgentEvent::ProviderRetry {
+                attempt: 1,
+                max_attempts: 3,
+                delay_ms: 2500,
+                error: format!("HTTP 429\n{}", "rate limit ".repeat(40)),
+            },
+            at,
+        );
+        steps.record(
+            &AgentEvent::ModelFallback {
+                from: "a/one".into(),
+                to: "b/two".into(),
+                error: "down".into(),
+            },
+            at,
+        );
+        let got: Vec<(&str, &str, &str)> = steps
+            .list
+            .iter()
+            .map(|s| (s.kind, s.name.as_str(), s.status))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("model", "model", "error"),
+                ("retry", "model", "error"),
+                ("fallback", "b/two", "ok"),
+                ("model", "b/two", "running"),
+            ]
+        );
+        let retry = &steps.list[1].summary;
+        assert!(retry.starts_with("attempt 1 of 3 failed; again in 3 s: HTTP 429 rate"));
+        assert!(
+            retry.chars().count() <= STEP_RAW + 1 && !retry.contains('\n'),
+            "{retry}"
+        );
+        // Kept whole up to the raw bound: the page cuts after redacting.
+        assert!(retry.ends_with("rate limit"), "{retry}");
+        steps.end_all(Duration::from_secs(4));
+        assert!(steps.list.iter().all(|s| s.status != "running"));
     }
 
     #[tokio::test]

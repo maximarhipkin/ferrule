@@ -56,9 +56,11 @@ Each provider is spoken to by one of three drivers, set with `api`:
 | `"anthropic"` | Anthropic's native `/v1/messages` | `base_url` is `api.anthropic.com` |
 | `"responses"` | OpenAI's `/v1/responses`, stateless | never; set it yourself |
 
-A plan provider (`plan = "chatgpt"` or `plan = "claude-code"`) needs no
-`api`, `base_url` or key: the ChatGPT plan uses a Responses flavour for its
-backend, and the Claude plan runs the `claude` binary
+A plan provider (`plan = "chatgpt"`, `plan = "claude-code"`, or
+`plan = "gemini-cli"`) needs no `api`, `base_url` or key: the ChatGPT plan
+uses a Responses flavour for its backend, the Claude plan runs the `claude`
+binary, and the Gemini plan calls Google's Cloud Code backend directly over
+HTTPS (`ferrule login gemini`, no CLI binary required)
 ([subscriptions.md](subscriptions.md)).
 
 When `api` is unset, Ferrule infers it from `base_url`. A value you write

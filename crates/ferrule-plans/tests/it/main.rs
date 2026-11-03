@@ -5,3 +5,4 @@
 mod chatgpt;
 mod claude_update;
 mod engine;
+mod gemini;

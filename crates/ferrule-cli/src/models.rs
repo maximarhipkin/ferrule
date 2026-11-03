@@ -25,6 +25,7 @@ mod cross_driver;
 mod door;
 pub mod routing;
 pub mod routing_admin;
+pub mod routing_memory;
 pub use admin::*;
 pub use cli::{cmd, render, ModelCmd};
 pub use door::{status_lines, ModelDoor, Retire};
@@ -66,7 +67,7 @@ impl Entry {
     /// Whether this model sees photos: the config's `vision`, else its name.
     /// A model run through Claude Code never does (its engine is text).
     pub fn sees_images(&self) -> bool {
-        self.plan != Some(crate::config::Plan::ClaudeCode)
+        !matches!(self.plan, Some(crate::config::Plan::ClaudeCode))
             && self
                 .options
                 .vision
@@ -456,9 +457,11 @@ fn entry(
         profile: mc.profile.clone().unwrap_or_else(|| p.profile.clone()),
         // M35: claude keeps (and compacts) the conversation itself; ferrule's
         // compaction would drop the session it resumes, so it waits long.
-        context_window: mc
-            .context_window
-            .or((p.plan == Some(crate::config::Plan::ClaudeCode)).then_some(CLAUDE_CODE_WINDOW)),
+        context_window: mc.context_window.or(matches!(
+            p.plan,
+            Some(crate::config::Plan::ClaudeCode | crate::config::Plan::GeminiCli)
+        )
+        .then_some(CLAUDE_CODE_WINDOW)),
         pricing,
         price_source: mc.price_source.clone(),
         aliases: Vec::new(),
