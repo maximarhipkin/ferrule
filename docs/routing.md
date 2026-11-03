@@ -82,6 +82,35 @@ outages, and retries and the fallback list handle them.
   the failed check still goes back to the agent, the stuck nudge is still
   sent. Escalation grants no tools or permissions.
 
+## Remembering (M66)
+
+A chat or a scheduled task that keeps needing the strong tier starts its
+turns there, instead of failing on the cheap one first every time
+(`crates/ferrule-cli/src/models/routing_memory.rs`):
+
+- Each turn of a chat (`telegram:42`) or a task (`task:<id>`) is counted:
+  did it move up for a need (any signal above, the watchdog; not the
+  owner's `/model strong`)? Only that chat's or task's own session counts:
+  a sub-agent's turns, and a terminal run's, aren't remembered.
+- When 3 of its last 5 turns moved up, its next turns start one tier
+  above its floor. That start is not an escalation: the ledger row has no
+  `escalated` reason, and the turn can still move up from there.
+- After 5 turns in a row on that start that moved no further, it starts
+  on its floor again, and its count starts over.
+- A new floor (a pin, new tiers) forgets its past. The daily cap still
+  holds: past `strong_daily_usd` a raised start is on tier 0 like any
+  floor.
+- Only while routing is on and turns come back down (`de_escalate =
+  true`); with `--sticky` a session stays up anyway.
+- Kept in `<data>/models/routing-memory.json`: at most 200 scopes (the
+  least recently used go first), 5 turns each, and the last 20
+  escalations with their reason.
+- The dashboard's Routing section lists each scope (where it starts, how
+  many of its last turns moved up, since when, why) and the last
+  escalations, from `GET /api/routing` (`scopes`, `recent`). **Reset**
+  (`POST /api/routing/reset {scope}`, audited as `routing.reset`) makes
+  its turns start on their floor again.
+
 ## Pins, tiers and `/model strong`
 
 A tier ref works wherever a model word does: a chat pin, a task's model, a
@@ -125,7 +154,7 @@ fallback's model. A cheap tier that is down falls back without escalating.
 - `ferrule doctor`: routing on or off, today's spend against the cap, a
   tier that doesn't resolve or has no key.
 - The audit log: `routing.escalate`, `routing.capped`, `routing.set`,
-  `routing.unset`.
+  `routing.unset`, `routing.reset`.
 
 ## Measuring it
 

@@ -1023,3 +1023,45 @@ async fn a_goal_loop_the_gateway_is_running_isnt_resumed_beside_it() {
     );
     assert!(router.stop("goal__x", "the test"));
 }
+
+#[tokio::test]
+async fn routing_lists_its_memory_only_while_on_and_a_reset_says_what_it_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = bare(dir.path());
+    let config = |on: bool| {
+        format!(
+            "default_provider = \"c\"\n[routing]\nenabled = {on}\ntiers = [\"c/c-small\", \"s/s-big\"]\n\n[providers.c]\nbase_url = \"http://127.0.0.1:1/v1\"\napi_key_env = \"PATH\"\nmodel = \"c-small\"\n\n[providers.s]\nbase_url = \"http://127.0.0.1:2/v1\"\napi_key_env = \"PATH\"\nmodel = \"s-big\"\n"
+        )
+    };
+    let path = dir.path().join("ferrule.toml");
+    std::fs::write(&path, config(false)).unwrap();
+    let models = Arc::new(crate::models::Models::new(
+        path.clone(),
+        Some(dir.path().join("models/pins.json")),
+        &toml::from_str(&config(false)).unwrap(),
+    ));
+    ctx.models = Some(models.clone());
+    let (s, v) = call(&ctx, "routing", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (v["scopes"].clone(), v["recent"].clone()),
+        (json!([]), json!([]))
+    );
+    let (s, v) = call(
+        &ctx,
+        "POST routing/reset",
+        json!({ "scope": "telegram:42" }),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("remembers nothing"),
+        "{v}"
+    );
+    let (s, _) = call(&ctx, "POST routing/reset", json!({})).await;
+    assert_eq!(s, 400);
+    // On: the scopes and the recent list are there to read.
+    std::fs::write(&path, config(true)).unwrap();
+    let (_, v) = call(&ctx, "routing", json!({})).await;
+    assert!(v["scopes"].is_array() && v["recent"].is_array(), "{v}");
+}

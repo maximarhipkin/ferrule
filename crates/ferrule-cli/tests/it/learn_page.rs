@@ -186,4 +186,91 @@ fn the_learning_page_reads_switches_keeps_feedback_and_lands_a_proposal() {
     assert!(v["lessons"].as_array().unwrap().is_empty(), "{v:#}");
     let (s, _) = page.post("learn/revert", json!({ "id": format!("{pass}:p2") }));
     assert_eq!(s, 400);
+
+    // Saving its own skills: off by default, asked before it's turned on.
+    let v = page.read("learn");
+    assert_eq!(v["self_written"], false);
+    assert_eq!(
+        v["eval"],
+        json!({ "enabled": false, "usd_cap": 1.0, "last": null, "trend": [] })
+    );
+    let (s, r) = page.post("learn/settings", json!({ "self_written": true }));
+    assert_eq!(s, 409, "asks first: {r}");
+    assert!(r["confirm"].is_string(), "{r}");
+    let (s, r) = page.post(
+        "learn/settings",
+        json!({ "self_written": true, "confirm": true }),
+    );
+    assert_eq!(s, 200, "{r}");
+    let file = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+    assert!(
+        file.contains("[skills]") && file.contains("self_written = true"),
+        "{file}"
+    );
+    assert_eq!(page.read("learn")["self_written"], true);
+
+    // The weekly eval: its task follows the switch; Run now is refused,
+    // in words, with no lesson to measure.
+    let (s, r) = page.post("learn/settings", json!({ "weekly_eval": true }));
+    assert_eq!(s, 200, "{r}");
+    let tasks = ferrule(dir.path(), &["tasks", "list"]);
+    assert!(String::from_utf8_lossy(&tasks.stdout).contains("ferrule-learn-eval"));
+    assert_eq!(page.read("learn")["eval"]["enabled"], true);
+    let (s, r) = page.post("learn/eval", json!({}));
+    assert_eq!(s, 409, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("no lessons"), "{r}");
+    let (s, _) = page.post("learn/settings", json!({ "weekly_eval": false }));
+    assert_eq!(s, 200);
+
+    // The memory page: the owner adds, pins and edits; a key is refused.
+    let (s, r) = page.post(
+        "memory/add",
+        json!({ "text": "The deploy target is fly.io", "tags": ["infra"] }),
+    );
+    assert_eq!(s, 200, "{r}");
+    let id = r["id"].as_i64().unwrap();
+    let (s, r) = page.post(
+        "memory/add",
+        json!({ "text": format!("the token is {token}") }),
+    );
+    assert_eq!(s, 400, "{r}");
+    assert!(r["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("That looked like an API key"));
+    let row = |v: &Value, id: i64| {
+        v["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no memory {id}: {v:#}"))
+    };
+    let m = row(&page.read("memory"), id);
+    assert_eq!(
+        (&m["recalls"], &m["pinned"], &m["source"]),
+        (&json!(0), &json!(false), &json!("owner")),
+        "{m}"
+    );
+    let (s, r) = page.post("memory/pin", json!({ "id": id, "pinned": true }));
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(row(&page.read("memory"), id)["pinned"], true);
+    let (s, r) = page.post(
+        "memory/edit",
+        json!({ "id": id, "text": "The deploy target is fly.io (region ams)" }),
+    );
+    assert_eq!(s, 200, "{r}");
+    let new = r["id"].as_i64().unwrap();
+    assert_ne!(new, id);
+    let m = row(&page.read("memory"), new);
+    assert_eq!(
+        (&m["pinned"], &m["tags"]),
+        (&json!(true), &json!(["infra"])),
+        "{m}"
+    );
+    let (s, _) = page.post("memory/edit", json!({ "id": id, "text": "older" }));
+    assert_eq!(s, 409, "the replaced fact");
+    let stale = page.read("memory?view=stale");
+    assert!(stale["memories"].as_array().unwrap().is_empty(), "{stale}");
 }

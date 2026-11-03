@@ -1110,7 +1110,7 @@ fn merge(env: &Env, facts: &[Memory], content: &str) -> Result<(i64, bool, Vec<i
     let ids: Vec<i64> = facts.iter().map(|f| f.id).collect();
     let before = store.max_id().map_err(|e| e.to_string())?;
     let ins = store
-        .insert(content, &[], &ids)
+        .insert_from(content, &[], &ids, Some("learned"))
         .map_err(|e| e.to_string())?;
     if ins.replaced.is_empty() {
         return Err(format!(

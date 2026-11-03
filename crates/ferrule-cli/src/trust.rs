@@ -35,6 +35,17 @@ pub fn hub(cfg: &Config) -> Result<Arc<Hub>> {
         .map_err(|e| anyhow!(e))?,
     );
     hub.set_owners(owners(cfg));
+    // M66: a gated call in the page's own chat is asked there.
+    hub.ask_tree_in(
+        &ferrule_gateway::session::session_id(
+            crate::dashboard::chat::CHANNEL,
+            crate::dashboard::chat::CHAT,
+        ),
+        ChatRef::new(
+            crate::dashboard::chat::CHANNEL,
+            crate::dashboard::chat::CHAT,
+        ),
+    );
     *slot = Some(hub.clone());
     Ok(hub)
 }

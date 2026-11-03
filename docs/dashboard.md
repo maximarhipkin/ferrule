@@ -442,8 +442,15 @@ none of these is a chat op, so the agent's admin tool can't call them.
   `/connect`, `/connections`, `/disconnect` (Connections does those). The
   page's chat counts as the owner's own chat, as it did for answers: a
   `/plan` typed there asks its question there, and a plan's, a goal's or
-  a graph's report comes back there. A reply sent whole keeps its id, as
-  a streamed one does, for its 👍/👎.
+  a graph's report comes back there. A gated command in one of its turns,
+  or in a goal loop started there, is asked there too (**Allow**, **Allow
+  for this run**, **Always here** where offered, **Refuse**), and is in the
+  approvals list; a key change's confirmation still goes to your chat app.
+  A reply sent whole keeps its id, as a streamed one does, for its 👍/👎.
+- **Routing** (`GET /api/routing`) also lists what each chat and task
+  needed (`scopes`) and the last escalations with their reason
+  (`recent`); **Reset** (`POST /api/routing/reset {scope}`) starts a
+  scope on its floor again ([routing.md](routing.md#remembering-m66)).
 
 ## Several instances
 

@@ -197,6 +197,44 @@ fallback` answers, and the owner is told when the plan resets. With no
 fallback, that message is the answer. `ferrule status`, `/status`, doctor
 and the dashboard show each plan's windows and when they reset.
 
+## Gemini plan
+
+```sh
+ferrule login gemini            # a browser on this machine comes back to localhost
+ferrule login gemini --paste    # sign in anywhere, paste back the address it lands on
+```
+
+The dashboard's **Models** page does the same. The browser comes back to
+`http://localhost:<port>/auth/callback`; ferrule listens there on
+127.0.0.1, and on ::1 too where the machine has it, on port 51121, 8085
+or a free one. A visit that isn't this sign-in's reply (an older tab's
+link) gets a short page, and the wait goes on.
+
+After the sign-in, ferrule asks Google (`loadCodeAssist`) for the
+account's Cloud Code project and tier, and onboards a new account
+(`onboardUser`, waiting up to 45 s for it to finish). When Google gives no
+project, the sign-in is kept and says so; ferrule asks again 5 minutes
+later, then after a wait that doubles up to 6 hours, not before every
+request.
+
+What a failure says:
+
+- the plan's usage limit: which model, and when it resets (from Google's
+  reply); the next model in `[models] fallback` answers meanwhile;
+- a sign-in Google refuses even after a refresh: sign in again;
+- a 403: the account has no Gemini Code Assist / Antigravity tier the
+  plan can use;
+- a blocked prompt, or an answer stopped for safety or recitation: a
+  refusal, with Google's reason;
+- a stream that ends without a finish reason: cut off, and tried again.
+
+Ferrule speaks as the Antigravity client, version 1.4.12;
+`FERRULE_GEMINI_CLIENT_VERSION` sets another. `[plans.gemini_cli]
+binary` (empty by default) runs that CLI (`agy` or `gemini`) instead of
+the native client. `[plans.gemini_cli] config_dir` may not hold ferrule's
+data folder: the CLI is let into its config dir, and `private/` stays
+hidden from it either way.
+
 ## Status and doctor
 
 ```sh

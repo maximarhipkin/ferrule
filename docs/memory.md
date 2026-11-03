@@ -19,7 +19,12 @@ them `profile` or `preference` (M56.4).
 
 - **They don't fade.** Every other fact's recall score halves every 7
   days, so a fact from two months ago ranks far below one from today.
-  A fact tagged `profile` or `preference` keeps its full score.
+  A fact tagged `profile` or `preference` keeps its full score, and so
+  does one you pin on the dashboard's Memory page, which also counts
+  twice against its peers. The page shows how often each fact was
+  recalled into a prompt and who wrote it, and lists the stale ones
+  (over 30 days, never recalled); see
+  [m16-learning-loop.md](m16-learning-loop.md) §13, "Memory upkeep".
 - **They're in every session.** Up to 10 of them (newest first) open the
   session's memory block, whatever the session is about, then the facts
   that match the goal, then the newest ones.

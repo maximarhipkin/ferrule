@@ -775,6 +775,35 @@ async fn a_sub_agents_spend_is_the_runs_and_crossing_the_cap_halts_the_parent() 
 // ---- approvals -------------------------------------------------------
 
 #[tokio::test]
+async fn a_tree_asks_in_its_own_chat_first_and_the_owners_chat_when_that_cant_be_reached() {
+    // M66: the page's chat or a goal's: here a chat this notifier can't
+    // reach, so the question goes on to the primary owner chat.
+    let w = World::new(caps());
+    w.hub
+        .ask_tree_in("s1", ferrule_trust::ChatRef::new("discord", "7"));
+    assert_eq!(
+        w.hub.asks_in("s1"),
+        Some(ferrule_trust::ChatRef::new("discord", "7"))
+    );
+    w.owner.replies.lock().unwrap().push("yes");
+    let r = w
+        .run("s1", telegram(), vec![shell("rm -rf target")], 10)
+        .await;
+    assert_eq!(r.ran, ["shell: rm -rf target"]);
+    let asked = w.audit("approval_asked");
+    let routes: Vec<&str> = asked.iter().map(|a| a["route"].as_str().unwrap()).collect();
+    assert_eq!(routes, ["discord", "telegram"], "its own chat first");
+    let answers: Vec<String> = w
+        .audit("approval_answered")
+        .iter()
+        .map(|a| a["answer"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(answers, ["unreachable", "yes"]);
+    // Another tree asks where it always did.
+    assert_eq!(w.hub.asks_in("s2"), None);
+}
+
+#[tokio::test]
 async fn a_gated_command_runs_after_the_owner_says_yes() {
     let w = World::new(caps());
     w.owner.replies.lock().unwrap().push("Yes!");

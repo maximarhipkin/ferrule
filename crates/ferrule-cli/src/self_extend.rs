@@ -95,6 +95,21 @@ pub struct Extensions {
     enabled: bool,
 }
 
+/// `[skills] self_written` as this process has it: read at start, set by
+/// the learning page's switch. Each agent reads it once, when it is built,
+/// so a session's tools (and its prompt prefix) never change mid-way.
+static SELF_WRITTEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The learning page changed `[skills] self_written`: new sessions follow.
+pub fn set_self_written(on: bool) {
+    SELF_WRITTEN.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether new sessions get `skill_keep` without `[extensions] enabled`.
+pub fn self_written() -> bool {
+    SELF_WRITTEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Extensions {
     /// The tools the servers offer right now.
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -103,18 +118,35 @@ impl Extensions {
 
     /// Put the servers into `registry` as a live source, plus — for the
     /// root only — the model's extension tools when `[extensions] enabled`
-    /// (the skill ones only when skills are on too).
+    /// (the skill ones only when skills are on too), or with `[skills]
+    /// self_written` alone `skill_keep` and nothing that installs.
     pub fn attach(&self, registry: &mut ToolRegistry, skills_on: bool, reach: Reach) {
+        self.attach_with(registry, skills_on, reach, self_written());
+    }
+
+    fn attach_with(
+        &self,
+        registry: &mut ToolRegistry,
+        skills_on: bool,
+        reach: Reach,
+        self_written: bool,
+    ) {
         if reach == (Reach::Child { reading_only: true }) {
             registry.attach(Arc::new(OnlyReading(self.manager.clone())));
         } else {
             registry.attach(self.manager.clone());
         }
-        if !self.enabled || reach != Reach::Root {
+        if reach != Reach::Root {
             return;
         }
         for tool in ferrule_extensions::tools(&self.manager) {
-            if skills_on || !tool.definition().name.starts_with("skill_") {
+            let name = tool.definition().name;
+            let offered = if self.enabled {
+                skills_on || !name.starts_with("skill_")
+            } else {
+                self_written && skills_on && name == KEEP_TOOL
+            };
+            if offered {
                 registry.register(tool);
             }
         }
@@ -235,11 +267,15 @@ pub async fn start(
     manager.spawn_sync();
     crate::config_follow::spawn(&manager, &cfg, &path, allow_trusted(&path));
     crate::connections::follow(&manager, &cfg);
+    set_self_written(cfg.skills.self_written);
     Ok(Extensions {
         manager,
         enabled: cfg.extensions.enabled,
     })
 }
+
+/// The one extension tool `[skills] self_written` offers.
+const KEEP_TOOL: &str = "skill_keep";
 
 /// The process's skills, once `start` has built them.
 static LIVE_SKILLS: std::sync::OnceLock<SkillsHandle> = std::sync::OnceLock::new();
@@ -681,6 +717,41 @@ mod tests {
             assert!(eight.iter().all(|t| !n.iter().any(|x| x == t)), "{n:?}");
             assert!(!child.contains("mcp_add") && !child.contains("skill_keep"));
         }
+    }
+
+    #[tokio::test]
+    async fn self_written_offers_skill_keep_alone_without_extensions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new(ManagerConfig {
+            allow: AllowList::default(),
+            layout: Layout::new(tmp.path().join("data")),
+            sandbox: Arc::new(Sandbox::off()),
+            workspace: tmp.path().to_path_buf(),
+            skills: None,
+        });
+        let ext = Extensions {
+            manager,
+            enabled: false,
+        };
+        let with = |skills_on, reach, on| {
+            let mut reg = ToolRegistry::new();
+            ext.attach_with(&mut reg, skills_on, reach, on);
+            names(&reg)
+        };
+        assert_eq!(with(true, Reach::Root, true), ["skill_keep"]);
+        assert!(with(true, Reach::Root, false).is_empty(), "off by default");
+        assert!(with(false, Reach::Root, true).is_empty(), "skills off");
+        for reading_only in [false, true] {
+            assert!(with(true, Reach::Child { reading_only }, true).is_empty());
+        }
+        // `[extensions] enabled` still gives all eight.
+        let all = Extensions {
+            enabled: true,
+            ..ext.clone()
+        };
+        let mut reg = ToolRegistry::new();
+        all.attach_with(&mut reg, true, Reach::Root, false);
+        assert_eq!(names(&reg).len(), 8);
     }
 
     #[test]

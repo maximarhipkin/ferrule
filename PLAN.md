@@ -11274,3 +11274,52 @@ app (and on the page's approvals list), not in the page chat; a goal
 loop's gated commands are refused (no chat to ask). `/connect` and
 friends stay on chat apps. The learning pass has still not run against a
 real model here (only a dry run against a scripted one).
+
+### 2026-11-03 — M66, round 2: questions in the page chat, goal loops that ask, routing that remembers, memory upkeep, a weekly check, and the Gemini plan's review defects (Claude, Opus 5.5)
+
+**Why.** The owner asked to finish what round 1 left open and the next
+improvements from the audit, and to fix the defects the first review of
+the Gemini plan found.
+
+**What changed.**
+- A gated call in a page-chat turn is asked in the page chat (Allow /
+  Allow for this run / Always here / Refuse), still listed on the
+  approvals card; each conversation can have its own asking chat
+  (`Hub::ask_tree_in`), falling back to the primary owner chat. A `/goal`
+  loop asks in the chat that started it instead of refusing; a terminal
+  `run --goal` without a TTY still refuses.
+- Routing remembers (docs/routing.md "Remembering"): a chat or task whose
+  last 5 turns moved up 3 times starts one tier up, and eases back after
+  5 turns that didn't; `/api/routing` gains `scopes` and `recent` (why
+  each turn moved up), `routing/reset {scope}`. Bounded file under
+  `<data>/models/`.
+- `[skills] self_written` (off): the agent may keep a skill it wrote and
+  checked, apart from `[extensions]`.
+- Memory upkeep: use counts, pins (never fade, rank ×2), a source per
+  fact, a daily model-free merge of identical facts (journaled,
+  reversible), and the page's add / edit / pin / "never used" view; adds
+  and edits refuse keys like the chat does.
+- Weekly check (`[learning] weekly_eval = false`, `eval_usd_cap = 1.0`):
+  the kept lessons' tasks, with and without the playbook, under the caps;
+  results and a trend on the Learning page.
+- Gemini plan: a stream that ends without a finish reason is an early end
+  (retried), a block is a refusal; quota (with its reset time), expired
+  sign-in and "no tier" each get their own sentence; no-project accounts
+  back off instead of re-onboarding every request, onboardUser is polled
+  to done, the store lock covers only the refresh; `state()` counts a CLI
+  login only when that CLI is the engine; a `config_dir` holding the data
+  dir is refused and `private/` stays hidden regardless; the loopback
+  listens on 127.0.0.1 and ::1 and ignores wrong-state requests; one
+  client version everywhere (`FERRULE_GEMINI_CLIENT_VERSION`).
+
+**Checks.** fmt clean; clippy clean but for the older `ferrule-sandbox`
+warning; `cargo test --workspace --locked`: 2,000 pass, the two root-only
+failures as before. In a browser against the gateway: a gated command
+from the page chat asked in the page chat and run on Allow; memory add,
+pin and a key refused.
+
+**Open.** A goal resumed from the dashboard (a `run --resume` child)
+still can't ask. The weekly check and the learning pass haven't run
+against a real model. The Gemini plan presents itself as the Antigravity
+client (its OAuth client id, `ideType`, User-Agent): a terms-of-service
+risk for the owner's Google account that the docs don't state yet.

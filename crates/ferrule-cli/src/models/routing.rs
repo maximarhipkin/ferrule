@@ -143,6 +143,8 @@ pub(super) struct RoutingState {
     capped_on: Option<NaiveDate>,
     /// Where the ledger is, to seed today's spend.
     pub(super) ledger: Option<PathBuf>,
+    /// M66: what each chat's and task's turns needed, read at first use.
+    memory: Option<super::routing_memory::Memory>,
 }
 
 /// One agent's routing: its ladder, and what the last call was.
@@ -155,6 +157,9 @@ pub(super) struct Lane {
     pub(super) tag: Option<RouteTag>,
     /// The tier's model the last call wanted, before an outage swapped it.
     pub(super) wanted: Option<Entry>,
+    /// M66: the tier the running turn started on (its floor, or one above
+    /// when its scope remembers needing it).
+    pub(super) start: Option<usize>,
 }
 
 type LadderKey = (Vec<String>, usize, Policy);
@@ -278,13 +283,22 @@ impl Models {
                     (wanted, None)
                 }
                 Some(floor) => {
-                    let key = (r.names(), floor, r.policy.clone());
+                    // M66: a new turn of a chat or task that usually needed
+                    // more starts a tier up; mid-turn, where it started.
+                    let new_turn = std::mem::take(&mut lane.turn);
+                    let start = match (new_turn, remembered(r, scope)) {
+                        (true, Some(key)) => self.memory(&mut st).begin(&key, &r.names(), floor),
+                        (true, None) => floor,
+                        (false, _) => lane.start.unwrap_or(floor),
+                    };
+                    lane.start = Some(start);
+                    let key = (r.names(), start, r.policy.clone());
                     if lane.ladder.as_ref().map(|(k, _)| k) != Some(&key) {
-                        let ladder = Ladder::new(key.0.clone(), floor, key.2.clone());
+                        let ladder = Ladder::new(key.0.clone(), start, key.2.clone());
                         lane.ladder = Some((key, ladder));
                     }
                     let ladder = &mut lane.ladder.as_mut().expect("just set").1;
-                    if std::mem::take(&mut lane.turn) {
+                    if new_turn {
                         let force = scope
                             .chat
                             .as_ref()
@@ -451,10 +465,88 @@ impl Models {
         spent(&mut st, &cat.routing)
     }
 
+    /// M66: the memory, read from its file the first time.
+    fn memory<'a>(&self, st: &'a mut State) -> &'a mut super::routing_memory::Memory {
+        let path = self
+            .pins_path
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(|d| d.join("routing-memory.json"));
+        st.routing
+            .memory
+            .get_or_insert_with(|| super::routing_memory::Memory::at(path))
+    }
+
+    /// M66: the remembered scopes and the latest escalations, for the page;
+    /// both empty while routing is off.
+    pub fn routing_memory_view(&self) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        let mut st = self.state.lock().unwrap();
+        self.refresh(&mut st);
+        if !st.catalog.routing.on() {
+            return (Vec::new(), Vec::new());
+        }
+        let m = self.memory(&mut st);
+        let scopes = m
+            .scopes()
+            .iter()
+            .map(|(scope, s)| {
+                serde_json::json!({
+                    "scope": scope,
+                    "start_tier": s.start_tier(),
+                    "escalated_last": s.escalated_last(),
+                    "turns_last": s.turns.len(),
+                    "since": s.since,
+                    "why": s.why_now(),
+                })
+            })
+            .collect();
+        let recent = m
+            .recent()
+            .map(|e| {
+                serde_json::json!({
+                    "at": e.at,
+                    "scope": e.scope,
+                    "from": e.from,
+                    "to": e.to,
+                    "why": e.why,
+                })
+            })
+            .collect();
+        (scopes, recent)
+    }
+
+    /// M66: forgets what `scope` needed: its next turn starts on its floor.
+    pub fn reset_routing_scope(&self, scope: &str, by: &str) -> Result<String, String> {
+        let had = {
+            let mut st = self.state.lock().unwrap();
+            self.memory(&mut st).reset(scope)
+        };
+        if !had {
+            return Err(format!("Routing remembers nothing for `{scope}`."));
+        }
+        self.audit(
+            "routing.reset",
+            serde_json::json!({ "scope": scope, "by": by }),
+        );
+        Ok(format!(
+            "{scope} starts its turns on its floor again, and its count starts over."
+        ))
+    }
+
     fn say(&self, scope: &Scope, said: Vec<Said>) {
         for s in said {
             match s {
                 Said::Escalated(e) => {
+                    // M66: kept for the page, and counted for the scope
+                    // unless the owner asked (`/model strong`).
+                    {
+                        let mut st = self.state.lock().unwrap();
+                        let label = super::routing_memory::scope_of(scope)
+                            .unwrap_or_else(|| format!("session {}", scope.session));
+                        let counts = e.reason != Signal::Owner.reason();
+                        self.memory(&mut st)
+                            .escalated(&label, &e.from, &e.to, &e.reason, counts);
+                    }
                     tracing::info!(session = %scope.session, from = %e.from, to = %e.to, reason = %e.reason, "routing: moved up a tier");
                     self.audit(
                         "routing.escalate",
@@ -478,6 +570,14 @@ impl Models {
             }
         }
     }
+}
+
+/// M66: the scope `scope`'s turns are remembered under, when routing
+/// remembers: on, back to the floor each turn, a chat's or a task's own.
+fn remembered(r: &Routing, scope: &Scope) -> Option<String> {
+    (r.on() && r.policy.de_escalate)
+        .then(|| super::routing_memory::scope_of(scope))
+        .flatten()
 }
 
 /// Today's (UTC) spend above tier 0: counted from the ledger the first
@@ -989,6 +1089,104 @@ model = "n-top"
         assert_eq!(call(&p).await, pair("c/c-small", "cheap"));
         p.escalate(&Signal::StopHook).unwrap();
         assert_eq!(call(&p).await, pair("m/m-mid", "m+stop_hook"));
+    }
+
+    /// M66: a chat that kept needing the strong tier starts there, eases
+    /// back after quiet turns, and the owner can reset it.
+    #[tokio::test]
+    async fn a_chat_that_keeps_moving_up_starts_up_eases_back_and_resets() {
+        let rig = Rig::new(CONFIG.replace("strong_daily_usd = 1.0\n", "").as_str());
+        let p = rig.provider(rig.chat());
+        for _ in 0..3 {
+            p.begin_turn();
+            assert_eq!(call(&p).await, pair("c/c-small", "cheap"));
+            p.escalate(&Signal::CheckFailed).unwrap();
+            call(&p).await;
+        }
+        // Three of its turns moved up: the next starts on the strong tier,
+        // and that isn't an escalation of its own.
+        p.begin_turn();
+        assert_eq!(call(&p).await, pair("s/s-big", "strong"));
+        let (scopes, recent) = rig.models.routing_memory_view();
+        assert_eq!(scopes.len(), 1, "{scopes:?}");
+        let s = &scopes[0];
+        assert_eq!(
+            (s["scope"].as_str(), s["start_tier"].as_str()),
+            (Some("telegram:42"), Some("strong"))
+        );
+        assert_eq!(
+            (s["escalated_last"].as_u64(), s["turns_last"].as_u64()),
+            (Some(3), Some(4))
+        );
+        assert!(s["since"].is_string());
+        assert!(
+            s["why"]
+                .as_str()
+                .unwrap()
+                .contains("3 of its last 3 turns moved up (check_failed)"),
+            "{s}"
+        );
+        assert_eq!(recent.len(), 3);
+        assert_eq!(
+            (
+                recent[0]["from"].as_str(),
+                recent[0]["to"].as_str(),
+                recent[0]["why"].as_str()
+            ),
+            (Some("cheap"), Some("strong"), Some("check_failed"))
+        );
+        // A new process over the same data remembers it.
+        let again = Arc::new(Models::new(
+            rig.dir.path().join("ferrule.toml"),
+            Some(rig.dir.path().join("pins.json")),
+            &toml::from_str(&CONFIG.replace("strong_daily_usd = 1.0\n", "")).unwrap(),
+        ));
+        assert_eq!(again.routing_memory_view().0[0]["start_tier"], "strong");
+        // Four more turns there that move no further: then cheap again.
+        for _ in 0..4 {
+            p.begin_turn();
+            assert_eq!(call(&p).await, pair("s/s-big", "strong"));
+        }
+        p.begin_turn();
+        assert_eq!(call(&p).await, pair("c/c-small", "cheap"));
+        // Up again, then the owner resets it.
+        for _ in 0..3 {
+            p.begin_turn();
+            call(&p).await;
+            p.escalate(&Signal::ToolErrors(2)).unwrap();
+        }
+        p.begin_turn();
+        assert_eq!(call(&p).await, pair("s/s-big", "strong"));
+        let said = rig
+            .models
+            .reset_routing_scope("telegram:42", "test")
+            .unwrap();
+        assert!(said.contains("on its floor again"), "{said}");
+        assert!(rig
+            .models
+            .reset_routing_scope("telegram:42", "test")
+            .is_err());
+        assert_eq!(rig.audit("routing.reset").len(), 1);
+        p.begin_turn();
+        assert_eq!(call(&p).await, pair("c/c-small", "cheap"));
+        // The owner's `/model strong` isn't a need, and a sub-agent's turns
+        // (a session of its own in the chat) aren't the chat's.
+        let mut child = Scope::for_session("telegram__42");
+        child.session = "a1".into();
+        let c = rig.provider(child);
+        for _ in 0..4 {
+            c.begin_turn();
+            call(&c).await;
+            c.escalate(&Signal::CheckFailed).unwrap();
+        }
+        c.begin_turn();
+        assert_eq!(call(&c).await, pair("c/c-small", "cheap"));
+        let (scopes, recent) = rig.models.routing_memory_view();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(recent[0]["scope"], "session a1");
+        // Off: nothing shown, nothing remembered.
+        let off = Rig::new(&CONFIG.replace("enabled = true", "enabled = false"));
+        assert_eq!(off.models.routing_memory_view(), (vec![], vec![]));
     }
 
     #[test]

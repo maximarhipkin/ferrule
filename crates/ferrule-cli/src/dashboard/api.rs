@@ -227,6 +227,7 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "plans/claude" if crate::managed::on() => bad(403, crate::managed::NO_CLAUDE_PLAN),
         "plans/claude" => super::models_page::claude_token(ctx, body),
         "routing/set" | "routing/unset" => routing_op(ctx, path, body),
+        "routing/reset" => routing_reset(ctx, body),
         "catalog/add" => catalog_add(ctx, body).await,
         "catalog/fill-prices" => fill_prices(ctx).await,
         // An MCP address is a server the owner adds: managed mode's
@@ -285,6 +286,8 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "backup" => super::backup_page::start(ctx),
         "backups/delete" => super::backup_page::delete(ctx, body),
         "memory/forget" => super::memory::forget(ctx, body).await,
+        // The memory page's upkeep (memory.rs): add, edit, pin.
+        "memory/add" | "memory/edit" | "memory/pin" => super::memory::post(ctx, path, body).await,
         "tasks/preview" => task_preview(body),
         "tasks/add" => task_add(ctx, body).await,
         "approvals/answer" => super::chat::answer(ctx, body),
@@ -1657,12 +1660,29 @@ fn routing(ctx: &Ctx, req: &Request) -> Answer {
         .and_then(|d| crate::ledger::read_records(&d.join("ledger.jsonl"), Some(since)).ok())
         .map(|(rows, _)| routing_admin::stats(&rows))
         .unwrap_or_default();
+    // M66: what each chat and task needed, and why each recent turn moved.
+    let (scopes, recent) = m.routing_memory_view();
     ok(json!({
         "routing": m.view().routing,
         "days": days,
         "stats": stats,
         "suggestion": routing_admin::suggest(&m.catalog(), &[], None),
+        "scopes": scopes,
+        "recent": recent,
     }))
+}
+
+/// M66: `POST /api/routing/reset {scope}`: the scope's turns start on
+/// their floor again, counting anew.
+fn routing_reset(ctx: &Ctx, body: &Value) -> Answer {
+    let Some(m) = &ctx.models else {
+        return missing("the models");
+    };
+    let scope = need!(arg(body, "scope"));
+    match m.reset_routing_scope(scope, &by()) {
+        Ok(said) => ok(json!({ "ok": true, "said": said })),
+        Err(why) => bad(404, why),
+    }
 }
 
 fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {

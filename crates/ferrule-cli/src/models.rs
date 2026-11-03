@@ -25,6 +25,7 @@ mod cross_driver;
 mod door;
 pub mod routing;
 pub mod routing_admin;
+pub mod routing_memory;
 pub use admin::*;
 pub use cli::{cmd, render, ModelCmd};
 pub use door::{status_lines, ModelDoor, Retire};

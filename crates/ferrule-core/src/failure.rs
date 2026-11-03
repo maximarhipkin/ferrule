@@ -28,6 +28,11 @@ pub enum Kind {
     ChatgptSignin,
     /// The Claude plan's sign-in expired or was revoked.
     ClaudeSignin,
+    /// The Gemini plan's Google sign-in expired, was revoked, or is missing.
+    GeminiSignin,
+    /// The Google account has no Gemini Code Assist / Antigravity tier the
+    /// Gemini plan can use (no Cloud Code project, or not onboarded).
+    GeminiNoTier,
     /// A plan's usage limit: nothing more until it resets.
     UsageLimit,
     RateLimited,
@@ -101,7 +106,11 @@ impl Kind {
             Kind::Server => FailureClass::Server,
             Kind::Timeout => FailureClass::Timeout,
             Kind::Connect => FailureClass::Connect,
-            Kind::Auth | Kind::ChatgptSignin | Kind::ClaudeSignin => FailureClass::Auth,
+            Kind::Auth
+            | Kind::ChatgptSignin
+            | Kind::ClaudeSignin
+            | Kind::GeminiSignin
+            | Kind::GeminiNoTier => FailureClass::Auth,
             Kind::ModelGone => FailureClass::ModelNotFound,
             Kind::ContextTooLong => FailureClass::ContextTooLong,
             Kind::Refused => FailureClass::Refused,
@@ -139,7 +148,11 @@ impl Kind {
         let minutes = |m: u64| Some(Duration::from_secs(m * 60));
         match self {
             Kind::UsageLimit => retry_after.or(minutes(60)),
-            Kind::ChatgptSignin | Kind::ClaudeSignin | Kind::Auth => minutes(60),
+            Kind::ChatgptSignin
+            | Kind::ClaudeSignin
+            | Kind::GeminiSignin
+            | Kind::GeminiNoTier
+            | Kind::Auth => minutes(60),
             Kind::ClientTooOld => minutes(60),
             Kind::ClaudeTooOld | Kind::ClaudeMissing => minutes(30),
             Kind::ModelGone => minutes(24 * 60),
@@ -154,7 +167,8 @@ impl Kind {
             Kind::ClientTooOld => "it wants a newer Codex client version",
             Kind::ClaudeTooOld => "the claude CLI is too old",
             Kind::ClaudeMissing => "the claude CLI is missing",
-            Kind::ChatgptSignin | Kind::ClaudeSignin => "its sign-in expired",
+            Kind::ChatgptSignin | Kind::ClaudeSignin | Kind::GeminiSignin => "its sign-in expired",
+            Kind::GeminiNoTier => "the Google account has no Gemini plan tier",
             Kind::UsageLimit => "its usage limit is reached",
             Kind::RateLimited => "rate-limited",
             Kind::Overloaded => "overloaded",
@@ -195,6 +209,15 @@ impl Kind {
             Kind::ClaudeSignin => {
                 "the Claude plan's sign-in expired or was revoked. \
                  Sign in again on the dashboard's Models page (/dashboard sends the link)."
+            }
+            Kind::GeminiSignin => {
+                "the Gemini plan's Google sign-in expired, was revoked, or isn't there. \
+                 Sign in again on the dashboard's Models page (/dashboard sends the link)."
+            }
+            Kind::GeminiNoTier => {
+                "this Google account has no Gemini Code Assist / Antigravity tier the Gemini plan can use \
+                 (Google gave it no Cloud Code project, or it isn't onboarded). Sign in with an account \
+                 that has one on the dashboard's Models page, or pick another model: /model."
             }
             Kind::UsageLimit => {
                 "the plan's usage limit is reached. Send /model fallback <model> so another model answers until it resets."
@@ -388,6 +411,14 @@ pub fn classify_text(text: &str) -> Option<Kind> {
     ]) {
         return Some(Kind::ClaudeMissing);
     }
+    // The Gemini plan's own sentences (cloudcode.rs, gemini/mod.rs): the
+    // tier one first, it names the sign-in command too.
+    if any(&["no gemini code assist / antigravity tier"]) {
+        return Some(Kind::GeminiNoTier);
+    }
+    if any(&["ferrule login gemini"]) {
+        return Some(Kind::GeminiSignin);
+    }
     if any(&["ferrule login chatgpt", "chatgpt plan refused the sign-in"])
         || (t.contains("chatgpt")
             && any(&[
@@ -554,6 +585,26 @@ mod tests {
                 Repair::None,
             ),
             (
+                provider("HTTP 401: your Google sign-in for the Gemini plan was refused even after a refresh: run `ferrule login gemini` or sign in again on the dashboard's Models page"),
+                Kind::GeminiSignin,
+                Repair::None,
+            ),
+            (
+                provider("not signed in to the Gemini plan: run `ferrule login gemini`"),
+                Kind::GeminiSignin,
+                Repair::None,
+            ),
+            (
+                provider("HTTP 403: this Google account has no Gemini Code Assist / Antigravity tier ferrule can use (PERMISSION_DENIED); sign in with one that has: `ferrule login gemini`"),
+                Kind::GeminiNoTier,
+                Repair::None,
+            ),
+            (
+                transient("HTTP 429 usage_limit_reached: the Gemini plan's usage limit is reached (gemini-3.8-flash-tiered); it resets in 2 h 3 min (15:10 UTC)"),
+                Kind::UsageLimit,
+                Repair::None,
+            ),
+            (
                 transient("HTTP 429 usage_limit_reached: the ChatGPT plan's usage limit is reached (plus); it resets in 2 h"),
                 Kind::UsageLimit,
                 Repair::None,
@@ -644,6 +695,12 @@ mod tests {
         assert!(Kind::ClaudeSignin
             .chat_words()
             .contains("dashboard's Models page"));
+        // Nor Gemini's: no chat command signs in to Google.
+        for kind in [Kind::GeminiSignin, Kind::GeminiNoTier] {
+            assert!(kind.chat_words().contains("dashboard's Models page"));
+            assert!(!kind.chat_words().contains("API key"));
+            assert_eq!(kind.class(), FailureClass::Auth);
+        }
     }
 
     #[test]
@@ -654,6 +711,8 @@ mod tests {
             Kind::ClaudeMissing,
             Kind::ChatgptSignin,
             Kind::ClaudeSignin,
+            Kind::GeminiSignin,
+            Kind::GeminiNoTier,
             Kind::UsageLimit,
             Kind::RateLimited,
             Kind::Overloaded,

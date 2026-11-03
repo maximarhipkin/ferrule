@@ -57,7 +57,8 @@ fn call(name: &str, args: Value) -> Value {
     })
 }
 
-/// `<label>:<model>`, or a `sleep 30` for a task saying HANG; `GET
+/// `<label>:<model>`, or a `sleep 30` for a task saying HANG (an `rm -rf
+/// build` for one saying RMRF); `GET
 /// /models` answers with the recorded OpenRouter list. `failing` models
 /// (or `*`) answer 503, and `offline` refuses `/models`.
 pub(super) struct Server {
@@ -195,6 +196,9 @@ fn serve(
     let after_tool = messages.last().is_some_and(|m| m["role"] == "tool");
     let out = if task.contains("HANG") && !after_tool {
         call("shell", json!({"command": "sleep 30"}))
+    } else if task.contains("RMRF") && !after_tool {
+        // M66: a gated command, asked about before it runs.
+        call("shell", json!({"command": "rm -rf build"}))
     } else {
         answer(&format!("{label}:{model}"))
     };

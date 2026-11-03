@@ -1,7 +1,13 @@
-//! The Antigravity / Cloud Code client version ferrule speaks as.
-//! Starts at [`CLIENT_VERSION`] (`1.4.12`), caches learned versions in
-//! `<data>/gemini-client-version.json`, and honors
-//! `FERRULE_GEMINI_CLIENT_VERSION` when set.
+//! The Antigravity / Cloud Code client version ferrule speaks as: one
+//! identity for every Cloud Code call (the driver's `User-Agent`,
+//! `X-Goog-Api-Client` and `loadCodeAssist` metadata, and the plan's
+//! sign-in, onboarding and quota calls). It is [`CLIENT_VERSION`]
+//! (`1.4.12`) unless `FERRULE_GEMINI_CLIENT_VERSION` is set.
+//!
+//! Nothing learns a newer version yet: [`ClientIdentity::record`] keeps
+//! one (in memory, and in `<data>/gemini-client-version.json` for an
+//! identity made with a data dir), but no caller records one, and the
+//! process-wide [`global`] identity has no data dir.
 
 use super::CLIENT_VERSION;
 use serde::{Deserialize, Serialize};
@@ -112,4 +118,21 @@ fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_override_wins_and_only_a_newer_version_is_recorded() {
+        let id = ClientIdentity::new(None).with_override(None);
+        assert_eq!(id.current(), CLIENT_VERSION);
+        id.record("1.0.0", "test");
+        assert_eq!(id.current(), CLIENT_VERSION);
+        id.record("9.9.9", "test");
+        assert_eq!(id.current(), "9.9.9");
+        let pinned = ClientIdentity::new(None).with_override(Some(" 2.0.1 ".into()));
+        assert_eq!(pinned.current(), "2.0.1");
+    }
 }

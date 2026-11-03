@@ -20,6 +20,12 @@
 //!   carry that content, and a memory carries no taint into the later run
 //!   that recalls it. On by default, even with learning off
 //!   (`[learning] failure_notes`).
+//! - **Memory upkeep.** At most once a day, after a run of the owner's,
+//!   facts in the owner's memory that read the same are merged into one
+//!   ([`MemoryStore::merge_duplicates`]): no model call, so it runs with
+//!   learning off; each merge is journaled in `learn/log.jsonl` and is
+//!   M15's reversible UPDATE. Facts that only resemble each other need a
+//!   model's judgment, so they wait for the learning pass.
 
 use crate::config::Config;
 use ferrule_core::{RunEnd, RunObserver};
@@ -96,7 +102,12 @@ pub struct RunWatch {
     scrub: Scrub,
     hub: Option<Arc<Hub>>,
     started: Mutex<chrono::DateTime<chrono::Utc>>,
+    /// The owner's session: its memory gets the daily upkeep.
+    owner: bool,
 }
+
+/// How often the memory upkeep runs, at most.
+const UPKEEP_EVERY: i64 = 86_400;
 
 impl RunWatch {
     /// The watch of an agent of run tree `tree`, in session `session`,
@@ -129,6 +140,7 @@ impl RunWatch {
             scrub: scrubber(cfg),
             hub: crate::trust::hub(cfg).ok(),
             started: Mutex::new(chrono::Utc::now()),
+            owner: !guest,
         }))
     }
 
@@ -186,11 +198,60 @@ impl RunWatch {
             })
     }
 
+    /// The daily memory upkeep, if it's due: `learn/upkeep.json` holds when
+    /// it last ran. Returns the merges it made.
+    async fn upkeep(&self) -> Vec<(i64, Vec<i64>)> {
+        if !self.owner {
+            return Vec::new();
+        }
+        let stamp = self.dir.root().join("upkeep.json");
+        let now = chrono::Utc::now().timestamp();
+        let last = std::fs::read_to_string(&stamp)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v["at"].as_i64())
+            .unwrap_or(0);
+        if now - last < UPKEEP_EVERY || !self.memory_db.exists() {
+            return Vec::new();
+        }
+        // Stamped first: two runs ending at once don't both do it.
+        let _ = ferrule_learn::files::write_atomic(
+            &stamp,
+            serde_json::json!({ "at": now }).to_string().as_bytes(),
+        );
+        let db = self.memory_db.clone();
+        let merged = tokio::task::spawn_blocking(move || {
+            MemoryStore::open(&db).and_then(|s| s.merge_duplicates())
+        })
+        .await;
+        match merged {
+            Ok(Ok(m)) => {
+                for (kept, replaced) in &m {
+                    self.dir.log(
+                        "upkeep",
+                        "merge",
+                        serde_json::json!({ "kept": kept, "replaced": replaced,
+                            "why": "the same fact, word for word" }),
+                    );
+                }
+                m
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("memory upkeep: {e}");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!("memory upkeep: {e}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Writes `note` to memory, tagged with the scope.
     fn keep_note(&self, note: &str) -> Result<i64, String> {
         let scope_tag = format!("scope:{}", self.scope.replace(',', "_"));
         MemoryStore::open(&self.memory_db)
-            .and_then(|s| s.insert(note, &[FAILURE_NOTE, &scope_tag], &[]))
+            .and_then(|s| s.insert_from(note, &[FAILURE_NOTE, &scope_tag], &[], Some(FAILURE_NOTE)))
             .map(|i| i.id)
             .map_err(|e| e.to_string())
     }
@@ -263,6 +324,7 @@ impl RunObserver for RunWatch {
         if let Err(e) = self.dir.record_use(&u) {
             tracing::warn!("learning: a run's use wasn't recorded: {e}");
         }
+        self.upkeep().await;
         if done || !self.notes_on() {
             return None;
         }
@@ -311,6 +373,7 @@ mod tests {
             scrub: Arc::new(|t: &str| mask_keys(&t.replace("hunter2hunter2", "[redacted]"))),
             hub,
             started: Mutex::new(chrono::Utc::now()),
+            owner: true,
         })
     }
 
@@ -430,6 +493,29 @@ mod tests {
         hub.begin_run("telegram__42");
         w.end(&failed()).await;
         assert_eq!(notes(d.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_daily_upkeep_merges_word_for_word_duplicates_once_a_day() {
+        let d = tempfile::tempdir().unwrap();
+        let w = watch(d.path());
+        let store = MemoryStore::open(d.path().join("memory.db")).unwrap();
+        let a = store.remember("The deploy target is fly.io", &[]).unwrap();
+        let b = store
+            .remember("the deploy target is  fly.io.", &[])
+            .unwrap();
+        let c = store.remember("The staging port is 5781", &[]).unwrap();
+        store.set_pinned(a, true).unwrap();
+        assert_eq!(w.upkeep().await, vec![(b, vec![a])]);
+        let kept = store.get(b).unwrap().unwrap();
+        assert!(kept.pinned, "the pin goes with the fact");
+        assert_eq!(store.get(a).unwrap().unwrap().superseded_by, Some(b));
+        assert!(store.get(c).unwrap().unwrap().superseded_by.is_none());
+        // Not again the same day.
+        store.remember("The staging port is 5781", &[]).unwrap();
+        assert!(w.upkeep().await.is_empty());
+        let log = std::fs::read_to_string(w.dir.root().join("log.jsonl")).unwrap();
+        assert!(log.contains("\"merge\""), "{log}");
     }
 
     #[test]

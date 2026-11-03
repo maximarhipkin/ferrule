@@ -5,4 +5,5 @@
 mod bench;
 mod migration;
 mod notes;
+mod upkeep;
 mod vectors;

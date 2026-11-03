@@ -1800,6 +1800,24 @@
           el("span", { class: "mono", text: String(d.escalations) }),
           text(reasons(d.reasons)),
         ]})), [1]) : el("div", { class: "empty", text: "none in this window" }),
+        // M66: why each recent turn moved up, and what each chat or task
+        // now starts on because it usually needs the stronger model.
+        (r.recent || []).length ? frag(el("h2", { text: "Recent escalations" }),
+          table(["when", "where", "moved", "why"], r.recent.map((x) => ({ cells: [
+            el("span", { class: "muted", text: when(x.at) }),
+            el("span", { class: "mono small", text: x.scope || "–" }),
+            el("span", { class: "mono small", text: (x.from || "?") + " → " + (x.to || "?") }),
+            el("span", { class: "msg", dir: "auto", text: x.why || "" }),
+          ]})))) : null,
+        (r.scopes || []).length ? frag(el("h2", { text: "Remembered starting points" }),
+          el("p", { class: "muted small", text: "A chat or task that usually had to move up starts on the stronger tier, and eases back after turns that didn't need it." }),
+          table(["where", "starts on", "recent turns", "since", ""], r.scopes.map((x) => ({ cells: [
+            frag(el("span", { class: "mono small", text: x.scope }), x.why ? el("span", { class: "sub msg", dir: "auto", text: x.why }) : null),
+            el("span", { class: "mono", text: x.start_tier }),
+            el("span", { class: "muted", text: (x.escalated_last != null ? x.escalated_last + " of " + x.turns_last + " moved up" : "–") }),
+            el("span", { class: "muted", text: when(x.since) }),
+            btn("Reset", "routing/reset", { scope: x.scope }),
+          ]})))) : null,
         el("h2", { text: "Spend per tier" }),
         (st.tiers || []).length ? frag(
           bars(st.tiers.map((t, i) => ({ k: t.tier, v: t.usd, dim: i > 0 })), usd),
@@ -3821,14 +3839,36 @@
       let wait = null;
       this.q.oninput = () => { clearTimeout(wait); wait = setTimeout(() => this.load(), 300); };
       this.q.onkeydown = (e) => { if (e.key === "Escape" && this.q.value) { this.q.value = ""; this.load(); } };
-      root.append(secHead(tr("Memory"), tr("what it remembers")), el("div", { class: "row search" }, icon("search"), this.q), this.box);
+      // M66: add a fact yourself; "Never used" shows what's never been recalled.
+      this.view = this.view || "all";
+      this.pick = el("div");
+      this.drawPick = () => setKids(this.pick, chips("Show", [["all", "Everything"], ["pinned", "Pinned"], ["stale", "Never used"]], this.view,
+        (v) => { this.view = v; this.drawPick(); this.load(); }));
+      this.drawPick();
+      const add = el("input", { class: "grow", dir: "auto", placeholder: "Something it should remember, in your words", "aria-label": "A new memory" });
+      const addBtn = button("Remember", { kind: "primary", icon: "plus" });
+      addBtn.onclick = async () => {
+        const t = add.value.trim();
+        if (!t) return add.focus();
+        if (await act("memory/add", { text: t }, addBtn)) { add.value = ""; delete add.dataset.dirty; this.load(); }
+      };
+      add.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addBtn.click(); } };
+      add.oninput = () => { add.dataset.dirty = "1"; };
+      root.append(secHead(tr("Memory"), tr("what it remembers")),
+        el("div", { class: "card flat" }, el("div", { class: "row key-row" }, add, addBtn),
+          el("p", { class: "muted small m0", text: "Keys and passwords are refused here: they go in the Safe." })),
+        el("div", { class: "row search" }, icon("search"), this.q), this.pick, this.box);
     },
     async load() {
       const q = this.q.value.trim();
       const mine = ++this.seq;
       let r;
       try {
-        r = await api("/api/memory" + (q ? "?q=" + encodeURIComponent(q) : ""));
+        const qs = new URLSearchParams();
+        if (q) qs.set("q", q);
+        if (this.view === "stale") qs.set("view", "stale");
+        r = await api("/api/memory" + (qs.toString() ? "?" + qs : ""));
+        if (this.view === "pinned" && r.memories) r.memories = r.memories.filter((m) => m.pinned);
       } catch (e) { return mine === this.seq ? sectionError(this.box, e) : null; }
       if (mine !== this.seq) return null;
       setKids(this.box,
@@ -3840,12 +3880,31 @@
     item(m) {
       const b = button(tr("Forget"), { icon: "trash", kind: "ghost", aria: tr("Forget this memory") });
       b.onclick = async () => { if (await act("memory/forget", { id: m.id }, b)) this.load(); };
-      return el("div", { class: "card memory" },
+      const pin = m.pinned !== undefined ? button(m.pinned ? "Unpin" : "Pin", { kind: "ghost", aria: (m.pinned ? "Unpin" : "Pin") + ": " + m.text.slice(0, 40) }) : null;
+      if (pin) pin.onclick = async () => { if (await act("memory/pin", { id: m.id, pinned: !m.pinned }, pin)) this.load(); };
+      const edit = m.id !== undefined ? button("Edit", { kind: "ghost", icon: "edit" }) : null;
+      const card = el("div", { class: "card memory" + (m.pinned ? " pinned" : "") });
+      const view = () => setKids(card,
         el("div", { class: "item" },
           el("div", { class: "grow" },
             el("div", { class: "t msg", dir: "auto", text: m.text }),
-            el("div", { class: "d" }, (m.tags || []).map((g) => el("span", { class: "tag", dir: "auto", text: g })), " ", ago(m.at))),
-          b));
+            el("div", { class: "d" },
+              m.pinned ? frag(tag("pinned", "accent"), " ") : null,
+              m.source ? frag(tag(m.source), " ") : null,
+              (m.tags || []).map((g) => el("span", { class: "tag", dir: "auto", text: g })), " ", ago(m.at),
+              m.recalls !== undefined ? el("span", { class: "muted", text: " · " + (m.recalls ? "used " + m.recalls + (m.recalls === 1 ? " time" : " times") + (m.last_recalled ? ", last " + when(m.last_recalled) : "") : "never used yet") }) : null)),
+          pin, edit, b));
+      if (edit) edit.onclick = () => {
+        const ta = el("textarea", { rows: 3, dir: "auto", class: "grow", "aria-label": "Edit this memory" });
+        ta.value = m.text;
+        ta.dataset.dirty = "1";
+        const save = button("Save", { kind: "primary" });
+        save.onclick = async () => { if (await act("memory/edit", { id: m.id, text: ta.value.trim() }, save)) this.load(); };
+        setKids(card, el("div", { class: "stack" }, ta, el("div", { class: "row" }, save, button("Cancel", { kind: "ghost", onclick: view }))));
+        ta.focus();
+      };
+      view();
+      return card;
     },
   };
 
@@ -4264,6 +4323,7 @@
 
   const STEP_ICON = { tool: "console", model: "models", verify: "check", retry: "retry", fallback: "routing", escalate: "up" };
   const when = (t) => (typeof t === "number" ? ago(t) : t && !isNaN(Date.parse(t)) ? ago(Math.round(Date.parse(t) / 1000)) : t || "");
+  const pct = (x) => (x === null || x === undefined ? "–" : Math.round(x * 100) + "%");
   const kfmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n));
   const dur = (s) => (s === null || s === undefined ? "" : s < 10 ? s.toFixed(1) + " s" : secs(Math.round(s)));
 
@@ -4539,6 +4599,21 @@
           el("span", { class: "muted", text: "Failure notes" }),
           toggle("Failure notes", r.failure_notes, (e) => set({ failure_notes: !r.failure_notes }, e.currentTarget)),
           el("span", { class: "muted msg", text: "after a run that didn't finish, its own last words are kept for 7 days so the next try knows" })));
+      // M66: saving its own skills, apart from installing others' (M13).
+      if (r.self_written !== undefined) sw.append(el("div", { class: "kv-row small" },
+        el("span", { class: "muted", text: "Save its own skills" }),
+        toggle("Save its own skills", r.self_written, (e) => set({ self_written: !r.self_written }, e.currentTarget)),
+        el("span", { class: "muted msg", text: "a skill it wrote and checked can be kept for next time (installing others' tools stays under Add-ons)" })));
+      const ev = r.eval || null;
+      const evalCard = ev ? card({ title: "Weekly check", icon: "check", right: toggle("Weekly check", ev.enabled, (e) => set({ weekly_eval: !ev.enabled }, e.currentTarget)) },
+        el("p", { class: "muted small mt0", text: "Once a week it runs the same tasks with and without what it learned, so you can see whether the lessons help" + (ev.usd_cap ? ", within $" + Number(ev.usd_cap).toFixed(2) + " a run" : "") + ". Off by default: it costs model calls." }),
+        ev.last ? el("div", { class: "stats" },
+          stat("with lessons", pct(ev.last.with_pass), ev.last.tasks + " tasks passed"),
+          stat("without", pct(ev.last.without_pass), "the same tasks"),
+          stat("last run", when(ev.last.at), ev.last.spent_usd != null ? "$" + Number(ev.last.spent_usd).toFixed(4) : null)) : el("p", { class: "muted small", text: "No check has run yet." }),
+        (ev.trend || []).filter((t) => t.delta != null).length > 1 ? frag(el("h4", { class: "mb0", text: "Lessons' effect over time (pass rate with minus without, points)" }),
+          bars(ev.trend.filter((t) => t.delta != null).map((t) => ({ k: String(t.at).slice(5, 10), v: Math.max(0, Math.round(t.delta * 100)), dim: t.delta <= 0 })), (v) => "+" + v)) : null,
+        el("div", { class: "row" }, button("Run the check now", { onclick: (e) => act("learn/eval", {}, e.currentTarget).then(() => this.load()) }))) : null;
       const fb = r.feedback || {};
       const stats = el("div", { class: "stats" },
         stat("last pass", r.last_pass ? when(r.last_pass.at) : "never", r.last_pass ? r.last_pass.kept + " kept · " + r.last_pass.rejected + " rejected" + (r.last_pass.proposed ? " · " + r.last_pass.proposed + " to review" : "") : null),
@@ -4585,7 +4660,7 @@
           el("div", { class: "grow" },
             el("div", { class: "t msg", dir: "auto", text: n.text }),
             el("div", { class: "d mono small", text: (n.scope || "") + " · " + when(n.at) })))))) : null;
-      setKids(this.box, sw, stats, review, lessons, skills, notes, history);
+      setKids(this.box, sw, stats, review, evalCard, lessons, skills, notes, history);
     },
   };
 

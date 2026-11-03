@@ -2176,15 +2176,19 @@ pub(crate) fn engine_sandbox(cfg: &config::Config, config_dir: &Path) -> Result<
     let mut policy = sandbox_policy(cfg);
     let home_claude = dirs::home_dir().map(|h| (h.join(".claude"), h.join(".claude.json")));
     let home_gemini = dirs::home_dir().map(|h| h.join(".gemini"));
+    // Ferrule's own private/ stays hidden whatever the engine's config dir
+    // holds (a `config_dir = "~"` would otherwise unhide it).
+    let private = config::data_dir_path().map(|d| d.join("private"));
     policy.hidden.retain(|p| {
-        p != config_dir
-            && !p.starts_with(config_dir)
-            && !home_claude
-                .as_ref()
-                .is_some_and(|(d, f)| config_dir == d && (p == d || p == f))
-            && !home_gemini
-                .as_ref()
-                .is_some_and(|g| config_dir.starts_with(g) && p.starts_with(g))
+        private.as_ref().is_some_and(|k| p.starts_with(k))
+            || (p != config_dir
+                && !p.starts_with(config_dir)
+                && !home_claude
+                    .as_ref()
+                    .is_some_and(|(d, f)| config_dir == d && (p == d || p == f))
+                && !home_gemini
+                    .as_ref()
+                    .is_some_and(|g| config_dir.starts_with(g) && p.starts_with(g)))
     });
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     if let Some(broker) = shared_broker(cfg)? {

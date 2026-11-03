@@ -171,33 +171,121 @@ pub fn state_at(private: &Path) -> SignIn {
 }
 
 /// Where the Gemini plan's sign-in stands on this machine (importing an
-/// existing local Antigravity / Gemini CLI token into `private/plans/gemini.json`
+/// existing local Antigravity CLI token into `private/plans/gemini.json`
 /// if one is present and no sealed sign-in exists yet).
 pub fn state() -> SignIn {
     let Ok(private) = crate::secrets::private_dir() else {
         return SignIn::Out;
     };
-    let store = Store::new(&private);
-    if store.meta().ok().flatten().is_none() {
-        if let Ok(dir) = config_dir(&settings()) {
-            let _ = store.import_from_cli_if_empty(&dir);
+    let s = settings();
+    let dir = config_dir(&s).ok();
+    state_with(&private, dir.as_deref(), uses_cli_engine(&s))
+}
+
+/// `[plans.gemini_cli] binary` names a CLI that is there: turns run
+/// through it, on its own login.
+fn uses_cli_engine(s: &GeminiCliPlanConfig) -> bool {
+    !s.binary.trim().is_empty() && cli::find(&s.binary()).is_some()
+}
+
+/// [`state`] for `private` and the CLI's `config_dir`: the native
+/// sign-in, else (only when turns run through the CLI, `cli_engine`) the
+/// CLI's own login. A CLI login the native client can't use (the gemini
+/// CLI's `oauth_creds.json`, a token it didn't import) is no sign-in for
+/// it: reporting one would skip setup's sign-in and fail the first run.
+pub fn state_with(private: &Path, config_dir: Option<&Path>, cli_engine: bool) -> SignIn {
+    let store = Store::new(private);
+    if let Some(dir) = config_dir {
+        if store.meta().ok().flatten().is_none() {
+            let _ = store.import_from_cli_if_empty(dir);
         }
     }
-    match state_at(&private) {
-        SignIn::Out => {
-            if let Ok(dir) = config_dir(&settings()) {
-                let a = cli::auth_status(&dir);
-                if a.is_plan() {
-                    return SignIn::In {
-                        email: a.email,
-                        plan: a.auth_method.or_else(|| Some("antigravity".into())),
-                    };
-                }
+    match state_at(private) {
+        SignIn::Out if cli_engine => {
+            let a = config_dir.map(cli::auth_status).unwrap_or_default();
+            if a.is_plan() {
+                return SignIn::In {
+                    email: a.email,
+                    plan: a.auth_method.or_else(|| Some("antigravity".into())),
+                };
             }
             SignIn::Out
         }
         other => other,
     }
+}
+
+/// Why a CLI login found under `config_dir` doesn't sign the native
+/// client in, when there is one and no native sign-in: setup says it
+/// before asking to sign in.
+pub fn unusable_cli_login(private: &Path, config_dir: &Path) -> Option<String> {
+    if state_at(private) != SignIn::Out {
+        return None;
+    }
+    let a = cli::auth_status(config_dir);
+    if !a.is_plan() {
+        return None;
+    }
+    Some(match a.auth_method.as_deref() {
+        Some("antigravity-oauth") => format!(
+            "found an Antigravity CLI login under {} that ferrule doesn't use (you signed out \
+             here, or it couldn't be read); sign in with Google here instead",
+            config_dir.display()
+        ),
+        _ => format!(
+            "found a gemini CLI login under {} that the native client can't use; \
+             sign in with Google here instead",
+            config_dir.display()
+        ),
+    })
+}
+
+/// `[plans.gemini_cli] config_dir` may not hold ferrule's data folder: the
+/// engine is let into its config dir, and would be let into ferrule's
+/// `private/` sign-ins and keys with it. Nor may it sit inside `private/`,
+/// which stays hidden from the engine whatever this says.
+pub fn check_config_dir(s: &GeminiCliPlanConfig, data: &Path) -> Result<()> {
+    let written = s.config_dir.trim();
+    if written.is_empty() {
+        return Ok(());
+    }
+    let dir = absolute(&s.config_dir(data));
+    let data = absolute(data);
+    if data.starts_with(&dir) {
+        bail!(
+            "[plans.gemini_cli] config_dir `{written}` holds ferrule's data folder ({}), so the \
+             Gemini engine would be let into ferrule's private/ sign-ins and keys. Give it a \
+             folder of its own, like `~/.gemini` (the default)",
+            data.display()
+        );
+    }
+    if dir.starts_with(data.join("private")) {
+        bail!(
+            "[plans.gemini_cli] config_dir `{written}` is inside ferrule's private/ folder, which \
+             stays hidden from the engine. Give it a folder of its own, like `~/.gemini` (the default)"
+        );
+    }
+    Ok(())
+}
+
+/// `p` with symlinks resolved when it exists, else made absolute with
+/// `.` and `..` folded away.
+fn absolute(p: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(p) {
+        return real;
+    }
+    let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut out = PathBuf::new();
+    for part in p.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Native Google OAuth 2.0 PKCE sign-in at the terminal (`ferrule login gemini`,
@@ -217,6 +305,10 @@ pub async fn sign_in_gemini(issuer: &str, flow: Flow) -> Result<String> {
     let p = plan(issuer)?;
     let tokens = gemini_tokens(&p, flow).await?;
     let meta = p.sign_in(tokens).await?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let note = meta.project_note(now);
     let who = SignIn::In {
         email: meta.email,
         plan: meta.plan,
@@ -227,7 +319,19 @@ pub async fn sign_in_gemini(issuer: &str, flow: Flow) -> Result<String> {
         .next()
         .map(|f| f.to_uppercase().chain(chars).collect::<String>())
         .unwrap_or_default();
-    Ok(cap)
+    // Truthful about the project: signed in is not yet able to answer.
+    Ok(match note {
+        Some(note) => format!("{cap}, but {}", lower_first(&note)),
+        None => cap,
+    })
+}
+
+fn lower_first(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map(|f| f.to_lowercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 async fn gemini_tokens(plan: &GeminiPlan, flow: Flow) -> Result<Tokens> {
@@ -316,6 +420,12 @@ pub async fn setup_step(t: &mut crate::setup::Target) -> Result<bool> {
     match state() {
         s @ SignIn::In { .. } => ok(format!("the Gemini plan: {}", s.word())),
         _ => {
+            if let (Ok(private), Ok(dir)) = (crate::secrets::private_dir(), config_dir(&settings()))
+            {
+                if let Some(note) = unusable_cli_login(&private, &dir) {
+                    info(format!("The Gemini plan {note}."));
+                }
+            }
             const WAYS: [&str; 3] = [
                 "Sign in with Google (browser or paste redirect URL)",
                 "Paste redirect URL (for a remote / SSH server)",
@@ -353,4 +463,76 @@ pub async fn setup_step(t: &mut crate::setup::Target) -> Result<bool> {
     t.save()?;
     ok(format!("saved `{name}` · {model} on the Gemini plan"));
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gemini_cli_login(dir: &Path) {
+        let dot = dir.join(".gemini");
+        std::fs::create_dir_all(&dot).unwrap();
+        std::fs::write(
+            dot.join("oauth_creds.json"),
+            r#"{"refresh_token":"1//cli","access_token":"ya29.cli"}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_gemini_cli_login_the_native_client_cant_use_is_not_signed_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("private");
+        let cli = tmp.path().join("cli");
+        gemini_cli_login(&cli);
+
+        // The native client: not signed in, and setup is told why.
+        assert_eq!(state_with(&private, Some(&cli), false), SignIn::Out);
+        let note = unusable_cli_login(&private, &cli).unwrap();
+        assert!(note.contains("can't use"), "{note}");
+        // Turns through the CLI itself use its login.
+        assert!(matches!(
+            state_with(&private, Some(&cli), true),
+            SignIn::In { .. }
+        ));
+
+        // An Antigravity CLI token is imported, and then it is a sign-in.
+        let agy = cli.join("antigravity-cli");
+        std::fs::create_dir_all(&agy).unwrap();
+        std::fs::write(
+            agy.join("antigravity-oauth-token"),
+            r#"{"token":{"access_token":"ya29.agy","refresh_token":"1//agy"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            state_with(&private, Some(&cli), false),
+            SignIn::In { .. }
+        ));
+        assert_eq!(unusable_cli_login(&private, &cli), None);
+    }
+
+    #[test]
+    fn a_config_dir_holding_the_data_folder_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let data = home.join(".local/share/ferrule");
+        std::fs::create_dir_all(data.join("private")).unwrap();
+        let with = |dir: &Path| GeminiCliPlanConfig {
+            config_dir: dir.display().to_string(),
+            ..GeminiCliPlanConfig::default()
+        };
+        for bad in [home.to_path_buf(), data.clone(), data.join("private/x")] {
+            let e = check_config_dir(&with(&bad), &data).unwrap_err();
+            let e = format!("{e:#}");
+            assert!(e.contains("[plans.gemini_cli] config_dir"), "{e}");
+            assert!(e.contains("private/"), "{e}");
+        }
+        // `..` doesn't get around it.
+        let sneaky = data.join("gemini-cli/../..");
+        assert!(check_config_dir(&with(&sneaky), &data).is_err());
+        for good in [home.join(".gemini"), data.join("gemini-cli")] {
+            check_config_dir(&with(&good), &data).unwrap();
+        }
+        check_config_dir(&GeminiCliPlanConfig::default(), &data).unwrap();
+    }
 }

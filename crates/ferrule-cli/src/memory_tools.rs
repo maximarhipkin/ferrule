@@ -152,6 +152,18 @@ const RECALL_BUDGET_CHARS: usize = 2_000;
 const RECALL_MORE_FACTS: usize = 3;
 const RECALL_MORE_CHARS: usize = 600;
 
+/// Who the agent's own writes are from, on the memory page.
+pub const AGENT: &str = "agent";
+
+/// The facts a recalled block lists (`- #id fact` lines): what reaches
+/// the prompt, so what counts as recalled.
+fn shown_ids(block: &str) -> Vec<i64> {
+    block
+        .lines()
+        .filter_map(|l| l.strip_prefix("- #")?.split_once(' ')?.0.parse().ok())
+        .collect()
+}
+
 /// Whether `shown` (the blocks a session added) already lists fact `id`.
 fn already_shown(shown: &str, id: i64) -> bool {
     let line = format!("- #{id} ");
@@ -165,7 +177,10 @@ impl SessionRecall for GoalRecall {
             let db = self.db.clone();
             let goal = goal.to_string();
             let block = tokio::task::spawn_blocking(move || {
-                MemoryStore::open(&db).and_then(|s| s.assemble_for_goal(&goal, RECALL_BUDGET_CHARS))
+                let s = MemoryStore::open(&db)?;
+                let block = s.assemble_for_goal(&goal, RECALL_BUDGET_CHARS)?;
+                s.mark_recalled(&shown_ids(&block))?;
+                Ok::<_, ferrule_memory::MemoryError>(block)
             })
             .await
             .ok()?
@@ -195,8 +210,10 @@ impl SessionRecall for GoalRecall {
                 model: &model,
                 vector: v,
             });
-            MemoryStore::open(&db)
-                .and_then(|s| s.assemble_for_goal_hybrid(&goal, qv, RECALL_BUDGET_CHARS, &hybrid))
+            let s = MemoryStore::open(&db)?;
+            let block = s.assemble_for_goal_hybrid(&goal, qv, RECALL_BUDGET_CHARS, &hybrid)?;
+            s.mark_recalled(&shown_ids(&block))?;
+            Ok::<_, ferrule_memory::MemoryError>(block)
         })
         .await
         .ok()?
@@ -232,8 +249,19 @@ impl SessionRecall for GoalRecall {
             used += line.len() + 1;
             lines.push(line);
         }
-        (!lines.is_empty())
-            .then(|| format!("[Long-term memory, for this message]\n{}", lines.join("\n")))
+        if lines.is_empty() {
+            return None;
+        }
+        let db = self.db.clone();
+        let ids = shown_ids(&lines.join("\n"));
+        let _ = tokio::task::spawn_blocking(move || {
+            MemoryStore::open(&db).and_then(|s| s.mark_recalled(&ids))
+        })
+        .await;
+        Some(format!(
+            "[Long-term memory, for this message]\n{}",
+            lines.join("\n")
+        ))
     }
 }
 
@@ -375,7 +403,7 @@ impl Tool for RememberTool {
         let vector = document_vector(&self.embedding, &content).await;
         let ins = with_store("remember", &self.db, move |store| {
             let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-            let mut ins = store.insert(&content, &tags, &replaces)?;
+            let mut ins = store.insert_from(&content, &tags, &replaces, Some(AGENT))?;
             if let Some((model, v)) = vector {
                 attach_vector(store, &mut ins, &content, &model, &v)?;
             }
@@ -423,7 +451,7 @@ impl Tool for UpdateMemoryTool {
         let vector = document_vector(&self.embedding, &content).await;
         let ins = with_store("update_memory", &self.db, move |store| {
             let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-            let mut ins = store.supersede(id, &content, &tags)?;
+            let mut ins = store.insert_from(&content, &tags, &[id], Some(AGENT))?;
             if let Some((model, v)) = vector {
                 attach_vector(store, &mut ins, &content, &model, &v)?;
             }
@@ -524,14 +552,20 @@ impl Tool for RecallTool {
                 .map(|v| (e.model().to_string(), v, e.hybrid)),
             None => None,
         };
-        let found = with_store("recall", &self.db, move |store| match &vector {
-            Some((model, v, hybrid)) => store.recall_hybrid(
-                &query,
-                Some(embedding::query_vector(model, v)),
-                limit,
-                hybrid,
-            ),
-            None => store.recall(&query, limit),
+        let found = with_store("recall", &self.db, move |store| {
+            let found = match &vector {
+                Some((model, v, hybrid)) => store.recall_hybrid(
+                    &query,
+                    Some(embedding::query_vector(model, v)),
+                    limit,
+                    hybrid,
+                ),
+                None => store.recall(&query, limit),
+            }?;
+            // What the model now reads counts as recalled.
+            let ids: Vec<i64> = found.iter().map(|m| m.id).collect();
+            store.mark_recalled(&ids)?;
+            Ok(found)
         })
         .await?;
         if found.is_empty() {

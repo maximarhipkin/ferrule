@@ -47,6 +47,69 @@ pub struct Meta {
     /// revoke and never used again.
     #[serde(default)]
     pub signed_out: bool,
+    /// The last project lookup that found none: the next one waits
+    /// ([`Lookup::next_at`]) instead of running before every request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_lookup: Option<Lookup>,
+}
+
+/// A `loadCodeAssist` / `onboardUser` lookup that found no project.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Lookup {
+    /// When (unix seconds).
+    pub at: u64,
+    /// How many in a row.
+    pub misses: u32,
+    /// Why, in fixed words and Google's codes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// The first wait after a miss; each miss in a row doubles it, up to [`LOOKUP_MAX`].
+pub const LOOKUP_FIRST: u64 = 5 * 60;
+pub const LOOKUP_MAX: u64 = 6 * 3600;
+
+impl Lookup {
+    /// A miss at `now`, after `last`.
+    pub fn missed(now: u64, last: Option<&Lookup>, problem: Option<String>) -> Self {
+        Self {
+            at: now,
+            misses: last.map_or(0, |l| l.misses).saturating_add(1),
+            problem,
+        }
+    }
+
+    /// When the next lookup may run.
+    pub fn next_at(&self) -> u64 {
+        let doublings = self.misses.saturating_sub(1).min(16);
+        self.at
+            .saturating_add((LOOKUP_FIRST << doublings).min(LOOKUP_MAX))
+    }
+}
+
+impl Meta {
+    /// What a sign-in or status should add when Google gave the account no
+    /// project: the account may not be able to use the plan yet.
+    pub fn project_note(&self, now: u64) -> Option<String> {
+        if self.project_id.is_some() {
+            return None;
+        }
+        let lookup = self.project_lookup.as_ref();
+        let why = lookup
+            .and_then(|l| l.problem.as_deref())
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default();
+        let again = lookup
+            .map(|l| {
+                let mins = l.next_at().saturating_sub(now).div_ceil(60).max(1);
+                format!("; ferrule looks again in {mins} min")
+            })
+            .unwrap_or_default();
+        Some(format!(
+            "Google gave this account no Gemini Code Assist / Antigravity project yet{why}, \
+             so the plan may refuse requests until it has one{again}"
+        ))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,6 +132,16 @@ pub const EARLY: u64 = 5 * 60;
 pub const STALE: u64 = 50 * 60;
 
 impl Record {
+    /// No project yet, and the backoff since the last miss is over.
+    pub fn project_due(&self, now: u64) -> bool {
+        self.meta.project_id.is_none()
+            && self
+                .meta
+                .project_lookup
+                .as_ref()
+                .is_none_or(|l| now >= l.next_at())
+    }
+
     pub fn needs_refresh(&self, now: u64) -> bool {
         match self.meta.expires_at {
             Some(exp) => exp <= now + EARLY,
@@ -256,6 +329,7 @@ fn read_antigravity_token(dir: &Path) -> Option<Record> {
             signed_in_at: now,
             last_refresh: 0,
             signed_out: false,
+            project_lookup: None,
         },
         secrets: Secrets {
             access_token: access,
@@ -305,6 +379,40 @@ mod tests {
         rec.secrets.refresh_token = "1//native".into();
         store.save(&rec).unwrap();
         assert!(!store.no_import_path().exists());
+    }
+
+    #[test]
+    fn a_missing_project_is_looked_up_again_only_after_a_growing_wait() {
+        let mut rec = Record {
+            meta: Meta::default(),
+            secrets: Secrets {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                id_token: String::new(),
+            },
+        };
+        assert!(rec.project_due(1000));
+        rec.meta.project_lookup = Some(Lookup::missed(1000, None, Some("no tier".into())));
+        assert!(!rec.project_due(1000 + LOOKUP_FIRST - 1));
+        assert!(rec.project_due(1000 + LOOKUP_FIRST));
+        let second = Lookup::missed(2000, rec.meta.project_lookup.as_ref(), None);
+        assert_eq!(second.misses, 2);
+        assert_eq!(second.next_at(), 2000 + 2 * LOOKUP_FIRST);
+        let many = Lookup {
+            at: 0,
+            misses: 40,
+            problem: None,
+        };
+        assert_eq!(many.next_at(), LOOKUP_MAX);
+        let note = rec.meta.project_note(1000).unwrap();
+        assert!(
+            note.contains("no Gemini Code Assist / Antigravity project yet (no tier)"),
+            "{note}"
+        );
+        assert!(note.contains("looks again in 5 min"), "{note}");
+        rec.meta.project_id = Some("p".into());
+        assert!(!rec.project_due(0));
+        assert!(rec.meta.project_note(0).is_none());
     }
 
     #[test]

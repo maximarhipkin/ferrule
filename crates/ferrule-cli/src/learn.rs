@@ -11,6 +11,7 @@
 
 mod thumbs;
 pub mod watch;
+pub mod weekly;
 pub use thumbs::{live as live_thumbs, telegram_started, thumbs};
 
 use crate::config::{self, Config};
@@ -68,6 +69,13 @@ pub struct LearningConfig {
     /// A run that ends not done leaves its own status in memory, for a
     /// week ([`watch`]). On even while learning is off: no model call.
     pub failure_notes: bool,
+    /// The weekly playbook eval ([`weekly`]): kept lessons' tasks with and
+    /// without the playbook. Off by default: it spends money unattended.
+    pub weekly_eval: bool,
+    /// Its cost cap per run, in dollars; 0 runs none.
+    pub eval_usd_cap: f64,
+    /// When it runs (cron, in `timezone`).
+    pub eval_schedule: String,
 }
 
 impl Default for LearningConfig {
@@ -89,6 +97,9 @@ impl Default for LearningConfig {
             gate_max_iterations: 20,
             gate_timeout_secs: 900,
             failure_notes: true,
+            weekly_eval: false,
+            eval_usd_cap: 1.0,
+            eval_schedule: "43 4 * * 0".into(),
         }
     }
 }
@@ -306,6 +317,18 @@ pub fn register(
             }
         }
     }
+    if ensure {
+        let want = cfg.learning.weekly_eval.then(|| weekly::spec(cfg));
+        if let Err(e) = ensure_builtin(
+            scheduler.store(),
+            weekly::TASK_NAME,
+            want.as_ref(),
+            chrono::Utc::now(),
+        ) {
+            eprintln!("ferrule: [learning] eval_schedule: {e}; the weekly playbook eval is off");
+        }
+    }
+    let scheduler = scheduler.with_builtin(weekly::TASK_NAME, Arc::new(weekly::Job));
     // The learning page: the job is there whether learning is on or not,
     // so turning it on there needs no restart ([`apply`]); a task the
     // config doesn't want is removed above, and the job checks again.
@@ -540,6 +563,9 @@ pub fn apply(cfg: &Config) -> Result<String> {
     let want = cfg.learning.enabled.then(|| spec(&cfg.learning));
     ensure_builtin(&store, TASK_NAME, want.as_ref(), chrono::Utc::now())
         .map_err(|e| anyhow!("the pass's task couldn't be made to match: {e}"))?;
+    let eval = cfg.learning.weekly_eval.then(|| weekly::spec(cfg));
+    ensure_builtin(&store, weekly::TASK_NAME, eval.as_ref(), chrono::Utc::now())
+        .map_err(|e| anyhow!("the weekly eval's task couldn't be made to match: {e}"))?;
     let task = store
         .list()?
         .into_iter()

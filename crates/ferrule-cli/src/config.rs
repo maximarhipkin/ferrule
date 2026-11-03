@@ -803,6 +803,11 @@ pub struct SkillsConfig {
     /// M63.1: the skills ferrule ships (weather, news, …); `disabled`
     /// turns off one of them.
     pub bundled: bool,
+    /// The learning page: offer the root agent `skill_keep` alone (its
+    /// check in the sandbox and its scan as ever), without `[extensions]
+    /// enabled`, which also lets it install from the internet. Fixed per
+    /// session: a new session sees a change. Off by default.
+    pub self_written: bool,
 }
 
 impl Default for SkillsConfig {
@@ -817,6 +822,7 @@ impl Default for SkillsConfig {
             trigger_budget_tokens: 4000,
             project_triggers: false,
             bundled: true,
+            self_written: false,
         }
     }
 }
@@ -2216,6 +2222,9 @@ impl Config {
         }
         crate::managed::apply(&mut self);
         self.check_providers()?;
+        if let Some(data) = data_dir_path() {
+            crate::subscription::gemini::check_config_dir(&self.plans.gemini_cli, &data)?;
+        }
         self.proactive.check(&self.trust.timezone)?;
         self.memory.hybrid()?;
         self.egress.policy()?;

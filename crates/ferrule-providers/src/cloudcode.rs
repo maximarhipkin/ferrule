@@ -5,7 +5,10 @@
 //! using a signed-in Google account's sealed OAuth token (`PlanAuth`) instead
 //! of spawning an external `agy` or `gemini` CLI process.
 
+pub mod errors;
 pub mod version;
+
+pub use errors::SIGN_IN_AGAIN;
 
 use crate::codex::{LimitWindow, PlanAuth, PlanCredentials, RateLimits};
 use crate::common::{self, Events, Opened};
@@ -19,18 +22,29 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 pub const DEFAULT_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+/// The Antigravity client version ferrule speaks as unless
+/// `FERRULE_GEMINI_CLIENT_VERSION` says otherwise ([`version`]).
 pub const CLIENT_VERSION: &str = "1.4.12";
-pub const SIGN_IN_AGAIN: &str =
-    "HTTP 401: the Gemini plan refused the sign-in even after a refresh; run `ferrule login gemini`";
 
-/// The Antigravity client version in use now.
+/// The Antigravity client version in use now: what every Cloud Code call
+/// (this driver's and the plan's sign-in and onboarding) sends.
 pub fn client_version() -> String {
     version::global().current()
 }
+
+/// `finishReason`s that are Google declining to answer, with what they mean.
+const REFUSALS: &[(&str, &str)] = &[
+    ("SAFETY", "its safety filters"),
+    ("RECITATION", "it would have recited protected text"),
+    ("BLOCKLIST", "a blocked term"),
+    ("PROHIBITED_CONTENT", "prohibited content"),
+    ("SPII", "sensitive personal information"),
+    ("IMAGE_SAFETY", "its image safety filters"),
+];
 
 /// Cached `v1internal:fetchAvailableModels` tiered mappings.
 #[derive(Debug, Clone, Default)]
@@ -50,7 +64,6 @@ pub struct CloudCodeProvider {
     client: reqwest::Client,
     identity: Arc<version::ClientIdentity>,
     sees: AtomicBool,
-    project_cache: RwLock<Option<String>>,
     catalog_cache: RwLock<Option<ModelCatalog>>,
     last_quota_check: Mutex<Option<Instant>>,
 }
@@ -80,7 +93,6 @@ impl CloudCodeProvider {
             client: common::client(),
             identity: version::global(),
             sees: AtomicBool::new(sees),
-            project_cache: RwLock::new(None),
             catalog_cache: RwLock::new(None),
             last_quota_check: Mutex::new(None),
         }
@@ -110,55 +122,14 @@ impl CloudCodeProvider {
             .request(method, url)
             .bearer_auth(&creds.access_token)
             .header(reqwest::header::USER_AGENT, user_agent(version))
-            .header("X-Goog-Api-Client", "gl-go/1.23.0 antigravity/1.4.12")
+            .header("X-Goog-Api-Client", api_client(version))
     }
 
-    async fn ensure_project(&self, creds: &PlanCredentials, version: &str) -> Option<String> {
-        if let Some(id) = creds.account_id.as_ref().filter(|s| !s.is_empty()) {
-            return Some(id.clone());
-        }
-        if let Some(cached) = self
-            .project_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
-            return Some(cached);
-        }
-        let url = format!("{}/v1internal:loadCodeAssist", self.base_url);
-        let body = json!({
-            "metadata": {
-                "ideType": "ANTIGRAVITY",
-                "ideVersion": version,
-                "platform": platform_enum(),
-                "pluginType": "GEMINI",
-            }
-        });
-        let resp = self
-            .request(reqwest::Method::POST, &url, creds, version)
-            .json(&body)
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let doc: Value = resp.json().await.ok()?;
-        let project = doc["cloudaicompanionProject"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                doc["cloudaicompanionProject"]["id"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            })?;
-        *self
-            .project_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = Some(project.clone());
-        Some(project)
+    /// The account's `cloudaicompanionProject`, as the plan resolved it
+    /// (`PlanAuth` does the `loadCodeAssist` / `onboardUser` lookup, with
+    /// a backoff when there is none yet, so a request never repeats it).
+    fn project(creds: &PlanCredentials) -> Option<String> {
+        creds.account_id.clone().filter(|s| !s.is_empty())
     }
 
     /// Resolves friendly/tiered model aliases (such as `gemini-4-argon-medium`
@@ -206,7 +177,7 @@ impl CloudCodeProvider {
     pub async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let creds = self.auth.credentials().await?;
         let version = self.identity.current();
-        let project = self.ensure_project(&creds, &version).await;
+        let project = Self::project(&creds);
         let url = format!("{}/v1internal:fetchAvailableModels", self.base_url);
         let body = match &project {
             Some(p) => json!({ "project": p }),
@@ -359,7 +330,7 @@ impl CloudCodeProvider {
         loop {
             let creds = self.auth.credentials().await?;
             let version = self.identity.current();
-            let project = self.ensure_project(&creds, &version).await;
+            let project = Self::project(&creds);
             let mut envelope = json!({
                 "model": resolved_model,
                 "userAgent": "antigravity",
@@ -380,14 +351,16 @@ impl CloudCodeProvider {
                     self.auth.refused(&creds.access_token).await?;
                     continue;
                 }
-                401 => return Err(CoreError::Provider(SIGN_IN_AGAIN.into())),
-                429 => {
+                401 => return Err(errors::sign_in_again()),
+                status @ (403 | 429) => {
                     let wait = common::retry_after(resp.headers());
                     let text = resp.text().await.unwrap_or_default();
-                    return Err(common::transient(
-                        format!("HTTP 429: {}", text.chars().take(300).collect::<String>()),
-                        wait,
-                    ));
+                    if status == 403 {
+                        return Err(errors::forbidden(&text, project.as_deref()));
+                    }
+                    let e = errors::too_many(&text, wait, &resolved_model, unix_now());
+                    self.observe_limit(&e);
+                    return Err(e);
                 }
                 _ => {}
             }
@@ -404,7 +377,21 @@ impl CloudCodeProvider {
             };
             self.maybe_refresh_quota(&creds, project.as_deref(), &version)
                 .await;
+            if let Err(e) = &res {
+                self.observe_limit(e);
+            }
             return res;
+        }
+    }
+
+    /// A usage-limit stop, for status and the dashboard: nothing more
+    /// until it resets.
+    fn observe_limit(&self, e: &CoreError) {
+        if let Some(until) = errors::limited_until(e, unix_now()) {
+            self.auth.observe(&RateLimits {
+                limited_until: Some(until),
+                ..RateLimits::default()
+            });
         }
     }
 
@@ -726,44 +713,19 @@ async fn read_stream(
     sink: &DeltaSink,
     resolved_model: &str,
 ) -> Result<CompletionResponse, CoreError> {
-    let mut text = String::new();
-    let mut reasoning = String::new();
-    let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let mut native_parts: Vec<Value> = Vec::new();
-    let mut usage = Usage::default();
-    let mut stop_reason: Option<String> = None;
-    let mut call_seq: usize = 0;
-
+    let mut turn = Turn::default();
     while let Some(ev) = events.next().await? {
         if ev.data.trim().is_empty() || ev.data.trim() == "[DONE]" {
             continue;
         }
         let doc = ev.json()?;
+        let doc = doc.get("response").unwrap_or(&doc);
         if let Some(err) = doc.get("error").filter(|e| !e.is_null()) {
-            return Err(common::error_in_body(err, None));
+            return Err(errors::in_stream(err, resolved_model, unix_now()));
         }
-        apply_chunk(
-            &doc,
-            sink,
-            &mut text,
-            &mut reasoning,
-            &mut tool_calls,
-            &mut native_parts,
-            &mut usage,
-            &mut stop_reason,
-            &mut call_seq,
-        );
+        turn.apply(doc, sink);
     }
-
-    Ok(build_completion_response(
-        text,
-        reasoning,
-        tool_calls,
-        native_parts,
-        usage,
-        stop_reason,
-        resolved_model,
-    ))
+    turn.finish(resolved_model, events.seen())
 }
 
 fn parse_single_response(
@@ -771,127 +733,173 @@ fn parse_single_response(
     sink: &DeltaSink,
     resolved_model: &str,
 ) -> Result<CompletionResponse, CoreError> {
-    let mut text = String::new();
-    let mut reasoning = String::new();
-    let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let mut native_parts: Vec<Value> = Vec::new();
-    let mut usage = Usage::default();
-    let mut stop_reason: Option<String> = None;
-    let mut call_seq: usize = 0;
-    apply_chunk(
-        doc,
-        sink,
-        &mut text,
-        &mut reasoning,
-        &mut tool_calls,
-        &mut native_parts,
-        &mut usage,
-        &mut stop_reason,
-        &mut call_seq,
-    );
-    Ok(build_completion_response(
-        text,
-        reasoning,
-        tool_calls,
-        native_parts,
-        usage,
-        stop_reason,
-        resolved_model,
-    ))
+    let mut turn = Turn::default();
+    let chunks: Vec<&Value> = match doc {
+        Value::Array(items) => items.iter().collect(),
+        one => vec![one],
+    };
+    for chunk in chunks {
+        let chunk = chunk.get("response").unwrap_or(chunk);
+        if let Some(err) = chunk.get("error").filter(|e| !e.is_null()) {
+            return Err(errors::in_stream(err, resolved_model, unix_now()));
+        }
+        turn.apply(chunk, sink);
+    }
+    turn.finish(resolved_model, 1)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_chunk(
-    doc: &Value,
-    sink: &DeltaSink,
-    text: &mut String,
-    reasoning: &mut String,
-    tool_calls: &mut Vec<ToolCall>,
-    native_parts: &mut Vec<Value>,
-    usage: &mut Usage,
-    stop_reason: &mut Option<String>,
-    call_seq: &mut usize,
-) {
-    let resp = doc.get("response").unwrap_or(doc);
-    if let Some(u) = resp.get("usageMetadata") {
-        let prompt = u["promptTokenCount"].as_u64().unwrap_or(0);
-        let cand = u["candidatesTokenCount"].as_u64().unwrap_or(0);
-        let thoughts = u["thoughtsTokenCount"].as_u64().unwrap_or(0);
-        let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
-        if prompt > 0 {
-            usage.input_tokens = prompt;
+/// One answer as its chunks arrive.
+#[derive(Default)]
+struct Turn {
+    text: String,
+    reasoning: String,
+    tool_calls: Vec<ToolCall>,
+    native_parts: Vec<Value>,
+    usage: Usage,
+    /// The last `finishReason`, as Google spells it.
+    finish: Option<String>,
+    /// `promptFeedback.blockReason` (and its message): the prompt itself
+    /// was refused, so no candidate comes.
+    blocked: Option<(String, Option<String>)>,
+    call_seq: usize,
+}
+
+impl Turn {
+    fn apply(&mut self, resp: &Value, sink: &DeltaSink) {
+        if let Some(u) = resp.get("usageMetadata") {
+            let prompt = u["promptTokenCount"].as_u64().unwrap_or(0);
+            let cand = u["candidatesTokenCount"].as_u64().unwrap_or(0);
+            let thoughts = u["thoughtsTokenCount"].as_u64().unwrap_or(0);
+            let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
+            if prompt > 0 {
+                self.usage.input_tokens = prompt;
+            }
+            if cand + thoughts > 0 {
+                self.usage.output_tokens = cand + thoughts;
+            }
+            if cached > 0 {
+                self.usage.cached_input_tokens = cached;
+            }
         }
-        if cand + thoughts > 0 {
-            usage.output_tokens = cand + thoughts;
+        let feedback = &resp["promptFeedback"];
+        if let Some(reason) = feedback["blockReason"]
+            .as_str()
+            .filter(|r| !r.is_empty() && *r != "BLOCK_REASON_UNSPECIFIED")
+        {
+            let message = feedback["blockReasonMessage"]
+                .as_str()
+                .filter(|m| !m.trim().is_empty())
+                .map(|m| m.chars().filter(|c| !c.is_control()).take(200).collect());
+            self.blocked = Some((reason.to_string(), message));
         }
-        if cached > 0 {
-            usage.cached_input_tokens = cached;
+
+        let Some(candidates) = resp["candidates"].as_array() else {
+            return;
+        };
+        for cand in candidates {
+            if let Some(reason) = cand["finishReason"].as_str().filter(|r| !r.is_empty()) {
+                self.finish = Some(reason.to_string());
+            }
+            let Some(parts) = cand["content"]["parts"].as_array() else {
+                continue;
+            };
+            for part in parts {
+                self.part(part, sink);
+            }
         }
     }
 
-    let Some(candidates) = resp["candidates"].as_array() else {
-        return;
-    };
-    for cand in candidates {
-        if let Some(reason) = cand["finishReason"].as_str() {
-            *stop_reason = Some(match reason {
-                "MAX_TOKENS" => "max_tokens".to_string(),
-                "STOP" => "end_turn".to_string(),
-                other => other.to_ascii_lowercase(),
-            });
+    fn part(&mut self, part: &Value, sink: &DeltaSink) {
+        // Skip empty `{ "text": "" }` keep-alive parts that carry no signature or thought flag.
+        let is_empty_plain_text = part
+            .as_object()
+            .is_some_and(|o| o.len() == 1 && o.get("text").and_then(Value::as_str) == Some(""));
+        if !is_empty_plain_text {
+            self.native_parts.push(part.clone());
         }
-        let Some(parts) = cand["content"]["parts"].as_array() else {
-            continue;
-        };
-        for part in parts {
-            // Skip empty `{ "text": "" }` keep-alive parts that carry no signature or thought flag.
-            let is_empty_plain_text = part
-                .as_object()
-                .is_some_and(|o| o.len() == 1 && o.get("text").and_then(Value::as_str) == Some(""));
-            if !is_empty_plain_text {
-                native_parts.push(part.clone());
-            }
 
-            let is_thought = part["thought"].as_bool().unwrap_or(false);
-            if is_thought {
-                if let Some(t) = part["text"].as_str().filter(|s| !s.is_empty()) {
-                    reasoning.push_str(t);
-                    sink.send(Delta::Progress);
-                } else {
-                    sink.send(Delta::Progress);
-                }
-                continue;
-            }
-            if let Some(fc) = part.get("functionCall") {
-                *call_seq += 1;
-                let name = fc["name"].as_str().unwrap_or("tool").to_string();
-                let id = fc["id"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| synthetic_call_id(*call_seq));
-                let arguments = fc.get("args").cloned().unwrap_or_else(|| json!({}));
-                // Ensure the recorded native part has the same `id` if it was synthesized.
-                if let Some(last) = native_parts.last_mut() {
-                    if last.get("functionCall").is_some()
-                        && last["functionCall"]["id"].as_str().is_none()
-                    {
-                        last["functionCall"]["id"] = json!(id);
-                    }
-                }
-                tool_calls.push(ToolCall {
-                    id,
-                    name,
-                    arguments,
-                });
-                sink.send(Delta::Progress);
-                continue;
-            }
+        if part["thought"].as_bool().unwrap_or(false) {
             if let Some(t) = part["text"].as_str().filter(|s| !s.is_empty()) {
-                text.push_str(t);
-                sink.send(Delta::Text(t.to_string()));
+                self.reasoning.push_str(t);
             }
+            sink.send(Delta::Progress);
+            return;
         }
+        if let Some(fc) = part.get("functionCall") {
+            self.call_seq += 1;
+            let name = fc["name"].as_str().unwrap_or("tool").to_string();
+            let id = fc["id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| synthetic_call_id(self.call_seq));
+            let arguments = fc.get("args").cloned().unwrap_or_else(|| json!({}));
+            // Ensure the recorded native part has the same `id` if it was synthesized.
+            if let Some(last) = self.native_parts.last_mut() {
+                if last.get("functionCall").is_some()
+                    && last["functionCall"]["id"].as_str().is_none()
+                {
+                    last["functionCall"]["id"] = json!(id);
+                }
+            }
+            self.tool_calls.push(ToolCall {
+                id,
+                name,
+                arguments,
+            });
+            sink.send(Delta::Progress);
+            return;
+        }
+        if let Some(t) = part["text"].as_str().filter(|s| !s.is_empty()) {
+            self.text.push_str(t);
+            sink.send(Delta::Text(t.to_string()));
+        }
+    }
+
+    /// The answer, if it is one. A stream that ends with no
+    /// `finishReason` was cut off (transient, like every driver's
+    /// [`common::ended_early`]); a blocked prompt or a safety stop is a
+    /// refusal, said in words.
+    fn finish(self, resolved_model: &str, seen: usize) -> Result<CompletionResponse, CoreError> {
+        if let Some((reason, message)) = &self.blocked {
+            let said = message
+                .as_deref()
+                .map(|m| format!(": {m}"))
+                .unwrap_or_default();
+            return Err(CoreError::Provider(format!(
+                "refused: Gemini blocked the prompt (blockReason {reason}{said})"
+            )));
+        }
+        let Some(reason) = self.finish.as_deref() else {
+            return Err(common::ended_early(seen));
+        };
+        if let Some((_, why)) = REFUSALS.iter().find(|(r, _)| *r == reason) {
+            return Err(CoreError::Provider(format!(
+                "refused: Gemini stopped the answer (finishReason {reason}: {why})"
+            )));
+        }
+        if reason == "MALFORMED_FUNCTION_CALL" && self.text.is_empty() && self.tool_calls.is_empty()
+        {
+            return Err(common::transient(
+                "Gemini sent a tool call it couldn't form (finishReason MALFORMED_FUNCTION_CALL)"
+                    .into(),
+                None,
+            ));
+        }
+        let stop_reason = Some(match reason {
+            "MAX_TOKENS" => "max_tokens".to_string(),
+            "STOP" => "end_turn".to_string(),
+            other => other.to_ascii_lowercase(),
+        });
+        Ok(build_completion_response(
+            self.text,
+            self.reasoning,
+            self.tool_calls,
+            self.native_parts,
+            self.usage,
+            stop_reason,
+            resolved_model,
+        ))
     }
 }
 
@@ -997,7 +1005,8 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
     Some(era * 146_097 + (doe as i64) - 719_468)
 }
 
-fn platform_enum() -> &'static str {
+/// The `platform` Cloud Code's `metadata` names.
+pub fn platform_enum() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "DARWIN_ARM64",
         ("macos", _) => "DARWIN_AMD64",
@@ -1007,13 +1016,26 @@ fn platform_enum() -> &'static str {
     }
 }
 
-fn user_agent(version: &str) -> String {
+/// The `User-Agent` every Cloud Code call sends: the Antigravity
+/// client's shape with `version`, then ferrule's own name.
+pub fn user_agent(version: &str) -> String {
     format!(
         "antigravity/{version} {}/{} ferrule/{}",
         std::env::consts::OS,
         std::env::consts::ARCH,
         env!("CARGO_PKG_VERSION"),
     )
+}
+
+/// The `X-Goog-Api-Client` header for `version`.
+fn api_client(version: &str) -> String {
+    format!("gl-go/1.23.0 antigravity/{version}")
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// An id for a `functionCall` Google sent without one. Unique across
@@ -1029,6 +1051,9 @@ fn synthetic_call_id(seq: usize) -> String {
         .unwrap_or_default();
     format!("call_{t:x}_{n}_{seq}")
 }
+
+#[cfg(test)]
+mod stream_tests;
 
 #[cfg(test)]
 mod tests {

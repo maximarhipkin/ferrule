@@ -20,6 +20,14 @@ struct MockGoogle {
     fail_first_generate_401: bool,
     refreshes: usize,
     generate_requests: Vec<Value>,
+    /// `loadCodeAssist` gives no project: `Some(true)` offers a tier whose
+    /// `onboardUser` runs as an operation, `Some(false)` offers none.
+    no_project: Option<bool>,
+    load_calls: usize,
+    onboard_calls: usize,
+    operation_calls: usize,
+    /// The token endpoint refuses refreshes (`invalid_grant`).
+    refuse_refresh: bool,
 }
 
 async fn read_http(sock: &mut TcpStream) -> (String, String, String) {
@@ -90,8 +98,19 @@ async fn serve_mock_google(state: Arc<Mutex<MockGoogle>>) -> String {
                 let resp = match path.as_str() {
                     "/token" => {
                         let is_refresh = body.contains("grant_type=refresh_token");
-                        if is_refresh {
-                            state.lock().unwrap().refreshes += 1;
+                        let refuse = is_refresh && {
+                            let mut st = state.lock().unwrap();
+                            st.refreshes += 1;
+                            st.refuse_refresh
+                        };
+                        if refuse {
+                            let refused = http_reply(
+                                "400 Bad Request",
+                                "application/json",
+                                r#"{"error":"invalid_grant"}"#,
+                            );
+                            let _ = sock.write_all(refused.as_bytes()).await;
+                            return;
                         }
                         let id_tok = fake_jwt("max@example.com", 4_102_444_800);
                         http_reply(
@@ -108,15 +127,50 @@ async fn serve_mock_google(state: Arc<Mutex<MockGoogle>>) -> String {
                         )
                     }
                     "/revoke" => http_reply("200 OK", "application/json", "{}"),
-                    "/v1internal:loadCodeAssist" => http_reply(
-                        "200 OK",
-                        "application/json",
-                        &json!({
-                            "cloudaicompanionProject": "companion-proj-123",
-                            "currentTier": { "id": "free-tier", "name": "Antigravity" }
-                        })
-                        .to_string(),
-                    ),
+                    "/v1internal:loadCodeAssist" => {
+                        let mut st = state.lock().unwrap();
+                        st.load_calls += 1;
+                        let doc = match st.no_project {
+                            None => json!({
+                                "cloudaicompanionProject": "companion-proj-123",
+                                "currentTier": { "id": "free-tier", "name": "Antigravity" }
+                            }),
+                            Some(true) => json!({
+                                "allowedTiers": [
+                                    { "id": "standard-tier", "name": "Standard" },
+                                    { "id": "free-tier", "name": "Antigravity", "isDefault": true }
+                                ]
+                            }),
+                            Some(false) => json!({
+                                "ineligibleTiers": [{ "reasonCode": "INELIGIBLE_ACCOUNT",
+                                                      "reasonMessage": "not eligible" }]
+                            }),
+                        };
+                        http_reply("200 OK", "application/json", &doc.to_string())
+                    }
+                    "/v1internal:onboardUser" => {
+                        let mut st = state.lock().unwrap();
+                        st.onboard_calls += 1;
+                        assert!(body.contains("\"tierId\":\"free-tier\""), "{body}");
+                        http_reply(
+                            "200 OK",
+                            "application/json",
+                            r#"{"name":"operations/onb-1","done":false}"#,
+                        )
+                    }
+                    "/v1internal/operations/onb-1" => {
+                        let mut st = state.lock().unwrap();
+                        st.operation_calls += 1;
+                        let doc = if st.operation_calls < 2 {
+                            json!({ "name": "operations/onb-1", "done": false })
+                        } else {
+                            json!({ "name": "operations/onb-1", "done": true, "response": {
+                                "@type": "type.googleapis.com/google.internal.cloud.code.v1internal.OnboardUserResponse",
+                                "cloudaicompanionProject": { "id": "onboarded-proj-9", "name": "p" }
+                            }})
+                        };
+                        http_reply("200 OK", "application/json", &doc.to_string())
+                    }
                     "/v1internal:fetchAvailableModels" => http_reply(
                         "200 OK",
                         "application/json",
@@ -413,4 +467,184 @@ async fn native_gemini_pkce_sign_in_seals_tokens_and_cloudcode_provider_streams_
     assert!(out.was_signed_in);
     assert!(out.revoked);
     assert!(!plan.store().path().exists());
+}
+
+fn plan_for(base_url: &str, tmp: &std::path::Path) -> (Arc<GeminiPlan>, Issuer) {
+    let mut iss = Issuer::new(base_url);
+    iss.ports = vec![0];
+    iss.onboard_poll = Duration::from_millis(10);
+    let private = tmp.join("private");
+    let data = tmp.join("data");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    (
+        Arc::new(GeminiPlan::new(&private, Some(&data), iss.clone())),
+        iss,
+    )
+}
+
+fn tokens() -> auth::Tokens {
+    serde_json::from_value(json!({
+        "access_token": "ya29.initial-secret-tok",
+        "refresh_token": "1//refresh-secret-tok",
+        "id_token": fake_jwt("max@example.com", 4_102_444_800),
+        "expires_in": 3600
+    }))
+    .unwrap()
+}
+
+fn hello() -> CompletionRequest {
+    CompletionRequest {
+        messages: vec![Message::user("hi")],
+        tools: vec![],
+        max_output_tokens: None,
+        temperature: None,
+        stream: None,
+    }
+}
+
+#[tokio::test]
+async fn a_new_account_is_onboarded_and_its_operation_waited_for() {
+    let state = Arc::new(Mutex::new(MockGoogle {
+        no_project: Some(true),
+        ..Default::default()
+    }));
+    let base_url = serve_mock_google(state.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, _) = plan_for(&base_url, tmp.path());
+
+    let meta = plan.sign_in(tokens()).await.unwrap();
+    assert_eq!(meta.project_id.as_deref(), Some("onboarded-proj-9"));
+    assert_eq!(meta.plan.as_deref(), Some("Antigravity"));
+    assert!(meta.project_note(0).is_none());
+    let st = state.lock().unwrap();
+    assert_eq!(st.onboard_calls, 1, "onboardUser once, then its operation");
+    assert_eq!(st.operation_calls, 2, "polled until done");
+}
+
+#[tokio::test]
+async fn an_account_with_no_tier_is_told_so_and_not_looked_up_before_every_request() {
+    let state = Arc::new(Mutex::new(MockGoogle {
+        no_project: Some(false),
+        ..Default::default()
+    }));
+    let base_url = serve_mock_google(state.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, _) = plan_for(&base_url, tmp.path());
+
+    let meta = plan.sign_in(tokens()).await.unwrap();
+    assert_eq!(meta.project_id, None);
+    let note = meta
+        .project_note(meta.signed_in_at)
+        .expect("sign-in says so");
+    assert!(
+        note.contains("no Gemini Code Assist / Antigravity project yet (Google offers the account no tier (INELIGIBLE_ACCOUNT))"),
+        "{note}"
+    );
+    assert_eq!(
+        state.lock().unwrap().onboard_calls,
+        0,
+        "nothing to onboard to"
+    );
+
+    let provider = CloudCodeProvider::new(
+        "gemini-cli",
+        &base_url,
+        "gemini-3.8-flash-tiered",
+        DriverOptions::default(),
+        plan.clone(),
+    );
+    for _ in 0..3 {
+        provider.complete(hello()).await.unwrap();
+    }
+    let st = state.lock().unwrap();
+    assert_eq!(
+        st.load_calls, 1,
+        "the miss is remembered: no lookup per request"
+    );
+    assert_eq!(st.generate_requests.len(), 3);
+    assert!(st.generate_requests[0].get("project").is_none());
+}
+
+#[tokio::test]
+async fn the_loopback_wait_ignores_other_flows_and_answers_on_both_loopbacks() {
+    let iss = Issuer {
+        ports: vec![0],
+        ..Issuer::new("http://127.0.0.1:9")
+    };
+    let cb = auth::Callback::bind(&iss).await.unwrap();
+    let redirect = cb.redirect.clone();
+    assert!(redirect.starts_with("http://localhost:"), "{redirect}");
+    let addrs = cb.addrs();
+    assert!(addrs.iter().any(|a| a.ip().is_loopback() && a.is_ipv4()));
+    let port = addrs[0].port();
+    assert!(addrs.iter().all(|a| a.port() == port));
+    let st = auth::new_state();
+
+    let wait = tokio::spawn({
+        let st = st.clone();
+        async move { cb.wait(&st, Duration::from_secs(10)).await }
+    });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // An older tab's reply and a bare visit don't end the wait.
+    for stray in ["?code=old-code&state=older-flow", "", "?state=nope"] {
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/auth/callback{stray}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400, "{stray}");
+        assert!(!resp.text().await.unwrap().is_empty());
+    }
+    assert!(!wait.is_finished());
+    // This flow's reply ends it, over ::1 when the machine has it.
+    let host = match addrs.iter().find(|a| a.is_ipv6()) {
+        Some(_) => format!("[::1]:{port}"),
+        None => format!("127.0.0.1:{port}"),
+    };
+    let resp = client
+        .get(format!(
+            "http://{host}/auth/callback?code=the-code&state={st}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(wait.await.unwrap().unwrap(), "the-code");
+}
+
+#[tokio::test]
+async fn a_refused_refresh_reads_as_the_google_sign_in_not_an_api_key() {
+    let state = Arc::new(Mutex::new(MockGoogle {
+        fail_first_generate_401: true,
+        refuse_refresh: true,
+        ..Default::default()
+    }));
+    let base_url = serve_mock_google(state.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, _) = plan_for(&base_url, tmp.path());
+    plan.sign_in(tokens()).await.unwrap();
+    let provider = CloudCodeProvider::new(
+        "gemini-cli",
+        &base_url,
+        "gemini-3.8-flash-tiered",
+        DriverOptions::default(),
+        plan.clone(),
+    );
+    let e = provider.complete(hello()).await.unwrap_err();
+    assert_eq!(
+        ferrule_core::failure::classify(&e),
+        ferrule_core::failure::Kind::GeminiSignin
+    );
+    let said = ferrule_core::failure::chat_text(&e);
+    assert!(said.contains("Google sign-in expired"), "{said}");
+    assert!(!said.contains("API key"), "{said}");
+    assert!(plan.refresh_refused());
+    // Signed out for good: the next request doesn't try again.
+    let again = provider.complete(hello()).await.unwrap_err();
+    assert_eq!(
+        ferrule_core::failure::classify(&again),
+        ferrule_core::failure::Kind::GeminiSignin
+    );
+    assert_eq!(state.lock().unwrap().refreshes, 1);
 }

@@ -9,7 +9,7 @@
 //! op maps to these routes. Every text that may hold chat text goes
 //! through the redactor; the numbers are signals, not proof.
 
-use super::api::{arg, bad, by, need, ok, Answer};
+use super::api::{arg, bad, by, confirmed, need, ok, Answer};
 use super::config_page::{commit, fresh, hash_of, place, read_doc};
 use super::Ctx;
 use crate::config::Config;
@@ -71,6 +71,23 @@ fn schedule_words(cron: &str, tz: &str) -> String {
             format!("{when} at {at} ({tz})")
         }
         (Some((_, at)), Some(["*", "*", "1-5"])) => format!("on weekdays at {at} ({tz})"),
+        (Some((_, at)), Some(["*", "*", d])) if d.len() == 1 => {
+            let day = [
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday",
+            ]
+            .get(d.parse::<usize>().unwrap_or(9));
+            match day {
+                Some(day) => format!("every {day} at {at} ({tz})"),
+                None => format!("on the schedule `{cron}` ({tz})"),
+            }
+        }
         _ => format!("on the schedule `{cron}` ({tz})"),
     }
 }
@@ -381,6 +398,8 @@ pub fn view(ctx: &Ctx) -> Answer {
         "needs_restart": needs_restart(&cfg),
         "schedule": schedule_words(&l.schedule, &l.timezone),
         "failure_notes": l.failure_notes,
+        "self_written": cfg.skills.self_written,
+        "eval": crate::learn::weekly::view(&cfg, &dir),
         "last_pass": last_pass,
         "passes": passes,
         "lessons": lessons,
@@ -419,11 +438,21 @@ pub async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "learn/revert" => revert(ctx, body),
         "learn/keep" => keep(ctx, body),
         "learn/drop" => drop(ctx, body),
+        "learn/eval" => eval(ctx).await,
         _ => None,
     }
 }
 
-/// `POST /api/learn/settings {enabled?, failure_notes?, base_hash?}`.
+/// The switches `learn/settings` writes, and their sections.
+const SWITCHES: &[(&str, &str)] = &[
+    ("enabled", "learning"),
+    ("failure_notes", "learning"),
+    ("weekly_eval", "learning"),
+    ("self_written", "skills"),
+];
+
+/// `POST /api/learn/settings {enabled?, failure_notes?, weekly_eval?,
+/// self_written?, base_hash?, confirm?}`.
 fn settings(ctx: &Ctx, body: &Value) -> Answer {
     let path = need!(place(ctx));
     need!(fresh(&path, body));
@@ -434,27 +463,37 @@ fn settings(ctx: &Ctx, body: &Value) -> Answer {
             "the config file doesn't read as TOML; fix it on the Config page or restore the last good copy",
         );
     };
-    let before = need!(loaded(ctx)).learning;
-    let mut set: Vec<(&str, bool)> = Vec::new();
-    for key in ["enabled", "failure_notes"] {
-        let Some(v) = body.get(key) else { continue };
+    let before = need!(loaded(ctx));
+    let mut set: Vec<(&str, &str, bool)> = Vec::new();
+    for (key, section) in SWITCHES {
+        let Some(v) = body.get(*key) else { continue };
         match v.as_bool() {
-            Some(b) => set.push((key, b)),
+            Some(b) => set.push((section, key, b)),
             None => return bad(400, format!("`{key}` takes true or false")),
         }
     }
     if set.is_empty() {
-        return bad(400, "nothing to change: send enabled or failure_notes");
+        return bad(
+            400,
+            "nothing to change: send enabled, failure_notes, weekly_eval or self_written",
+        );
+    }
+    // Saving its own skills widens what the agent can do: asked first.
+    if set.contains(&("skills", "self_written", true)) && !before.skills.self_written {
+        need!(confirmed(
+            body,
+            "Let the agent save skills it writes itself? Each one is kept only when its check passes in the sandbox and it scans clean, and it shows on this page; nothing is installed from the internet. New sessions get it.".into()
+        ));
     }
     let mut new = old.clone();
-    let Some(table) = new
-        .entry("learning")
-        .or_insert_with(toml_edit::table)
-        .as_table_like_mut()
-    else {
-        return bad(422, "`[learning]` isn't a table");
-    };
-    for (key, value) in &set {
+    for (section, key, value) in &set {
+        let Some(table) = new
+            .entry(section)
+            .or_insert_with(toml_edit::table)
+            .as_table_like_mut()
+        else {
+            return bad(422, format!("`[{section}]` isn't a table"));
+        };
         table.insert(key, TomlItem::Value((*value).into()));
     }
     let mut answer = if new.to_string() != old.to_string() {
@@ -471,16 +510,18 @@ fn settings(ctx: &Ctx, body: &Value) -> Answer {
         Ok(words) => words,
         Err(e) => format!("the pass's task wasn't updated: {e:#}"),
     };
-    let mut changed = Vec::new();
-    if before.enabled != l.enabled {
-        changed.push(format!("enabled {} → {}", before.enabled, l.enabled));
-    }
-    if before.failure_notes != l.failure_notes {
-        changed.push(format!(
-            "failure_notes {} → {}",
-            before.failure_notes, l.failure_notes
-        ));
-    }
+    crate::self_extend::set_self_written(cfg.skills.self_written);
+    let switch = |c: &Config, key: &str| match key {
+        "enabled" => c.learning.enabled,
+        "failure_notes" => c.learning.failure_notes,
+        "weekly_eval" => c.learning.weekly_eval,
+        _ => c.skills.self_written,
+    };
+    let changed: Vec<String> = SWITCHES
+        .iter()
+        .filter(|(k, _)| switch(&before, k) != switch(&cfg, k))
+        .map(|(k, _)| format!("{k} {} → {}", switch(&before, k), switch(&cfg, k)))
+        .collect();
     if !changed.is_empty() {
         if let Some(hub) = &ctx.hub {
             hub.audit().record(
@@ -507,6 +548,24 @@ fn settings(ctx: &Ctx, body: &Value) -> Answer {
     } else {
         "Unfinished runs leave no note."
     };
+    let eval = if l.weekly_eval {
+        format!(
+            " The playbook is measured {} (with and without it), within ${:.2}.",
+            schedule_words(&l.eval_schedule, &l.timezone),
+            l.eval_usd_cap
+        )
+    } else {
+        String::new()
+    };
+    let skills = if cfg.skills.self_written {
+        if ctx.live.is_some() {
+            " New sessions can save skills they write (skill_keep)."
+        } else {
+            " The bot's sessions can save skills they write from its next start."
+        }
+    } else {
+        ""
+    };
     let what = if changed.is_empty() {
         "Nothing changed.".to_string()
     } else {
@@ -519,7 +578,9 @@ fn settings(ctx: &Ctx, body: &Value) -> Answer {
         ""
     };
     answer["ok"] = json!(true);
-    answer["said"] = json!(format!("{state} {notes} {what} Now {task}.{later}"));
+    answer["said"] = json!(format!(
+        "{state} {notes}{eval}{skills} {what} Now {task}.{later}"
+    ));
     answer["needs_restart"] = json!(restart);
     answer["restart"] = json!(restart);
     ok(answer)
@@ -536,6 +597,17 @@ async fn run(ctx: &Ctx, body: &Value) -> Answer {
     let fallback = ctx.workspace.clone().unwrap_or_else(|| PathBuf::from("."));
     match crate::learn::start(&cfg, dry, &fallback).await {
         Ok(s) => ok(json!({ "ok": true, "said": ctx.redactor.redact(&s.said), "id": s.id })),
+        Err(e) => bad(409, ctx.redactor.redact(&format!("{e:#}"))),
+    }
+}
+
+/// `POST /api/learn/eval`: the weekly playbook eval, now, in the
+/// background; refused in words over a cap, with the kill switch on, with
+/// one running or nothing to measure.
+async fn eval(ctx: &Ctx) -> Answer {
+    let cfg = need!(loaded(ctx));
+    match crate::learn::weekly::start(&cfg).await {
+        Ok(said) => ok(json!({ "ok": true, "said": ctx.redactor.redact(&said) })),
         Err(e) => bad(409, ctx.redactor.redact(&format!("{e:#}"))),
     }
 }
@@ -681,6 +753,10 @@ mod tests {
         assert_eq!(
             schedule_words("0 9 * * 1-5", "UTC"),
             "on weekdays at 09:00 (UTC)"
+        );
+        assert_eq!(
+            schedule_words("43 4 * * 0", "UTC"),
+            "every Sunday at 04:43 (UTC)"
         );
         assert_eq!(
             schedule_words("*/5 * * * *", "UTC"),

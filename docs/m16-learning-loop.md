@@ -609,6 +609,41 @@ pass must cut a lesson, it now takes the worst record first (bad
 sessions as a share of at least 2), then the reflector's pick, then the
 oldest no pass kept.
 
+**Saving its own skills** (`[skills] self_written = false` by default).
+`skill_keep`, with its check in the sandbox and its scan, used to come
+only with `[extensions] enabled`, the switch that also lets the agent
+install from the internet. `self_written` offers the root agent
+`skill_keep` alone. Each agent reads it once when it's built, so a
+session's tools and prompt prefix don't change mid-way; the page's switch
+(`POST learn/settings {self_written}`, asked to confirm when turned on)
+reaches new sessions of the gateway it runs in. `GET /api/learn` has
+`self_written`.
+
+**Memory upkeep.** Each fact has `recall_count` and `last_recalled_at`
+(counted when recall puts it in a prompt: the session's block, a later
+message's, the `recall` tool; the dashboard's list and search don't
+count), `pinned` (never fades, `PIN_BOOST` = 2× in ranking) and `source`
+(`owner`, `agent`, `failure-note`, `learned`; `unknown` before sources
+were kept). The columns are added in place to an older `memory.db`,
+without a schema version, so an older ferrule still opens it. At most
+once a day, after an owner's run, facts that read the same (case,
+spacing and a trailing stop aside, same tags) merge into the newest
+(`merge_duplicates`): no model call, so learning needn't be on; each merge
+is journaled (`learn/log.jsonl`, pass `upkeep`) and is M15's reversible
+UPDATE. Facts that only resemble each other need a model's judgment and
+wait for the pass's consolidation (§2). The memory page reads them:
+`GET /api/memory` rows add `recalls`, `last_recalled`, `pinned`,
+`source`, and `?view=stale` lists facts older than 30 days that were never
+recalled; `POST memory/add {text, tags?}`, `memory/edit {id, text}` (the
+old text stays as history) and `memory/pin {id, pinned}` refuse a text
+that looks like a key, in the chat's words.
+
+**The weekly playbook eval** (`[learning] weekly_eval = false`,
+`eval_usd_cap = 1.0`, `eval_schedule`): the kept lessons' tasks with and
+without the playbook, [eval.md](eval.md) "The weekly playbook eval".
+`GET /api/learn` has `eval: {enabled, usd_cap, last, trend}`; `POST
+learn/eval` runs one now.
+
 **Bounded logs.** `signals.jsonl` and `usage.jsonl` are pruned the way
 the trust audit log is (appends hold `<name>.lock` shared, a prune holds
 it alone and rewrites through a temporary file and a rename): an append

@@ -680,6 +680,14 @@ fn finish_gemini_meta(
     config_path: Option<&std::path::Path>,
     retire_all: Option<&RetireFn>,
 ) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Signed in is not yet able to answer when Google gave no project.
+    let note = meta
+        .project_note(now)
+        .map(|n| format!(" {n}."))
+        .unwrap_or_default();
     let who = crate::subscription::SignIn::In {
         email: meta.email,
         plan: meta.plan,
@@ -695,7 +703,7 @@ fn finish_gemini_meta(
     if let Some(r) = retire_all {
         r(None);
     }
-    match added {
+    let said = match added {
         Some(Ok(Some(_))) => format!(
             "{who} on the Gemini plan; `gemini-cli/{}` is connected.",
             crate::subscription::gemini::MODEL
@@ -705,7 +713,8 @@ fn finish_gemini_meta(
             crate::subscription::gemini::MODEL
         ),
         _ => format!("{who} on the Gemini plan."),
-    }
+    };
+    format!("{said}{note}")
 }
 
 /// `POST plans/gemini/start`: starts a Google OAuth 2.0 PKCE flow for the

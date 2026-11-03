@@ -880,3 +880,5 @@ details.cfg-group{margin:0 0 var(--sp-2)}
 details.cfg-group > summary{display:flex;align-items:center;gap:var(--sp-1);cursor:pointer}
 .check.cfg .d code{font-size:var(--fs-xs)}
 .logline.said .lvl{text-transform:none}
+.card.memory.pinned{border-color:var(--accent)}
+.card.memory textarea{width:100%}

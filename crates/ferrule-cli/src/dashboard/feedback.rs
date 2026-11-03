@@ -24,12 +24,18 @@ const MAX_WHY_BYTES: usize = 4 * 1024;
 /// words for a pasted key (`paste_guard::reply`), then that nothing was
 /// noted.
 fn pasted_key() -> String {
+    pasted_key_then("Nothing was noted: send your 👍/👎 again without it.")
+}
+
+/// The chat's words for a pasted key (`paste_guard::reply`), without the
+/// part about deleting a message, then `then`: for the page's own fields.
+pub(super) fn pasted_key_then(then: &str) -> String {
     let words = paste_guard::reply(true, Some("Add it on the Connect page instead."));
     let mut parts = words.split("\n\n");
     let first = parts.next().unwrap_or_default();
     let stopped = first.split_once(". ").map_or(first, |(s, _)| s);
     let keys = parts.next().unwrap_or_default();
-    format!("{stopped}. {keys} Nothing was noted: send your 👍/👎 again without it.")
+    format!("{stopped}. {keys} {then}")
 }
 
 /// The owner's "why", ready to keep: refused when it looks like it holds

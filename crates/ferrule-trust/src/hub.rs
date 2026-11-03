@@ -174,6 +174,8 @@ pub struct Hub {
     accounts: RwLock<Vec<String>>,
     /// M56.2: the owner's standing grants.
     grants: Grants,
+    /// M66: the chat each run tree asks in when its question names none.
+    asks: RwLock<HashMap<String, ChatRef>>,
 }
 
 impl Hub {
@@ -209,6 +211,7 @@ impl Hub {
             connected: RwLock::new(Vec::new()),
             accounts: RwLock::new(Vec::new()),
             grants: Grants::in_data_dir(data),
+            asks: RwLock::new(HashMap::new()),
         };
         // A restart doesn't warn twice for today's windows.
         let today = hub.meter.day(hub.clock.now()).to_string();
@@ -369,6 +372,18 @@ impl Hub {
 
     pub fn owners(&self) -> Vec<ChatRef> {
         self.owners.read().unwrap().clone()
+    }
+
+    /// M66: `tree`'s questions go to `chat` (the chat it came from: the
+    /// page's own, a goal loop's), with the primary owner chat behind it.
+    /// A step-up or plan question naming its own chat is unaffected.
+    pub fn ask_tree_in(&self, tree: &str, chat: ChatRef) {
+        self.asks.write().unwrap().insert(tree.to_string(), chat);
+    }
+
+    /// The chat `tree` asks in, when [`Hub::ask_tree_in`] named one.
+    pub fn asks_in(&self, tree: &str) -> Option<ChatRef> {
+        self.asks.read().unwrap().get(tree).cloned()
     }
 
     /// The chat that gets approvals and warnings.
@@ -1076,7 +1091,17 @@ impl Hub {
             op,
         } = q;
         let run = self.run_id(tree);
-        let Some(chat) = chat.or_else(|| self.primary()) else {
+        // M66: a chat named here, else the one this tree asks in (the
+        // page's own chat, a goal's), with the owner's primary chat behind
+        // it when that one can't be reached.
+        let explicit = chat.is_some();
+        let mut chats: Vec<ChatRef> = chat.or_else(|| self.asks_in(tree)).into_iter().collect();
+        if !explicit {
+            if let Some(primary) = self.primary().filter(|p| !chats.contains(p)) {
+                chats.push(primary);
+            }
+        }
+        let Some(first) = chats.first().cloned() else {
             self.answered(
                 tree,
                 &run,
@@ -1084,68 +1109,81 @@ impl Hub {
             );
             return Err("no owner chat is set to ask ([trust] owner_chat, or a private chat in [gateway] telegram_allowed_chats)".into());
         };
-        let route = chat.channel.clone();
         let Some(notifier) = self.notifier() else {
             self.answered(
                 tree,
                 &run,
-                json!({"subject": subject, "route": route, "answer": "unreachable"}),
+                json!({"subject": subject, "route": first.channel, "answer": "unreachable"}),
             );
             return Err(format!(
                 "couldn't reach the owner: {} isn't running in this process",
-                chat.channel_title()
+                first.channel_title()
             ));
         };
-        let (code, rx) = if for_run || remember.is_some() {
-            self.approvals
-                .open_for_gate(&chat, what, timeout, for_run, remember.is_some())
-        } else {
-            self.approvals
-                .open_for(&chat, what, Some(timeout), op.map(str::to_string))
+        let mut unreachable = String::new();
+        let mut sent = None;
+        for chat in chats {
+            let route = chat.channel.clone();
+            let (code, rx) = if for_run || remember.is_some() {
+                self.approvals
+                    .open_for_gate(&chat, what, timeout, for_run, remember.is_some())
+            } else {
+                self.approvals
+                    .open_for(&chat, what, Some(timeout), op.map(str::to_string))
+            };
+            if kind.is_some() || tool.is_some() {
+                self.approvals.about(&code, kind, tool);
+            }
+            let mut waiting = Waiting {
+                hub: self,
+                code: code.clone(),
+                route: route.clone(),
+                tree,
+                run: run.clone(),
+                subject,
+                done: false,
+            };
+            let mut always = if for_run {
+                ", or `always` to allow it for the rest of this run".to_string()
+            } else {
+                String::new()
+            };
+            if let Some(spec) = remember {
+                always.push_str(&format!(
+                    ", or `remember` to allow {} (revoke it on the dashboard's Settings)",
+                    spec.offer()
+                ));
+            }
+            let text = format!("{question}\nReply `yes` to allow it{always}. Anything else, or no answer in {}, refuses it. (code {code})", minutes(timeout));
+            self.audit.record(
+                self.clock.now(),
+                "approval_asked",
+                Some(tree),
+                run.as_deref(),
+                json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code, "op": op}),
+            );
+            let mut choices = vec![("Allow".to_string(), format!("yes {code}"))];
+            if for_run {
+                choices.push(("Allow for this run".to_string(), format!("always {code}")));
+            }
+            if remember.is_some() {
+                choices.push(("Always here".to_string(), format!("remember {code}")));
+            }
+            choices.push(("Refuse".to_string(), format!("no {code}")));
+            match notifier.send_choices(&chat, &text, &choices).await {
+                Ok(()) => {
+                    sent = Some((code, rx, waiting));
+                    break;
+                }
+                Err(e) => {
+                    waiting.finish("unreachable");
+                    unreachable = e;
+                }
+            }
+        }
+        let Some((code, rx, mut waiting)) = sent else {
+            return Err(format!("couldn't reach the owner ({unreachable})"));
         };
-        if kind.is_some() || tool.is_some() {
-            self.approvals.about(&code, kind, tool);
-        }
-        let mut waiting = Waiting {
-            hub: self,
-            code: code.clone(),
-            route: route.clone(),
-            tree,
-            run: run.clone(),
-            subject,
-            done: false,
-        };
-        let mut always = if for_run {
-            ", or `always` to allow it for the rest of this run".to_string()
-        } else {
-            String::new()
-        };
-        if let Some(spec) = remember {
-            always.push_str(&format!(
-                ", or `remember` to allow {} (revoke it on the dashboard's Settings)",
-                spec.offer()
-            ));
-        }
-        let text = format!("{question}\nReply `yes` to allow it{always}. Anything else, or no answer in {}, refuses it. (code {code})", minutes(timeout));
-        self.audit.record(
-            self.clock.now(),
-            "approval_asked",
-            Some(tree),
-            run.as_deref(),
-            json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code, "op": op}),
-        );
-        let mut choices = vec![("Allow".to_string(), format!("yes {code}"))];
-        if for_run {
-            choices.push(("Allow for this run".to_string(), format!("always {code}")));
-        }
-        if remember.is_some() {
-            choices.push(("Always here".to_string(), format!("remember {code}")));
-        }
-        choices.push(("Refuse".to_string(), format!("no {code}")));
-        if let Err(e) = notifier.send_choices(&chat, &text, &choices).await {
-            waiting.finish("unreachable");
-            return Err(format!("couldn't reach the owner ({e})"));
-        }
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Answer::Yes)) => {
                 waiting.finish("yes");
