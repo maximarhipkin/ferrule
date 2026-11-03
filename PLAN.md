@@ -30,13 +30,22 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.13** (2026-11-02, PR #74): `[trust] untrusted_send_gate` is
+  - **v0.14.14** (2026-11-03, PR #75): silent turns. A turn that ends
+    with exactly `NO_REPLY` posts nothing in any chat, and one that ends
+    with no text posts nothing in a group (Telegram, Signal, personal
+    WhatsApp); a private chat still gets the empty-answer notice. A
+    group's root agent is told to answer `NO_REPLY` when a message needs
+    nothing from it. A streamed preview holds back while the text could
+    be `NO_REPLY` and a silent turn deletes what it posted; a scheduled
+    run that is silent delivers nothing; the transcript gets a
+    `silent_turn` event. Every crate is at 0.14.14 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.13** (2026-11-02, PR #74): `[trust] untrusted_send_gate` is
     on the Config page and in `config_set`, from the chat only on the
     owner's card (owner mode too) and never by a chat `config_restore`.
     Off, HTTP writes through bound keys no longer ask after outside
     content; recursive deletes, force pushes and DELETEs still follow
     `[trust] gates`, which stays guarded. Takes effect after a restart.
-    Every crate is at 0.14.13 except `ferrule-plugin-sdk`.
   - Before it, **v0.14.12** (2026-10-29, PR #73): on the Claude Code engine a
     built-in `Read` of an image counts as looked at for `send_file` (same
     freshness check as `read_file`), so files the model viewed go out
