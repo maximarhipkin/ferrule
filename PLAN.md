@@ -11103,3 +11103,88 @@ and `ferrule-cli` unit and integration tests (`make check`), plus live
 end-to-end verification of `ferrule doctor --ping-models`, `ferrule status`
 (with `5h` and `weekly` quota windows), and `ferrule run` with
 `PATH=/usr/bin:/bin` (no `agy` or `gemini` binary on `PATH`).
+
+### 2026-11-03 — Review of the Gemini plan commit, its fixes, and the dashboard redesign from the Claude Design board (Claude, Opus 5.5)
+
+No milestone claimed (the dashboard notes call it M66 in comments).
+
+**Why.** The owner asked for the latest commit to be checked, the
+dashboard's design and flow to be improved with Claude Design, and the
+agent tested end to end: its permissions and the Google sign-in.
+
+**What changed.**
+- Gemini plan, from the review:
+  - `[plans.gemini_cli] binary` defaults to empty, so the native HTTPS
+    client is the default, as the commit meant. Before, the default was
+    `agy`: with `agy` on the machine every turn went through it, launched
+    with `--dangerously-skip-permissions` and no approval bridge, so a
+    recursive delete or a force push never reached the owner's gate.
+  - A logout sticks: `Store::forget` deletes the record and leaves
+    `private/plans/gemini.no-cli-import`, so the CLI's token isn't pulled
+    back in; a signed-out record (a refused refresh) is never imported
+    over; `ferrule logout gemini` no longer imports the CLI's token first
+    (and then revoked it). The Safe's delete uses `forget` too. Unit
+    tests: `gemini::store::tests`.
+  - `cloudcode`: an id Google leaves out of a `functionCall` is unique
+    across responses (`synthetic_call_id`), so an older tool result never
+    maps to a newer call's name.
+  - `plans/gemini/start` and `poll` answer `expires_in`.
+- Dashboard (`app.js`, `app.css`, `setup.rs`):
+  - Header: the search button is styled on `#find` (the old rule needed
+    an `sm` class it never had, so "Search /" spilled onto the theme
+    button).
+  - Home: one hero card (tone in an icon tile, "Needs you / Waiting for
+    you / All good", the next action in it, "Right now" beside it); the
+    "no model is connected" notice isn't repeated under it; pending
+    approvals sit right under the hero; a warning's fix is a plain
+    button, filled ones are for what blocks the bot.
+  - Get started: the steps are cards on a desktop, only the next step's
+    button is primary, and Say hello is shown locked until there's a brain.
+  - Give your bot a brain: "Sign in with a plan you pay for" or "Use an
+    API key", a tile each (ChatGPT, Google, Claude; OpenRouter,
+    Anthropic, Google AI Studio), and only the picked one's form. The
+    Google sign-in was the last card under "More providers".
+  - Google sign-in card: steps (Open Google, Come back here, Connected),
+    what Google will ask for, the link with a countdown, then waiting
+    with a paste-back that checks the address as it's typed and sends a
+    good paste by itself. Polling redraws only when the state changes;
+    before, every 3 s poll redrew the card and wiped a half-pasted
+    address. On a page not opened at localhost the paste field is shown
+    at once; on localhost it's one tap away.
+
+**Checks.** `cargo fmt --check`; `cargo clippy --workspace --all-targets`
+(only the older `ferrule-sandbox` dead-code warning); `cargo test
+--workspace --locked`: everything passes except tests that fail the same
+way here on the original commit. The 7 `autocommit` tests and
+`starter_suite` failed only because of the container's forced commit
+signing (`GIT_CONFIG_*`), and pass without it. `instances_are_listed_made_and_removed`
+and `enforcement::hidden_paths_outside_the_workspace_and_the_host_environ`
+fail as root, before and after this change. Against the real binary with a scripted
+OpenAI-compatible mock (`ferrule run`, and `ferrule gateway` with
+`local = true` and its dashboard, driven by Playwright): a recursive
+delete and a force push are refused without a terminal; at a terminal `n`
+and `y` refuse and `yes` runs it; from the dashboard's chat the gate
+shows on Chat and Home and Allow runs it; the shell sees no key from the
+environment; the private dir is unreadable; writes outside the roots are
+refused. The Google flow was driven up to the token exchange (start,
+link, wrong state, garbage, auto-submit of a good paste, cancel); a real
+Google sign-in still needs the owner's account.
+
+**Open, from the review (not fixed here).**
+- `cloudcode` ends a cut-off or blocked stream as a success (no
+  `finishReason` / `blockReason` check, unlike `common::ended_early`).
+- No project: every request re-runs `loadCodeAssist` and `onboardUser`
+  under the store lock (up to ~60 s against a 30 s stale lock);
+  `onboardUser` doesn't wait for its operation.
+- A 429 shows as `HTTP 429: …` (no plan-limit wording, `RetryInfo`
+  ignored); 401/403 read as "the provider refused the API key".
+- `state()` says signed in when only `.gemini/oauth_creds.json` exists,
+  which the native client can't use.
+- `[plans.gemini_cli] config_dir = "~"` would unhide `private/` from the
+  engine child (only with that non-default setting).
+- The loopback listener binds 127.0.0.1 while the redirect says
+  `localhost`; any request with a wrong state ends the wait.
+- The client presents itself as Antigravity with its OAuth client: a
+  terms-of-service risk for the owner's Google account.
+- `ferrule sandbox` fails "ferrule's own environment is unreadable" when
+  ferrule runs as root (seen in a root container).

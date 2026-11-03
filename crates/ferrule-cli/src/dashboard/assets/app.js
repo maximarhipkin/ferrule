@@ -615,6 +615,7 @@
     backup: "M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1zM4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4",
     file: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2zM14 2v5a1 1 0 0 0 1 1h5M10 9H8M16 13H8M16 17H8",
     key: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4zM16 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0",
+    user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
     lock: "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-7a2 2 0 0 1 2 -2zM7 11V7a5 5 0 0 1 10 0v4",
     telegram: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
     // things the page says
@@ -705,18 +706,21 @@
   // Each strip says what's wrong, has a button per fix that can run from
   // here, and closes for a day unless it's one of the two that never do.
 
-  function fixButton(f) {
-    if (f.action) return btn(f.label, f.action, f.body || {}, "primary");
+  function fixButton(f, kind) {
+    if (f.action) return btn(f.label, f.action, f.body || {}, kind === undefined ? "primary" : kind);
     if (f.section) return el("button", { text: f.label, onclick: () => show(f.section, f.tile ? { tile: f.tile } : null) });
     return null;
   }
 
   function notice(p) {
     const sev = p.top || p.action === "kill/off" ? "bad" : "warn";
-    const fixes = (p.fixes || []).map(fixButton);
+    // M66: a warning's fix is a plain button; filled ones are kept for
+    // what blocks the bot, so the page has one thing that stands out.
+    const kind = sev === "bad" ? "primary" : null;
+    const fixes = (p.fixes || []).map((f) => fixButton(f, kind));
     if (!fixes.length) {
-      if (p.suggest) fixes.push(btn("Make " + p.suggest + " the default", "models/default", { model: p.suggest }, "primary"));
-      if (p.action) fixes.push(btn(p.action === "kill/off" ? "Turn the kill switch off" : "Fill missing prices", p.action, {}, "primary"));
+      if (p.suggest) fixes.push(btn("Make " + p.suggest + " the default", "models/default", { model: p.suggest }, kind));
+      if (p.action) fixes.push(btn(p.action === "kill/off" ? "Turn the kill switch off" : "Fill missing prices", p.action, {}, kind));
       if (p.section && p.section !== current) fixes.push(el("button", { text: "Open " + p.section, onclick: () => show(p.section) }));
     }
     return el("div", { class: "alert " + sev, "data-notice": p.id || null },
@@ -867,17 +871,57 @@
       const M = Object.create(sections.models);
       M.fbEdited = false;
       M.home = true;
+      // M66: two kinds side by side (a plan, a key), a tile per brain, and
+      // only the picked one's form, so there is one button to press.
+      M.pickMode = "plan";
+      M.picked = null;
       M.drawChoices = function () {
         const ps = (this.choices && this.choices.providers) || [];
-        const picks = BRAINS.map(([name, why]) => [ps.find((p) => p.name === name), why]).filter(([p]) => p);
-        const rest = ps.filter((p) => !BRAINS.some(([name]) => name === p.name));
+        const by = (name) => ps.find((p) => p.name === name);
         const working = ps.some((p) => p.connected && p.ready);
+        const list = (this.pickMode === "key" ? KEYS : PLANS)
+          .map(([name, mono, t, d, badge, tone]) => ({ p: by(name), name, mono, t, d, badge, tone }))
+          .filter((x) => x.p);
+        const waiting = this.gemini && this.gemini.state === "waiting" ? "gemini-cli"
+          : this.chatgpt && this.chatgpt.state === "waiting" ? "chatgpt" : null;
+        if (!list.some((x) => x.name === this.picked)) this.picked = (list.find((x) => x.name === waiting) || list[0] || {}).name || null;
+        const shown = new Set([...PLANS, ...KEYS].map((b) => b[0]));
+        const rest = ps.filter((p) => !shown.has(p.name));
+        const tab = (mode, label, ic) => {
+          const b = el("button", { type: "button", role: "tab", "aria-selected": String(this.pickMode === mode) }, icon(ic), el("span", { text: label }));
+          b.onclick = () => { if (this.pickMode !== mode) { this.pickMode = mode; this.picked = null; this.drawChoices(); } };
+          return b;
+        };
+        const tiles = el("div", { class: "brain-tiles", role: "radiogroup", "aria-label": "Brains" }, list.map((x) => {
+          const on = x.name === this.picked;
+          const b = el("button", { type: "button", role: "radio", "aria-checked": String(on), class: "brain-tile", "data-brain": x.name },
+            el("span", { class: "top" },
+              el("span", { class: "mono-chip " + x.tone, "aria-hidden": "true", text: x.mono }),
+              el("span", { class: "sp" }),
+              x.p.connected && x.p.ready ? tag("ready", "ok") : x.badge ? el("span", { class: "badge", text: x.badge }) : null,
+              el("span", { class: "radio", "aria-hidden": "true" })),
+            el("span", { class: "name", text: x.t }),
+            el("span", { class: "d", text: x.d }));
+          b.onclick = () => { this.picked = x.name; this.focusPick = true; this.drawChoices(); };
+          return b;
+        }));
+        const pick = list.find((x) => x.name === this.picked);
         setKids(box,
           working ? el("div", { class: "said ok row" }, el("span", { class: "grow", text: "Your bot has a brain. Say hello to try it." }),
             button("Say hello", { kind: "primary", icon: "send", onclick: (e) => hello(e.currentTarget) })) : null,
-          picks.map(([p, why]) => el("div", { class: "stack" }, el("p", { class: "muted small m0", text: why }), this.provider(p))),
+          el("div", { class: "seg-tabs", role: "tablist", "aria-label": "How to connect" },
+            tab("plan", "Sign in with a plan you pay for", "user"), tab("key", "Use an API key", "key")),
+          tiles,
+          pick ? el("div", { class: "brain-detail" }, this.provider(pick.p)) : null,
           rest.length ? disc("brains-more", "card", "More providers (" + rest.length + ")",
-            el("div", { class: "tiles details-body" }, rest.map((p) => this.provider(p)))) : null);
+            el("div", { class: "tiles details-body" }, rest.map((p) => this.provider(p)))) : null,
+          el("p", { class: "brain-foot" }, icon("lock"),
+            el("span", { text: "Tested before it's saved. Keys and sign-ins are sealed on this machine and never come back to this page." })));
+        if (this.focusPick) {
+          this.focusPick = false;
+          const t = box.querySelector(".brain-tile[aria-checked=true]");
+          if (t) t.focus();
+        }
       };
       M.loadChoices = async function () {
         try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
@@ -897,7 +941,7 @@
       return box;
     },
     openModel() {
-      connectPanel({ title: "Give your bot a brain", intro: "The model your bot thinks with. A key or a sign-in is tested before it's saved, and it never comes back to this page.",
+      connectPanel({ title: "Give your bot a brain", intro: "The model your bot thinks with. Pick one; you can add more and switch on Models later.",
         need: "an account with one of these · about 3 minutes", body: this.modelPanel() });
     },
     openTelegram() {
@@ -931,13 +975,18 @@
     "Press Restart to turn Telegram on.",
   ];
 
-  // The three a beginner is offered first (M50): no key at all, one key for
-  // hundreds of models, and Claude.
-  const BRAINS = [
-    ["chatgpt", "No key: sign in with the ChatGPT plan you already pay for."],
-    ["gemini", "Google Gemini: free or paid AI Studio key, 1M context window."],
-    ["openrouter", "One key, hundreds of models, pay as you go."],
-    ["anthropic", "Claude, with a key from Anthropic's console."],
+  // What a beginner is offered first (M50, M66), in two kinds: a plan they
+  // already pay for (no key at all), or a key. [provider, monogram, name,
+  // what it is, badge, tone]. The rest are one tap away.
+  const PLANS = [
+    ["chatgpt", "C", "ChatGPT plan", "Plus, Pro or Business: type a code on OpenAI's page.", "No key", "ok"],
+    ["gemini-cli", "G", "Google", "Gemini and Antigravity plans: sign in with Google.", "1M context", "accent"],
+    ["claude-code", "A", "Claude plan", "Pro or Max: paste a setup-token.", null, "warn"],
+  ];
+  const KEYS = [
+    ["openrouter", "O", "OpenRouter", "One key, hundreds of models, pay as you go.", "Popular", "steel"],
+    ["anthropic", "A", "Anthropic", "Claude, with a key from Anthropic's console.", null, "warn"],
+    ["gemini", "G", "Google AI Studio", "Gemini by key, free tier included.", null, "accent"],
   ];
 
   // The first hello: sent from here, answered in Chat.
@@ -952,35 +1001,90 @@
   function checklist(s) {
     const steps = s.steps;
     const n = steps.filter((x) => x.done).length;
-    const modelDone = (steps.find((x) => x.id === "model") || {}).done;
+    const modelAt = steps.findIndex((x) => x.id === "model");
+    const modelDone = (steps[modelAt] || {}).done;
+    const locked = (x) => x.id === "hello" && !modelDone && !x.done;
+    // M66: one primary button on the page, the next step's.
+    const next = steps.find((x) => !x.done && !locked(x));
     const more = (x) => {
+      const kind = x === next ? "primary" : null;
       if (x.id === "hello") {
-        const b = button(x.done ? "Open chat" : "Say hello", { kind: x.done ? null : "primary", icon: "send" });
-        b.disabled = !modelDone && !x.done;
+        const b = button(x.done ? "Open chat" : "Say hello", { kind, icon: "send" });
+        b.disabled = locked(x);
         b.onclick = () => (x.done ? show("chat") : hello(b));
         return b;
       }
       if (x.done) return null;
-      const b = button(x.id === "model" ? "Set up" : "Connect", { kind: "primary" });
+      const b = button(x.id === "model" ? "Choose a brain" : "Connect", { kind });
       b.setAttribute("aria-haspopup", "dialog");
       b.onclick = () => (x.id === "model" ? home.openModel() : home.openTelegram());
       return b;
     };
-    return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
-      el("div", { class: "card-head" },
+    const when = (x) => x.done ? el("span", { class: "when ok", text: "done" })
+      : x === next ? el("span", { class: "when now", text: "Next step" })
+      : locked(x) ? el("span", { class: "when" }, icon("lock"), "after step " + (modelAt + 1))
+      : x.skippable ? el("span", { class: "when", text: "optional" }) : null;
+    return el("section", { class: "setup", "aria-labelledby": "setup-h" },
+      el("div", { class: "setup-head" },
         el("h2", { id: "setup-h", text: "Get started" }),
         el("span", { class: "muted small", text: n + " of " + steps.length + " done" }),
         button("Hide this", { kind: "ghost", onclick: () => { home.hide(); sections.health.draw(); } })),
-      el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(n), "aria-label": "Setup progress" },
-        steps.map((x) => el("span", { class: x.done ? "seg on" : "seg" }))),
-      el("ol", { class: "steps" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") },
-        el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)),
+      el("ol", { class: "steps cards" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") + (x === next ? " next" : "") + (locked(x) ? " locked" : "") },
+        el("div", { class: "step-top" },
+          el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)), when(x)),
         el("div", { class: "body" },
           el("div", { class: "t" }, x.label, x.done ? el("span", { class: "sr", text: " (done)" }) : null,
-            x.skippable && !x.done ? el("span", { class: "muted small", text: " · optional" }) : null),
+            x.skippable && !x.done ? el("span", { class: "sr", text: " (optional)" }) : null),
           el("div", { class: "d msg", dir: "auto", text: x.detail })),
         more(x)))));
   }
+
+  // M66: the Home hero. One card: what state the bot is in, in words; why;
+  // the one thing to do about it; and, beside it, the parts it rests on.
+  function hero(level, said, h, setup, lanes, asks) {
+    const kill = h.kill || null;
+    const tone = level.startsWith("bad") ? "bad" : level.startsWith("warn") ? "warn" : "ok";
+    const model = setup && (setup.steps || []).find((x) => x.id === "model");
+    const noBrain = !!(model && !model.done);
+    const stopped = !!(kill && kill.on);
+    const eyebrow = stopped ? "Stopped" : tone === "bad" ? "Needs you" : asks ? "Waiting for you" : tone === "warn" ? "Worth a look"
+      : level.includes("pulse") ? "Working" : "All good";
+    const title = noBrain && !stopped ? "Your bot can't answer yet" : said;
+    const sub = noBrain && !stopped
+      ? "No model is connected, so messages go unanswered. Signing in with a plan you already pay for takes about a minute, and nothing is saved until it's tested."
+      : [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ");
+    const connect = noBrain && !stopped ? button("Connect a brain", { kind: "primary" }) : null;
+    if (connect) { connect.setAttribute("aria-haspopup", "dialog"); connect.onclick = () => home.openModel(); }
+    const ch = h.channels || [];
+    const now = [
+      ["Gateway", h.gateway ? "running" : "not in this process", h.gateway ? "ok" : "warn"],
+      model ? ["Brain", model.done ? "connected" : "none yet", model.done ? "ok" : "warn"] : null,
+      ["Chat apps", ch.length ? ch.map((c) => c.name).join(", ") : "none on", ch.some((c) => c.stale) ? "bad" : ch.length ? "ok" : "off"],
+      kill ? ["Kill switch", kill.on ? "on" : "off", kill.on ? "bad" : "ok"] : null,
+    ].filter(Boolean);
+    return el("section", { class: "card hero t-" + tone, "aria-label": "Status" },
+      el("span", { class: "hero-ico", "aria-hidden": "true" }, icon(stopped ? "power" : tone === "ok" ? "check" : "alert")),
+      el("div", { class: "hero-main" },
+        el("div", { class: "hero-eyebrow", text: eyebrow }),
+        el("p", { class: "hero-title", role: "status", dir: "auto", text: title }),
+        sub ? el("p", { class: "hero-sub msg", dir: "auto", text: sub }) : null,
+        el("div", { class: "hero-actions" },
+          connect,
+          btn("Run doctor", "doctor/run", {}),
+          kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary")
+            : menu("More actions", [{ label: "Kill switch on", path: "kill/on", body: {}, kind: "danger", icon: "power" }])) : null)),
+      el("div", { class: "hero-now" },
+        el("h3", { text: "Right now" }),
+        now.map(([k, v, l]) => el("div", { class: "kv" }, led(l), el("span", { class: "k", text: k }), el("span", { class: "v", dir: "auto", text: v })))));
+  }
+
+  // The "no model" notice says what the hero already says.
+  const saysNoModel = (p) => p.section === "models" && /^no model is connected/.test(p.what || "");
+
+  const quickTile = (ic, t, d, go) => el("button", { type: "button", class: "quick-tile", onclick: go },
+    el("span", { class: "qchip" }, icon(ic)),
+    el("span", { class: "txt" }, el("span", { class: "t", text: t }), el("span", { class: "d", text: d })),
+    icon("chevron"));
 
   const QUICK = [
     ["chat", "chat", "Chat", "Talk to your bot here"],
@@ -1043,7 +1147,14 @@
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
-      const [level, said] = status(h, setup);
+      let [level, said] = status(h, setup);
+      // M66: a gated action blocks a turn until the owner answers, so it
+      // leads, above every notice.
+      const asks = (approvals || []).length;
+      if (asks && !level.startsWith("bad")) {
+        level = "warn";
+        said = asks === 1 ? "One action needs your OK." : asks + " actions need your OK.";
+      }
       const running = turns.filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
@@ -1059,29 +1170,21 @@
       ].filter(Boolean);
       const showList = setup && !setup.done && !home.hidden();
       const tgOpen = setup && setup.done && !(setup.steps.find((x) => x.id === "telegram") || {}).done;
-      const heroTone = level.startsWith("bad") ? " bad" : level.startsWith("warn") ? " warn" : "";
+      const noBrain = !!(setup && !((setup.steps || []).find((x) => x.id === "model") || { done: true }).done);
       setKids(this.box,
         el("h1", { class: "sr", text: title("health") }),
-        el("section", { class: "card hero" + heroTone, "aria-label": "Status" },
-          el("div", { class: "row" }, led(level),
-            el("p", { class: "lead grow", role: "status", text: said }),
-            btn("Run doctor", "doctor/run", {}),
-            kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary")
-              : menu("More actions", [{ label: "Kill switch on", path: "kill/on", body: {}, kind: "danger", icon: "power" }])) : null),
-          el("p", { class: "muted small m0", text: [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ") })),
+        hero(level, said, h, setup, lanes, asks),
+        approvalsCard(approvals),
         MANAGED.on ? el("div", { class: "card" },
           el("h2", { text: "Managed" }),
           el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
           (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
           el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
-        problems(h.problems),
+        problems(noBrain ? (h.problems || []).filter((p) => !saysNoModel(p)) : h.problems),
         showList ? checklist(setup) : null,
-        approvalsCard(approvals),
         this.updateRow(),
-        el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => el("button", { type: "button", class: "quick-tile", onclick: () => show(sec) },
-          icon(ic), el("span", { class: "t", text: t }), el("span", { class: "d", text: d }))),
-          tgOpen && !showList ? el("button", { type: "button", class: "quick-tile", onclick: () => show("channels", { tile: "telegram" }) },
-            icon("telegram"), el("span", { class: "t", text: "Telegram" }), el("span", { class: "d", text: "Talk to your bot from your phone" })) : null),
+        el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => quickTile(ic, t, d, () => show(sec))),
+          tgOpen && !showList ? quickTile("telegram", "Telegram", "Talk to your bot from your phone", () => show("channels", { tile: "telegram" })) : null),
         running.length ? el("section", { class: "card", "aria-label": "Running now" },
           el("h2", { class: "mt0", text: "Running now" }),
           table(["where", "message", "for", ""], running.map((t) => ({ cells: [
@@ -1456,41 +1559,7 @@
         return box;
       }
       if (p.plan === "gemini-cli" && (!p.connected || !p.ready)) {
-        const f = this.gemini;
-        box.append(el("p", { class: "muted small", text: "Sign in directly with your Google / Antigravity subscription (no external CLI needed on the server)." }));
-        if (f && f.state === "waiting") {
-          const inp = el("input", { type: "text", placeholder: "http://localhost:51121/auth/callback?code=…", class: "mono" });
-          const sub = el("button", { class: "primary", text: "Complete sign-in" });
-          sub.onclick = async () => {
-            const v = inp.value.trim();
-            if (!v) return;
-            sub.disabled = true;
-            try {
-              const r = await api("/api/plans/gemini/complete", { redirect: v });
-              toast(r.said || "Signed in to the Gemini plan.");
-              this.gemini = null;
-              refresh();
-              this.loadChoices();
-            } catch (e) {
-              sayFor(sub, e.message, true);
-              sub.disabled = false;
-            }
-          };
-          box.append(
-            el("p", { class: "small" }, "1. ", el("a", { href: f.authorize_url, target: "_blank", rel: "noopener", text: "Open Google sign-in in a new tab" })),
-            el("p", { class: "muted small", text: "2. If ferrule is on a remote server, copy the localhost redirect URL from your browser's address bar after signing in and paste it below:" }),
-            el("div", { class: "row key-row" }, inp, sub),
-            el("div", { class: "row mt" }, btn("Cancel", "plans/gemini/cancel", {}, "danger"))
-          );
-        } else {
-          if (f && f.state === "failed") box.append(el("div", { class: "said bad msg", dir: "auto", text: f.said }));
-          const b = el("button", { class: "primary", text: "Sign in with Google" });
-          b.onclick = async () => {
-            b.disabled = true;
-            try { this.gemini = await api("/api/plans/gemini/start", {}); this.pollGemini(); this.drawChoices(); } catch (e) { sayFor(b, e.message, true); b.disabled = false; }
-          };
-          box.append(el("div", { class: "row" }, b));
-        }
+        box.append(this.googleCard());
         return box;
       }
       if (p.needs_key) {
@@ -1530,12 +1599,162 @@
         if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
       }
     },
+    // M66: the Google sign-in as one card in three states: ready (what
+    // Google will ask), the link to open, then waiting with the paste-back
+    // for a server. The page polls; it redraws only when the state changes,
+    // so a half-pasted address is never wiped.
+    googleCard() {
+      const f = this.gemini;
+      const waiting = !!(f && f.state === "waiting");
+      const failed = !!(f && f.state === "failed");
+      const opened = waiting && this.geminiOpened;
+      const at = opened ? 1 : 0;
+      const card = el("div", { class: "gflow" },
+        el("ol", { class: "gsteps", "aria-label": "Sign-in steps" }, ["Open Google", "Come back here", "Connected"].map((t, i) =>
+          el("li", { class: i < at ? "done" : i === at ? "now" + (failed ? " bad" : "") : null, "aria-current": i === at ? "step" : null, text: t }))));
+      if (!waiting) {
+        if (failed) card.append(el("div", { class: "said bad msg", role: "alert", dir: "auto", text: f.said }));
+        const b = button(failed ? "Start again" : "Sign in with Google", { kind: "primary" });
+        b.onclick = () => this.startGemini(b);
+        card.append(
+          el("p", { class: "m0", text: "Use the Google account that has your Google AI Pro or Ultra, Gemini Code Assist or Antigravity plan. No CLI to install." }),
+          el("div", { class: "asks" },
+            el("div", { class: "muted", text: "Google will ask to let Ferrule:" }),
+            el("div", { class: "ask" }, icon("check"), el("span", { text: "see your email address, to show who is signed in" })),
+            el("div", { class: "ask" }, icon("check"), el("span", { text: "use Gemini through Google Cloud Code (Google calls this cloud-platform access)" }))),
+          el("div", { class: "row" }, b));
+        return card;
+      }
+      const left = el("span", { class: "left", title: "The link expires" });
+      const paint = () => {
+        const n = Math.max(0, Math.round(((this.geminiDeadline || 0) - Date.now()) / 1000));
+        left.textContent = Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0");
+      };
+      paint();
+      const timer = setInterval(() => { if (!left.isConnected) clearInterval(timer); else paint(); }, 1000);
+      const cancel = button("Cancel", { kind: "ghost danger" });
+      cancel.onclick = async () => {
+        if (await act("plans/gemini/cancel", {}, cancel)) { this.gemini = null; this.geminiTyped = ""; this.drawChoices(); }
+      };
+      if (!opened) {
+        const go = el("a", { class: "btn primary", href: f.authorize_url, target: "_blank", rel: "noopener" }, el("span", { text: "Open Google sign-in" }), icon("external"));
+        go.onclick = () => { this.geminiOpened = true; setTimeout(() => this.drawChoices(), 0); };
+        card.append(el("p", { class: "m0", text: "Your link is ready. It opens Google's page in a new tab." }),
+          el("div", { class: "row" }, go, el("span", { class: "muted small" }, "good for ", left)),
+          el("div", { class: "row" }, cancel));
+        return card;
+      }
+      const remote = !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
+      card.append(
+        el("div", { class: "wait", role: "status" }, el("span", { class: "spin", "aria-hidden": "true" }),
+          el("div", { class: "grow" },
+            el("strong", { text: "Waiting for Google…" }),
+            el("div", { class: "small msg", text: remote
+              ? "After you sign in, Google sends your browser to a localhost address that can't load from here. That's expected: copy the whole address from the address bar and paste it below."
+              : "Finish signing in in the other tab; this card updates by itself." })),
+          left),
+        remote ? this.geminiPaste() : disc("gemini-paste", null, "Ferrule on another machine? Paste the address you land on",
+          el("div", { class: "details-body" }, this.geminiPaste())),
+        el("div", { class: "row" },
+          el("a", { href: f.authorize_url, target: "_blank", rel: "noopener", class: "small", text: "Open the link again" }),
+          el("span", { class: "grow" }), cancel));
+      return card;
+    },
+    // The redirect address, checked as it's typed: an address, with a code,
+    // for this sign-in. A paste that checks out goes in by itself.
+    geminiPaste() {
+      const f = this.gemini;
+      let want = null;
+      try { want = new URL(f.authorize_url).searchParams.get("state"); } catch (_) { /* none */ }
+      const inp = el("input", { id: "gemini-redirect", type: "url", class: "mono", inputmode: "url", autocomplete: "off", spellcheck: "false",
+        placeholder: "http://localhost:51121/auth/callback?code=…", dir: "ltr" });
+      inp.value = this.geminiTyped || "";
+      const hint = el("div", { class: "hint", "aria-live": "polite" });
+      const sub = el("button", { class: "primary", text: "Finish sign-in" });
+      const check = () => {
+        const v = inp.value.trim();
+        this.geminiTyped = inp.value;
+        let q = null;
+        try { q = new URL(v).searchParams; } catch (_) { /* not an address yet */ }
+        let ok = false;
+        let said = "";
+        if (!v) said = "";
+        else if (!q) said = "That isn't an address yet: copy the whole line from the address bar.";
+        else if (q.get("error")) said = "Google says the sign-in was refused (" + q.get("error").slice(0, 40) + "). Start again.";
+        else if (!q.get("code") || !q.get("state")) said = "It needs the code and state at the end: copy the whole address.";
+        else if (want && q.get("state") !== want) said = "That address is from an older sign-in. Use the tab you opened last.";
+        else { ok = true; said = "Looks right: it has a code and matches this sign-in."; }
+        hint.textContent = said;
+        hint.className = "hint" + (ok ? " ok" : v ? " bad" : "");
+        inp.classList.toggle("good", ok);
+        sub.disabled = !ok;
+        return ok;
+      };
+      const go = async () => {
+        if (!check() || sub.getAttribute("aria-busy") === "true") return;
+        sub.setAttribute("aria-busy", "true");
+        try {
+          const r = await api("/api/plans/gemini/complete", { redirect: inp.value.trim() });
+          this.gemini = null;
+          this.geminiTyped = "";
+          toast(r.said || "Signed in to the Gemini plan.");
+          this.loadChoices();
+          refresh();
+        } catch (e) {
+          hint.textContent = e.message;
+          hint.className = "hint bad";
+        } finally {
+          sub.removeAttribute("aria-busy");
+        }
+      };
+      inp.oninput = check;
+      inp.addEventListener("paste", () => setTimeout(() => { if (check()) go(); }, 0));
+      inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } };
+      sub.onclick = go;
+      check();
+      return el("div", { class: "stack" },
+        el("label", { for: "gemini-redirect", class: "strong small", text: "Paste the address you land on" }),
+        el("div", { class: "row key-row" }, inp, sub), hint);
+    },
+    async startGemini(b) {
+      b.setAttribute("aria-busy", "true");
+      try {
+        const g = await api("/api/plans/gemini/start", {});
+        this.gemini = g;
+        this.geminiOpened = false;
+        this.geminiTyped = "";
+        this.geminiDeadline = Date.now() + (g.expires_in || 900) * 1000;
+        this.pollGemini();
+      } catch (e) {
+        sayFor(b, e.message, true);
+      } finally {
+        b.removeAttribute("aria-busy");
+      }
+      this.drawChoices();
+    },
     async pollGemini() {
-      while (this.gemini && this.gemini.state === "waiting") {
-        await new Promise((r) => setTimeout(r, 3000));
-        try { this.gemini = await api("/api/plans/gemini/poll"); } catch (_) { break; }
-        if (this.gemini.state === "done") { toast(this.gemini.said); this.gemini = null; refresh(); if (this.home) this.loadChoices(); break; }
-        if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
+      if (this.geminiPolling) return;
+      this.geminiPolling = true;
+      try {
+        while (this.gemini && this.gemini.state === "waiting") {
+          await new Promise((r) => setTimeout(r, 2500));
+          let g;
+          try { g = await api("/api/plans/gemini/poll"); } catch (_) { break; }
+          if (!this.gemini) break;
+          if (g.expires_in !== undefined) this.geminiDeadline = Date.now() + g.expires_in * 1000;
+          const changed = g.state !== this.gemini.state;
+          this.gemini = g.state === "none" ? null : g;
+          if (g.state === "done") {
+            toast(g.said);
+            this.gemini = null;
+            refresh();
+            this.loadChoices();
+            break;
+          }
+          if (changed && (current === "models" || this.home) && !this.fbEdited) this.drawChoices();
+        }
+      } finally {
+        this.geminiPolling = false;
       }
     },
   };

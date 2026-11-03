@@ -722,6 +722,7 @@ pub(super) async fn gemini_start(ctx: &Ctx) -> Answer {
                 return ok(json!({
                     "authorize_url": f.authorize_url,
                     "state": "waiting",
+                    "expires_in": DEVICE_LIMIT.saturating_sub(f.started.elapsed()).as_secs(),
                 }));
             }
         }
@@ -798,6 +799,7 @@ pub(super) async fn gemini_start(ctx: &Ctx) -> Answer {
     ok(json!({
         "authorize_url": authorize_url,
         "state": "waiting",
+        "expires_in": DEVICE_LIMIT.as_secs(),
     }))
 }
 
@@ -868,7 +870,11 @@ pub(super) fn gemini_poll(ctx: &Ctx) -> Answer {
             "state": "failed",
             "said": "The sign-in link expired (15 minutes); press Sign in for a new one.",
         }),
-        None => json!({ "state": "waiting", "authorize_url": f.authorize_url }),
+        None => json!({
+            "state": "waiting",
+            "authorize_url": f.authorize_url,
+            "expires_in": DEVICE_LIMIT.saturating_sub(f.started.elapsed()).as_secs(),
+        }),
         Some(Ok(said)) => json!({ "state": "done", "said": said }),
         Some(Err(said)) => json!({ "state": "failed", "said": said }),
     })
