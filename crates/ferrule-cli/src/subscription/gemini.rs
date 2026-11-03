@@ -178,7 +178,7 @@ pub fn state() -> SignIn {
         return SignIn::Out;
     };
     let store = Store::new(&private);
-    if store.meta().ok().flatten().is_none_or(|m| m.signed_out) {
+    if store.meta().ok().flatten().is_none() {
         if let Ok(dir) = config_dir(&settings()) {
             let _ = store.import_from_cli_if_empty(&dir);
         }
@@ -296,7 +296,11 @@ async fn pasted(state: &str) -> Result<String> {
 /// `ferrule logout gemini`: revokes the refresh token with Google and deletes
 /// the sealed `private/plans/gemini.json` store.
 pub async fn logout() -> Result<()> {
-    let out = plan("")?.log_out().await?;
+    // Not `plan("")`: that imports the CLI's token first, and logout would
+    // then revoke the CLI's own sign-in.
+    let private = crate::secrets::private_dir()?;
+    let data = crate::config::data_dir()?;
+    let out = plan_at(&private, &data, "").log_out().await?;
     match (out.was_signed_in, out.revoked) {
         (false, _) => println!("There was no Gemini plan sign-in here."),
         (true, true) => println!("Signed out of the Gemini plan; Google revoked the sign-in."),

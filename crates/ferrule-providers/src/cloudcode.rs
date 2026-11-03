@@ -869,7 +869,7 @@ fn apply_chunk(
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("call_{}", *call_seq));
+                    .unwrap_or_else(|| synthetic_call_id(*call_seq));
                 let arguments = fc.get("args").cloned().unwrap_or_else(|| json!({}));
                 // Ensure the recorded native part has the same `id` if it was synthesized.
                 if let Some(last) = native_parts.last_mut() {
@@ -1014,6 +1014,20 @@ fn user_agent(version: &str) -> String {
         std::env::consts::ARCH,
         env!("CARGO_PKG_VERSION"),
     )
+}
+
+/// An id for a `functionCall` Google sent without one. Unique across
+/// responses (not just within one), so an older tool result in the
+/// history never maps to a newer call's name.
+fn synthetic_call_id(seq: usize) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    format!("call_{t:x}_{n}_{seq}")
 }
 
 #[cfg(test)]

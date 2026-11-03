@@ -620,7 +620,7 @@ pub async fn delete(ctx: &Ctx, body: &Value) -> Answer {
                 "Sign out of the Gemini plan? A brain on it stops until you sign in again from Models.".into()
             ));
             let store = ferrule_plans::gemini::store::Store::new(&private);
-            match store.delete() {
+            match store.forget() {
                 Ok(_) => {
                     audit(
                         ctx,

@@ -133,7 +133,10 @@ pub struct GeminiCliPlanConfig {
 impl Default for GeminiCliPlanConfig {
     fn default() -> Self {
         Self {
-            binary: "agy".into(),
+            // Empty: the native HTTPS client. Naming a binary here
+            // (`agy` or `gemini`) runs that CLI instead, which brings its
+            // own tools and its own permission rules.
+            binary: String::new(),
             config_dir: String::new(),
             turn_timeout_minutes: 20,
             max_output_mb: 16,

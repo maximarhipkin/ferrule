@@ -137,7 +137,7 @@ impl GeminiPlan {
             Some(r) => auth::revoke(&self.http, &self.issuer, &r.secrets.refresh_token).await,
             None => false,
         };
-        let was_signed_in = self.store.delete()?;
+        let was_signed_in = self.store.forget()?;
         Ok(LoggedOut {
             was_signed_in,
             revoked,

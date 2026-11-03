@@ -104,6 +104,12 @@ impl Store {
         self.dir.join("gemini.lock")
     }
 
+    /// Present once the owner signed out here: the CLI's token is never
+    /// imported again (only an explicit sign-in writes a record).
+    fn no_import_path(&self) -> PathBuf {
+        self.dir.join("gemini.no-cli-import")
+    }
+
     pub(crate) async fn lock(&self) -> Result<FileLock> {
         FileLock::take(&self.lock_path()).await
     }
@@ -149,6 +155,8 @@ impl Store {
     }
 
     pub fn save(&self, record: &Record) -> Result<()> {
+        // An explicit sign-in (or import) lifts a past logout's opt-out.
+        let _ = std::fs::remove_file(self.no_import_path());
         let sealer = Sealer::load_or_create(&self.key_path)?;
         let file = File {
             v: 1,
@@ -156,6 +164,18 @@ impl Store {
             sealed: sealer.seal(AAD, &serde_json::to_vec(&record.secrets)?),
         };
         write_private(&self.path(), &serde_json::to_vec_pretty(&file)?)
+    }
+
+    /// Sign-out: deletes the record and remembers not to import the CLI's
+    /// token again, so a logout sticks. `true` when there was something
+    /// to delete.
+    pub fn forget(&self) -> Result<bool> {
+        let had = self.delete()?;
+        write_private(
+            &self.no_import_path(),
+            b"signed out; `ferrule login gemini` signs in again\n",
+        )?;
+        Ok(had)
     }
 
     /// `true` when there was something to delete.
@@ -169,12 +189,15 @@ impl Store {
 
     /// Imports an existing Antigravity CLI (`antigravity-oauth-token`) token
     /// from `config_dir` (or `~/.gemini/antigravity-cli`) into the sealed
-    /// store when no active sealed record exists yet.
+    /// store once: only when there has never been a record here. A record
+    /// that is signed out (a refused refresh) stays signed out, and after a
+    /// logout ([`Store::forget`]) nothing is imported again.
     pub fn import_from_cli_if_empty(&self, config_dir: &Path) -> Result<Option<Meta>> {
         if let Some(meta) = self.meta()? {
-            if !meta.signed_out {
-                return Ok(Some(meta));
-            }
+            return Ok(Some(meta));
+        }
+        if self.no_import_path().exists() {
+            return Ok(None);
         }
         for dir in super::cli::candidate_dirs(config_dir) {
             if let Some(record) = read_antigravity_token(&dir) {
@@ -240,4 +263,63 @@ fn read_antigravity_token(dir: &Path) -> Option<Record> {
             id_token,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli_token(dir: &Path, refresh: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let doc = serde_json::json!({
+            "token": { "access_token": "ya29.cli", "refresh_token": refresh }
+        });
+        std::fs::write(
+            dir.join("antigravity-oauth-token"),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_cli_token_is_imported_once_and_a_logout_sticks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(&tmp.path().join("private"));
+        let cli = tmp.path().join("cli");
+        cli_token(&cli, "1//cli-refresh");
+
+        // First run: nothing here yet, the CLI's sign-in comes over.
+        assert!(store.import_from_cli_if_empty(&cli).unwrap().is_some());
+        assert_eq!(
+            store.load().unwrap().unwrap().secrets.refresh_token,
+            "1//cli-refresh"
+        );
+
+        // Logout: gone, and the CLI's token isn't pulled back in.
+        assert!(store.forget().unwrap());
+        assert!(store.import_from_cli_if_empty(&cli).unwrap().is_none());
+        assert!(store.meta().unwrap().is_none());
+
+        // An explicit sign-in lifts the opt-out for good.
+        let mut rec = read_antigravity_token(&cli).unwrap();
+        rec.secrets.refresh_token = "1//native".into();
+        store.save(&rec).unwrap();
+        assert!(!store.no_import_path().exists());
+    }
+
+    #[test]
+    fn a_refused_refresh_stays_signed_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(&tmp.path().join("private"));
+        let cli = tmp.path().join("cli");
+        cli_token(&cli, "1//dead");
+        store.import_from_cli_if_empty(&cli).unwrap();
+        let mut rec = store.load().unwrap().unwrap();
+        rec.meta.signed_out = true;
+        store.save(&rec).unwrap();
+
+        // The same dead CLI token isn't imported over the signed-out record.
+        let meta = store.import_from_cli_if_empty(&cli).unwrap().unwrap();
+        assert!(meta.signed_out);
+    }
 }
