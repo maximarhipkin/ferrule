@@ -1689,6 +1689,15 @@ fn build_agent_from(
         ));
     }
 
+    // A group's root agent reads messages not meant for it, and may stay
+    // silent: the gateway posts nothing for `NO_REPLY`.
+    if child.is_none()
+        && channels::of_session(&tree)
+            .is_some_and(|(info, chat)| ferrule_gateway::is_group_chat(info.name, chat))
+    {
+        system.push_str(&format!("\n\n[Group chat]\n{GROUP_NOTE}"));
+    }
+
     let browser_prefix = format!("mcp__{}__", ferrule_mcp::browser::SERVER_NAME);
     if mcp_tools
         .tools()
@@ -2078,6 +2087,9 @@ fn data_in_workspace(sandbox: &Sandbox, workspace: &Path) -> Option<PathBuf> {
     (cfg!(target_os = "linux") && sandbox.is_active() && data.starts_with(workspace))
         .then_some(data)
 }
+
+/// What a group chat's root agent is told (see `ferrule_gateway::NO_REPLY`).
+const GROUP_NOTE: &str = "This is a group chat: several people write here, and you read every message, not only the ones meant for you. When a group message needs nothing from you, reply with exactly NO_REPLY and nothing else; it is not posted.";
 
 /// When to reach for the browser tools, for the system prompt.
 fn browser_note(b: &ferrule_mcp::BrowserConfig) -> String {

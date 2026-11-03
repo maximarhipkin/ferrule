@@ -49,6 +49,8 @@ const FINAL_TRIES: u32 = 3;
 enum Cmd {
     Delta(Delta),
     Final(String),
+    /// The turn posts nothing: what the preview showed goes.
+    Discard,
 }
 
 /// One turn's streamed reply. [`StreamingReply::sink`] goes to the agent;
@@ -107,6 +109,12 @@ impl StreamingReply {
         let _ = self.tx.send(Cmd::Final(text));
         self.task.await.ok().flatten()
     }
+
+    /// The turn ends silent: whatever the preview posted is deleted.
+    pub(crate) async fn discard(self) {
+        let _ = self.tx.send(Cmd::Discard);
+        let _ = self.task.await;
+    }
 }
 
 struct Editor {
@@ -154,6 +162,10 @@ impl Editor {
                     }
                 }
                 Some(Cmd::Final(text)) => return self.finish(text).await,
+                Some(Cmd::Discard) => {
+                    self.discard().await;
+                    return None;
+                }
                 // The lane went away without an answer.
                 None => return None,
             }
@@ -161,9 +173,10 @@ impl Editor {
     }
 
     /// The chunks the preview should show (a message a longer preview
-    /// needed shows "…"), when they differ from what's shown.
+    /// needed shows "…"), when they differ from what's shown. Nothing
+    /// while the text could still be `NO_REPLY`.
     fn wanted(&self) -> Option<Vec<String>> {
-        if self.broken || self.text.trim().is_empty() {
+        if self.broken || crate::message::may_be_no_reply(&self.text) {
             return None;
         }
         let mut want = chunks(&self.text, self.pacing.limit);
@@ -293,6 +306,16 @@ impl Editor {
             }
         }
         last
+    }
+
+    /// Deletes every message the preview posted.
+    async fn discard(self) {
+        self.wait().await;
+        for (id, _) in &self.shown {
+            if let Err(e) = self.channel.delete(&self.base.chat_id, id).await {
+                tracing::warn!(error = %e, "streamed reply: couldn't delete the preview of a silent turn");
+            }
+        }
     }
 
     /// Edits message `id` (or posts a new one) to `text`, waiting out a

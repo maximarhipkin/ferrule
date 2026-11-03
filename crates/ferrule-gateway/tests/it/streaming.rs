@@ -207,10 +207,10 @@ fn factory(script: Vec<(Vec<String>, bool)>, gap: Duration) -> AgentFactory {
     })
 }
 
-fn inbound() -> InboundMessage {
+fn inbound(chat_id: &str) -> InboundMessage {
     InboundMessage {
         channel: "telegram".into(),
-        chat_id: "9999".into(),
+        chat_id: chat_id.into(),
         sender: "max".into(),
         sender_id: None,
         message_id: "55".into(),
@@ -228,6 +228,17 @@ async fn turn(
     gap: Duration,
     pacing: Option<StreamPacing>,
 ) -> String {
+    turn_in("9999", bot, script, gap, pacing).await
+}
+
+/// [`turn`] in the chat `chat_id` (a negative id is a group).
+async fn turn_in(
+    chat_id: &str,
+    bot: &Bot,
+    script: Vec<(Vec<String>, bool)>,
+    gap: Duration,
+    pacing: Option<StreamPacing>,
+) -> String {
     let dir = tempfile::tempdir().unwrap();
     let telegram: Arc<dyn Channel> = Arc::new(TelegramChannel::with_base_url("T", &bot.url));
     let channels = HashMap::from([("telegram".to_string(), telegram)]);
@@ -235,7 +246,11 @@ async fn turn(
     if let Some(pacing) = pacing {
         router = router.with_streaming(["telegram".to_string()], pacing);
     }
-    router.dispatch_and_wait(inbound()).await.unwrap().text
+    router
+        .dispatch_and_wait(inbound(chat_id))
+        .await
+        .unwrap()
+        .text
 }
 
 fn fast() -> StreamPacing {
@@ -401,4 +416,91 @@ async fn a_quick_answer_and_streaming_off_both_send_exactly_todays_one_message()
         assert_eq!(calls[0].method, "sendMessage");
         assert_eq!(calls[0].body, today);
     }
+}
+
+/// What a chat was sent, by method.
+fn methods(bot: &Bot) -> Vec<String> {
+    bot.calls().into_iter().map(|c| c.method).collect()
+}
+
+fn say(text: &str) -> Vec<(Vec<String>, bool)> {
+    vec![(vec![text.to_string()], false)]
+}
+
+#[tokio::test]
+async fn a_group_turn_that_ends_empty_or_no_reply_posts_nothing() {
+    for (answer, pacing) in [
+        ("", None),
+        ("NO_REPLY", None),
+        ("`no_reply`", None),
+        ("", Some(fast())),
+        ("NO_REPLY", Some(fast())),
+    ] {
+        let bot = Bot::start(Edits::Ok);
+        turn_in("-1001234", &bot, say(answer), Duration::ZERO, pacing).await;
+        assert!(methods(&bot).is_empty(), "{answer:?}: {:?}", bot.calls());
+    }
+}
+
+#[tokio::test]
+async fn a_streamed_no_reply_never_shows_even_slowly() {
+    let bot = Bot::start(Edits::Ok);
+    let pieces = ["NO", "_RE", "PLY"].map(String::from).to_vec();
+    turn_in(
+        "-1001234",
+        &bot,
+        vec![(pieces, false)],
+        Duration::from_millis(80),
+        Some(fast()),
+    )
+    .await;
+    assert!(methods(&bot).is_empty(), "{:?}", bot.calls());
+}
+
+#[tokio::test]
+async fn a_preview_a_silent_group_turn_posted_is_deleted() {
+    let bot = Bot::start(Edits::Ok);
+    // The first model call streams a line and calls a tool; the last ends
+    // with nothing.
+    let script = vec![(words(5), true), (vec![], false)];
+    turn_in(
+        "-1001234",
+        &bot,
+        script,
+        Duration::from_millis(40),
+        Some(fast()),
+    )
+    .await;
+    let calls = bot.calls();
+    let sends = calls.iter().filter(|c| c.method == "sendMessage").count();
+    assert_eq!(sends, 1, "{calls:?}");
+    let last = calls.last().unwrap();
+    assert_eq!(last.method, "deleteMessage");
+    assert_eq!(last.body["message_id"], 100);
+}
+
+#[tokio::test]
+async fn a_private_no_reply_posts_nothing_and_a_private_empty_answer_still_says_so() {
+    let bot = Bot::start(Edits::Ok);
+    turn_in("9999", &bot, say("NO_REPLY"), Duration::ZERO, None).await;
+    assert!(methods(&bot).is_empty(), "{:?}", bot.calls());
+
+    let bot = Bot::start(Edits::Ok);
+    turn_in("9999", &bot, say(""), Duration::ZERO, None).await;
+    let calls = bot.calls();
+    assert_eq!(methods(&bot), ["sendMessage"]);
+    assert!(calls[0].body["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("(I finished without writing a reply."));
+}
+
+#[tokio::test]
+async fn a_group_answer_with_words_goes_out_as_before() {
+    let bot = Bot::start(Edits::Ok);
+    turn_in("-1001234", &bot, say("Hi all."), Duration::ZERO, None).await;
+    let calls = bot.calls();
+    assert_eq!(methods(&bot), ["sendMessage"]);
+    assert_eq!(calls[0].body["text"], "Hi all.");
+    assert_eq!(calls[0].body["chat_id"], "-1001234");
 }
