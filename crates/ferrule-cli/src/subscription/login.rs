@@ -291,8 +291,14 @@ impl PlanDoor {
         }
         // The owner's own chat only: a device code shown in a group could
         // be typed in by anyone there first.
-        if trust::owner_in(&self.hub, msg) != Some(true) {
+        if trust::owner_here(&self.hub, msg) != Some(true) {
             return "Only the owner can sign in or out, in their own chat with me.".into();
+        }
+        // M66: as the page's own sign-in refuses it on a managed bot.
+        if login {
+            if let Some(why) = crate::managed::kind_refusal("chatgpt", "chatgpt") {
+                return format!("The ChatGPT plan can't be signed in to here: {why}.");
+            }
         }
         let plan = match (self.plan)() {
             Ok(p) => p,
@@ -346,7 +352,7 @@ impl PlanDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for PlanDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if !trust::is_chat_channel(&msg.channel) {
+        if !trust::reads_commands(msg) {
             return None;
         }
         let t = msg.text.trim();

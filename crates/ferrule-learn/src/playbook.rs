@@ -433,6 +433,9 @@ impl Playbook {
 pub struct PromptBlock {
     pub text: Option<String>,
     pub omitted: usize,
+    /// The pass's lessons (`[pb-N]`) the text holds, in its order: what
+    /// the learning page counts a session's uses by.
+    pub ids: Vec<u32>,
 }
 
 /// The `[Playbook]` section for a system prompt: at most `max_lessons`
@@ -476,6 +479,7 @@ fn block_of(lessons: Vec<Lesson>, max_lessons: usize, max_chars: usize) -> Promp
     let mut out = String::from(PROMPT_INTRO);
     let mut used = 0;
     let mut kept = 0;
+    let mut ids = Vec::new();
     for l in &lessons {
         let line = format!("\n- {}", l.text);
         if kept >= max_lessons || used + line.len() > max_chars {
@@ -484,10 +488,12 @@ fn block_of(lessons: Vec<Lesson>, max_lessons: usize, max_chars: usize) -> Promp
         used += line.len();
         kept += 1;
         out.push_str(&line);
+        ids.extend(l.id);
     }
     PromptBlock {
         text: (kept > 0).then_some(out),
         omitted: lessons.len() - kept,
+        ids,
     }
 }
 

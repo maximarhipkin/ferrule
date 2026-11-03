@@ -2,11 +2,11 @@
 //! the validators, the gate (or the probe and the judge), then kept in
 //! `<data>/learned-skills/` and journaled like a lesson.
 
-use super::{contrast_gate, note, reject, Env};
+use super::{contrast_gate, note, propose, reject, Env, Verdict};
 use crate::budget::{LearnSink, Meter};
 use crate::episode::Episode;
-use crate::files::{Change, PassRecord};
-use crate::gate::{GateRun, GateVerdict};
+use crate::files::{Change, PassRecord, Proposal};
+use crate::gate::GateRun;
 use crate::skills::{self, SkillDraft};
 use anyhow::Result;
 use serde_json::json;
@@ -120,31 +120,52 @@ async fn drafted(
         control: true,
         ..run.clone()
     };
-    let verdict: GateVerdict = contrast_gate(env, meter, &rec.id, ep, run, control).await;
-    if !verdict.passed {
-        let budget = meter.exceeded();
-        reject(
-            rec,
-            &env.dir,
-            &ep.key,
-            OP,
-            None,
-            Some(draft.name.clone()),
-            verdict.reason,
-        );
-        note(
-            rec,
-            ep,
-            format!(
-                "rejected skill at the {}",
-                if probed { "probe" } else { "gate" }
-            ),
-        );
-        return Ok(match budget {
-            Some(why) => Flow::BudgetAfter(why),
-            None => Flow::Next,
-        });
-    }
+    let at = if probed { "probe" } else { "gate" };
+    let verdict = contrast_gate(env, meter, &rec.id, ep, run, control).await;
+    let budget = meter.exceeded();
+    let after = |budget: Option<String>| match budget {
+        Some(why) => Flow::BudgetAfter(why),
+        None => Flow::Next,
+    };
+    let gate = match verdict {
+        Verdict::Kept(why) => why,
+        Verdict::Rejected(why) => {
+            reject(
+                rec,
+                &env.dir,
+                &ep.key,
+                OP,
+                None,
+                Some(draft.name.clone()),
+                why,
+            );
+            note(rec, ep, format!("rejected skill at the {at}"));
+            return Ok(after(budget));
+        }
+        Verdict::Unproven(why) => {
+            // The validated draft waits in the pass dir for the owner.
+            let k = rec.proposed.len() + 1;
+            let rel = format!("proposed/p{k}-{}", draft.name);
+            let to = env.dir.pass_dir(&rec.id).join(&rel);
+            let _ = std::fs::remove_dir_all(&to);
+            ferrule_extensions::skill::copy_skill(&dir, &to)
+                .map_err(|e| format!("couldn't keep the proposed draft: {e}"))?;
+            let change = Proposal::Skill {
+                name: draft.name.clone(),
+                description: draft.description.trim().to_string(),
+                dir: rel,
+                scripts: draft.scripts.keys().cloned().collect(),
+                notes,
+            };
+            propose(rec, &env.dir, ep, cx.scope, change, reason, evidence, why);
+            note(
+                rec,
+                ep,
+                format!("proposed skill: the {at} couldn't prove it"),
+            );
+            return Ok(after(budget));
+        }
+    };
     let kept = skills::keep(
         &env.dir,
         &rec.id,
@@ -177,7 +198,7 @@ async fn drafted(
         scripts: draft.scripts.keys().cloned().collect(),
         reason,
         episode: ep.key.clone(),
-        gate: verdict.reason,
+        gate,
         evidence,
         notes,
     });

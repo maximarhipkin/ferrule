@@ -68,12 +68,22 @@ pub fn supervisor(
     let store = AgentStore::open(data.join("agents.db"))?;
     let sup = Supervisor::new(store, data.join("sessions"), cfg.agents.limits(), factory)?;
     let _ = me.set(Arc::downgrade(&sup));
+    *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sup);
     let models = crate::models::shared()?;
     sup.set_model_check(Arc::new(move |word| {
         models.resolve(word).map(|e| e.reference())
     }));
     sup.set_worktrees_dir(data.join("worktrees"));
     Ok(Some(sup))
+}
+
+/// M66: the supervisor this process runs its agents on (the gateway's),
+/// so the page's Close stops a running one too.
+static LIVE: std::sync::Mutex<Weak<Supervisor>> = std::sync::Mutex::new(Weak::new());
+
+/// The process's supervisor, while it lives.
+pub fn live() -> Option<Arc<Supervisor>> {
+    LIVE.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
 }
 
 pub fn check_roles(cfg: &Config) -> Result<()> {
@@ -253,7 +263,21 @@ fn below(
 
 /// `ferrule agents close`: `id` and everything it started.
 pub async fn close(cfg: &AgentsConfig, id: &str) -> Result<()> {
-    let store = store()?;
+    println!("{}", close_text(cfg, &config::data_dir()?, id, None).await?);
+    Ok(())
+}
+
+/// What `ferrule agents close` does, and its words (M66: the page's Close
+/// too), over `<data>`. With `sup` (this process's own, which runs them) a
+/// running agent here is stopped as well; one running in another process
+/// is refused.
+pub async fn close_text(
+    cfg: &AgentsConfig,
+    data: &std::path::Path,
+    id: &str,
+    sup: Option<Arc<Supervisor>>,
+) -> Result<String> {
+    let store = AgentStore::open(data.join("agents.db"))?;
     let Some(row) = store.get(id)? else {
         bail!("there is no agent {id}; `ferrule agents list` shows them");
     };
@@ -267,18 +291,22 @@ pub async fn close(cfg: &AgentsConfig, id: &str) -> Result<()> {
         }
         stack.extend(store.children(&next)?.into_iter().map(|c| c.id));
     }
-    let data = config::data_dir()?;
-    let refuse: ChildFactory = Arc::new(|_| Err("`ferrule agents close` starts no agents".into()));
-    let sup = Supervisor::new(store, data.join("sessions"), cfg.limits(), refuse)?;
-    sup.set_worktrees_dir(data.join("worktrees"));
+    let sup = match sup {
+        Some(sup) => sup,
+        None => {
+            let refuse: ChildFactory =
+                Arc::new(|_| Err("`ferrule agents close` starts no agents".into()));
+            let sup = Supervisor::new(store, data.join("sessions"), cfg.limits(), refuse)?;
+            sup.set_worktrees_dir(data.join("worktrees"));
+            sup
+        }
+    };
     let closed = sup.close_tree(id).await?;
-    if closed.ids.is_empty() {
-        println!("{id} was already closed.");
+    let mut lines = vec![if closed.ids.is_empty() {
+        format!("{id} was already closed.")
     } else {
-        println!("Closed {}.", closed.ids.join(", "));
-    }
-    for note in closed.notes {
-        println!("{note}");
-    }
-    Ok(())
+        format!("Closed {}.", closed.ids.join(", "))
+    }];
+    lines.extend(closed.notes);
+    Ok(lines.join("\n"))
 }

@@ -183,7 +183,7 @@ async fn send(
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for GoalDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if !crate::trust::is_chat_channel(&msg.channel) {
+        if !crate::trust::reads_commands(msg) {
             return None;
         }
         let mut words = msg.text.split_whitespace();
@@ -192,7 +192,7 @@ impl ferrule_gateway::Interceptor for GoalDoor {
         if cmd != "/goal" {
             return None;
         }
-        if crate::trust::owner_in(&self.hub, msg) != Some(true) {
+        if crate::trust::owner_here(&self.hub, msg) != Some(true) {
             return Some("Only the owner can start a goal loop.".into());
         }
         let text = words.collect::<Vec<_>>().join(" ");

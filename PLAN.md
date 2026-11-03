@@ -11188,3 +11188,89 @@ Google sign-in still needs the owner's account.
   terms-of-service risk for the owner's Google account.
 - `ferrule sandbox` fails "ferrule's own environment is unreadable" when
   ferrule runs as root (seen in a root container).
+
+### 2026-11-03 — M66: control from the dashboard, a learning loop you can see, and the dashboard reorganised (Claude, Opus 5.5)
+
+**Why.** An audit of every page (and of the code behind it) found that
+the owner couldn't see or steer the agent from the dashboard, and that the
+self-improvement machinery was built but off, unreachable from the page
+and never run on real data: only Telegram 👎 counted as feedback, nothing
+was kept after a failed run, unprovable changes were dropped silently and
+nothing measured whether a lesson or skill helped.
+
+**What changed.**
+- Navigation: Everyday (Home, Chat, Control, Tasks, Files, Usage), Agent
+  (Learning, Memory, Instructions, Proactive, Agents), Setup (Connect,
+  Models), Advanced (Activity, Console, Config, Settings). Channels,
+  Connections and Extensions are tabs under Connect; Routing is a tab
+  under Models (same URLs).
+- Control (new page; `GET /api/control`): what's running, each turn's
+  steps live (`GET /api/turn`, a bounded step buffer per lane in the
+  gateway's router; summaries, never tool output) with Stop; approvals
+  with their scope (`approvals/answer {scope: once|run|here}`, only where
+  the hub offers it); the kill switch with a reason; autonomy, standing
+  approvals and caps (moved from Settings and Usage); plans waiting
+  (`GET /api/plans`, `plans/approve|reject`); add-ons waiting
+  (`GET /api/extensions/pending`, `extensions/deny` — approving still
+  needs the terminal, where the scan's findings are shown); conversations
+  (`GET /api/sessions`, `sessions/resume` for goal-pending ones).
+- Chat: Normal / Plan first / Goal for the next message; a model pin for
+  the page chat; a `/` command menu (`GET /api/commands`, from the menu);
+  New conversation (`chat/new`); 👍/👎 with an optional why
+  (`chat/react`); "How it got there" (the last answer's steps). The
+  owner's slash commands now work in the page chat (channel `dashboard`,
+  chat `owner` only); plan questions and goal reports come back to it.
+- Instructions (new page; `GET /api/instructions`,
+  `instructions/save`): the AGENTS.md / CLAUDE.md / GEMINI.md /
+  ferrule.md layers the prompt is built from, editable, for new
+  conversations only.
+- Learning (new page; `GET /api/learn`, `learn/settings|run|revert|keep|drop`):
+  the switch, a dry run, passes and their changes with Undo, lessons and
+  skills with their track record, feedback counts, failure notes.
+  - Proposed, not proven: what the gate can't prove is kept as a proposal
+    for Keep/Drop instead of being dropped.
+  - Feedback: page 👍/👎, /undo, Undo of a learned change, Keep/Drop go
+    to `learn/signals.jsonl`; refused approvals and proactive answers are
+    read from the audit log. A page 👎 becomes an episode.
+  - Failure notes (`[learning] failure_notes = true` by default, even
+    with learning off): a root run that ends unfinished leaves its own
+    scrubbed status in memory, scoped, recalled after the user's message
+    for 7 days. Not after a guard stop or an owner's refusal.
+  - What helps: `learn/usage.jsonl` (lessons per session, outcomes,
+    `activate_skill`); a full playbook cuts the worst record first. Both
+    logs are bounded (4 MiB, then 90 days / 2 MiB).
+- Activity (was Logs): audit lines in words. Config: grouped by area,
+  with each field's default. Channels: what's set up open, the rest folded.
+  Usage: tokens per day when there are no prices. Home: a waiting approval
+  leads; a warning's fix is a plain button. local.rs: a server that
+  answers `/models` but isn't a known kind counts as up.
+
+**Security review (a separate agent, before delivery) and its fixes.**
+Instructions: a file holding a key isn't sent to the page or editable
+there, a save needs the file's hash (409 if it changed), a key in the
+text is refused, and the route is behind the M52.6 step-up; its body limit
+fits an escaped 64 KiB file. The 👎 "why" goes through the paste guard and
+the scrubber. No failure note from a `/plan` run or from a run that read
+outside content. `plans/approve` and `sessions/resume` can't double-start
+(one lock; `PlanStore::decide` is first-claim-wins across processes); child
+ids are validated and passed after `--`. Step summaries are redacted and
+URL-scrubbed before they're cut. A refusal is audited as scope "once".
+`/login chatgpt` gets the managed-mode check.
+
+**Checks.** `cargo fmt --check`; `cargo clippy --workspace --all-targets`
+(only the older `ferrule-sandbox` warning); `cargo test --workspace
+--locked` with the container's commit signing turned off: 1,780 pass;
+the two that fail (`instances_are_listed_made_and_removed`,
+`hidden_paths_outside_the_workspace_and_the_host_environ`) fail the same
+way on the original commit when run as root. In a browser against
+`ferrule gateway` with a scripted model: a gated command from the page
+chat, its live steps, Allow for this run; the kill switch with a reason;
+`/plan` from the page chat (Plan first) asking for approval there; an
+instruction file saved; learning switched on, a dry run, a failure note
+with a key redacted, a page 👎 recorded with learning off.
+
+**Not done / open.** Gated tool calls are still asked in the primary chat
+app (and on the page's approvals list), not in the page chat; a goal
+loop's gated commands are refused (no chat to ask). `/connect` and
+friends stay on chat apps. The learning pass has still not run against a
+real model here (only a dry run against a scripted one).

@@ -112,6 +112,7 @@ fn opts() -> Options {
         max_prompt_chars: 4000,
         trigger: "manual".into(),
         workspace: None,
+        id: None,
     }
 }
 
@@ -473,11 +474,15 @@ async fn the_judges_no_rejects_and_a_broken_probe_rejects() {
     );
     let p = run_pass(&opts(), &env).await.unwrap();
     assert!(p.changes.is_empty());
+    // The judge couldn't tell: proposed to the owner, not rejected.
+    assert!(p.rejected.is_empty(), "{:?}", p.rejected);
+    assert_eq!(p.proposed.len(), 1);
     assert!(
-        p.rejected[0].reason.contains("no clear difference"),
+        p.proposed[0].gate.contains("no clear difference"),
         "{:?}",
-        p.rejected
+        p.proposed
     );
+    assert_eq!(p.proposed[0].status, PROPOSED);
     assert_eq!(env.dir.read_playbook().unwrap(), "");
 
     // An unfinished probe never reaches the judge (no second answer queued).
@@ -500,9 +505,104 @@ async fn the_judges_no_rejects_and_a_broken_probe_rejects() {
 }
 
 #[tokio::test]
-async fn a_gate_that_cannot_probe_still_rejects_without_a_check() {
+async fn a_gate_that_cannot_probe_proposes_without_a_check_and_keep_lands_it() {
     let (env, _) = setup_with_gate(Arc::new(BlindGate), &[Some(ADD)], vec![ep(1)]);
     let p = run_pass(&opts(), &env).await.unwrap();
-    assert!(p.changes.is_empty());
-    assert_eq!(p.rejected[0].reason, "no check to gate on");
+    assert!(p.changes.is_empty() && p.rejected.is_empty());
+    assert_eq!(p.proposed[0].gate, "no check to gate on");
+    // It does nothing until the owner keeps it.
+    assert_eq!(env.dir.read_playbook().unwrap(), "");
+    let log = env.dir.read_pass_file(&p.id, "changelog.md").unwrap();
+    assert!(log.contains("## Proposed, not proven"), "{log}");
+
+    let l = crate::proposed::keep(&env.dir, &p.id, "p1", 40).unwrap();
+    assert_eq!(l.change, 1);
+    assert_eq!(l.line, "Learned: Run cargo fmt before the tests.");
+    assert!(env
+        .dir
+        .read_playbook()
+        .unwrap()
+        .contains("- [pb-1] Run cargo fmt before the tests."));
+    let kept = env.dir.load_pass(&p.id).unwrap();
+    assert_eq!(kept.proposed[0].status, crate::files::KEPT);
+    assert_eq!(kept.proposed[0].kept_as, Some(1));
+    match &kept.changes[0] {
+        Change::Playbook { gate, .. } => assert!(gate.starts_with("kept by the owner"), "{gate}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(crate::proposed::keep(&env.dir, &p.id, "p1", 40).is_err());
+    // Its Undo is the usual one.
+    let r = revert_change(&env.dir, &p.id, 1, None).unwrap();
+    assert!(r.not_undone.is_empty(), "{r:?}");
+    assert!(!env.dir.read_playbook().unwrap().contains("[pb-1]"));
+}
+
+#[tokio::test]
+async fn drop_marks_a_proposal_rejected_and_it_never_lands() {
+    let (env, _) = setup_with_gate(Arc::new(BlindGate), &[Some(ADD)], vec![ep(1)]);
+    let p = run_pass(&opts(), &env).await.unwrap();
+    let said = crate::proposed::drop(&env.dir, &p.id, "p1").unwrap();
+    assert!(said.starts_with("Dropped"), "{said}");
+    let p = env.dir.load_pass(&p.id).unwrap();
+    assert_eq!(p.proposed[0].status, crate::files::DROPPED);
+    assert!(crate::proposed::keep(&env.dir, &p.id, "p1", 40).is_err());
+    assert!(crate::proposed::keep(&env.dir, &p.id, "p9", 40).is_err());
+    assert_eq!(env.dir.read_playbook().unwrap(), "");
+}
+
+#[tokio::test]
+async fn a_full_playbook_cuts_the_lesson_with_the_worst_record_first() {
+    let s = setup(&[Some(ADD)], true, vec![ep(1)]);
+    let mut text = String::from("# Ferrule playbook\n");
+    for n in 1..=3 {
+        text.push_str(&format!("- [pb-{n}] Lesson number {n} about topic {n}.\n"));
+    }
+    s.env.dir.write_playbook(&text).unwrap();
+    s.env
+        .dir
+        .save_state(&State {
+            last_id: 3,
+            ..Default::default()
+        })
+        .unwrap();
+    // pb-2 was in two sessions that both ended not done; pb-1 is oldest.
+    for (inst, lessons) in [("a", vec![1, 2, 3]), ("b", vec![2, 3])] {
+        s.env
+            .dir
+            .record_use(&crate::usage::Use::Run {
+                at: 5,
+                session: "telegram__1".into(),
+                instance: inst.into(),
+                outcome: crate::usage::NOT_DONE.into(),
+                lessons,
+                playbook: None,
+            })
+            .unwrap();
+    }
+    s.env
+        .dir
+        .record_use(&crate::usage::Use::Run {
+            at: 6,
+            session: "telegram__2".into(),
+            instance: "c".into(),
+            outcome: crate::usage::DONE.into(),
+            lessons: vec![1, 3],
+            playbook: None,
+        })
+        .unwrap();
+    let o = Options {
+        max_bullets: 3,
+        ..opts()
+    };
+    let p = run_pass(&o, &s.env).await.unwrap();
+    assert_eq!(p.changes.len(), 2, "{:?}", p.rejected);
+    match &p.changes[1] {
+        Change::Playbook {
+            applied, reason, ..
+        } => {
+            assert_eq!((applied.op.as_str(), applied.id), ("retire", 2));
+            assert!(reason.contains("the worst record in use"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
 }

@@ -50,6 +50,10 @@ struct Pending {
     for_run: bool,
     /// `remember` may keep it as a standing grant (M56.2).
     remember: bool,
+    /// M66: what kind of gated call it is ("recursive delete"), and the
+    /// tool, for the dashboard's inbox; `None` for any other question.
+    kind: Option<String>,
+    tool: Option<String>,
     tx: oneshot::Sender<Answer>,
 }
 
@@ -66,6 +70,44 @@ pub struct Waiting {
     pub left_secs: Option<u64>,
     /// The admin op it is bound to (`model_default:3fa9c1…`), if any.
     pub op: Option<String>,
+    /// M66: "Allow for this run" (`always <code>`) is offered for it.
+    pub for_run: bool,
+    /// M66: "Always here" (`remember <code>`) is offered for it.
+    pub remember: bool,
+    /// M66: a gated call's kind ("recursive delete", "force push").
+    pub kind: Option<String>,
+    /// M66: a gated call's tool (`shell`, a connected service's).
+    pub tool: Option<String>,
+}
+
+/// M66: how far the page's Allow reaches, as the chat's three buttons do:
+/// this once (`yes`), the rest of the run (`always`), from now on here
+/// (`remember`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Once,
+    Run,
+    Here,
+}
+
+impl Scope {
+    /// `once`, `run` or `here`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "once" => Some(Self::Once),
+            "run" => Some(Self::Run),
+            "here" => Some(Self::Here),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Run => "run",
+            Self::Here => "here",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -215,6 +257,8 @@ impl Approvals {
             op,
             for_run: false,
             remember: false,
+            kind: None,
+            tool: None,
             tx,
         });
         (code, rx)
@@ -250,6 +294,16 @@ impl Approvals {
         (code, rx)
     }
 
+    /// M66: what the inbox shows of a gated call's question: its kind and
+    /// its tool.
+    pub fn about(&self, code: &str, kind: Option<&str>, tool: Option<&str>) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(p) = inner.pending.iter_mut().find(|p| p.code == code) {
+            p.kind = kind.map(str::to_string);
+            p.tool = tool.map(str::to_string);
+        }
+    }
+
     /// Takes a question back (it timed out, or the run stopped waiting): a
     /// reply to it later is told it expired.
     pub fn withdraw(&self, code: &str) {
@@ -282,6 +336,10 @@ impl Approvals {
                     .timeout
                     .map(|t| t.saturating_sub(p.asked.elapsed()).as_secs()),
                 op: p.op.clone(),
+                for_run: p.for_run,
+                remember: p.remember,
+                kind: p.kind.clone(),
+                tool: p.tool.clone(),
             })
             .collect()
     }
@@ -299,6 +357,50 @@ impl Approvals {
             let _ = p.tx.send(Answer::No(said.to_string()));
             Some(format!("Refused ({}): {}", p.code, p.what))
         }
+    }
+
+    /// [`Approvals::decide`], with how far an Allow reaches (M66: the
+    /// page's three buttons, the chat's `yes`, `always` and `remember`).
+    /// `None`: no such question is waiting. `Err`: that reach isn't
+    /// offered for this question, and nothing was answered.
+    pub fn decide_in(
+        &self,
+        code: &str,
+        allow: bool,
+        scope: Scope,
+        said: &str,
+    ) -> Option<Result<String, String>> {
+        let mut inner = self.inner.lock().unwrap();
+        let i = inner.pending.iter().position(|p| p.code == code)?;
+        if allow {
+            let p = &inner.pending[i];
+            let offered = match scope {
+                Scope::Once => true,
+                Scope::Run => p.for_run,
+                Scope::Here => p.remember,
+            };
+            if !offered {
+                return Some(Err(match scope {
+                    Scope::Run => "“Allow for this run” isn't offered for this question: only a shell command can be allowed for the rest of its run. Nothing was answered.",
+                    _ => "“Always here” isn't offered for this question: only an exact command in this workspace, or a send to the addresses it names, can be kept. Nothing was answered.",
+                }
+                .to_string()));
+            }
+        }
+        let p = take(&mut inner, i);
+        Some(Ok(if allow {
+            approve(
+                p,
+                match scope {
+                    Scope::Once => Reach::Once,
+                    Scope::Run => Reach::Run,
+                    Scope::Here => Reach::Here,
+                },
+            )
+        } else {
+            let _ = p.tx.send(Answer::No(said.to_string()));
+            format!("Refused ({}): {}", p.code, p.what)
+        }))
     }
 
     pub fn pending_in(&self, chat: impl Into<ChatRef>) -> usize {
@@ -589,6 +691,57 @@ mod tests {
         assert!(said.contains("No question with code k4"), "{said}");
         assert!(a.answer(1, "yes please").is_none());
         assert!(a.answer(1, "yes zz").is_none(), "not code-shaped");
+    }
+
+    #[test]
+    fn the_page_answers_with_the_reach_the_question_offers_and_no_further() {
+        let a = Approvals::default();
+        let t = Duration::from_secs(60);
+        let (run, mut r_run) = a.open_for_gate(1, "`rm -rf x` (recursive delete)", t, true, true);
+        a.about(&run, Some("recursive delete"), Some("shell"));
+        let (send, mut r_send) = a.open_for_gate(1, "send", t, false, true);
+        let (plain, mut r_plain) = a.open(1, "plain");
+        let list = a.list();
+        assert_eq!(
+            (
+                list[0].for_run,
+                list[0].remember,
+                list[0].kind.as_deref(),
+                list[0].tool.as_deref()
+            ),
+            (true, true, Some("recursive delete"), Some("shell"))
+        );
+        assert_eq!((list[1].for_run, list[1].remember), (false, true));
+        assert_eq!(
+            (list[2].for_run, list[2].remember, list[2].kind.clone()),
+            (false, false, None)
+        );
+        // A reach that isn't offered answers nothing.
+        let no = a.decide_in(&plain, true, Scope::Here, "").unwrap();
+        assert!(no.unwrap_err().contains("isn't offered"));
+        assert!(a.decide_in(&send, true, Scope::Run, "").unwrap().is_err());
+        assert!(r_plain.try_recv().is_err() && r_send.try_recv().is_err());
+        assert_eq!(a.list().len(), 3);
+        // Each reach sends what its chat word would.
+        assert!(a
+            .decide_in(&run, true, Scope::Run, "")
+            .unwrap()
+            .unwrap()
+            .starts_with("Approved for this run"));
+        assert_eq!(r_run.try_recv().unwrap(), Answer::Always);
+        a.decide_in(&send, true, Scope::Here, "").unwrap().unwrap();
+        assert_eq!(r_send.try_recv().unwrap(), Answer::Remember);
+        // A refusal's reach doesn't matter; an answered code is gone.
+        a.decide_in(&plain, false, Scope::Here, "refused on the page")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            r_plain.try_recv().unwrap(),
+            Answer::No("refused on the page".into())
+        );
+        assert!(a.decide_in(&plain, true, Scope::Once, "").is_none());
+        assert_eq!(Scope::parse("run"), Some(Scope::Run));
+        assert_eq!(Scope::parse("always"), None);
     }
 
     #[test]

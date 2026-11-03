@@ -303,7 +303,7 @@ pub struct ConnectionsDoor {
 }
 
 impl ConnectionsDoor {
-    #[cfg(test)]
+    /// The commands read here (M66: what the page's chat leaves out).
     pub const HANDLES: &'static [&'static str] = &["connect", "connections", "disconnect"];
 
     fn actor(&self, msg: &InboundMessage) -> Actor {

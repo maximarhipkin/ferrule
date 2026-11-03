@@ -34,7 +34,7 @@ impl ModelDoor {
 
     /// The owner chat, or the owner writing in a group.
     fn is_owner(&self, msg: &InboundMessage) -> bool {
-        crate::trust::owner_in(&self.hub, msg).is_some()
+        crate::trust::owner_here(&self.hub, msg).is_some()
     }
 
     async fn answer(&self, msg: &InboundMessage, rest: &str) -> String {
@@ -107,7 +107,7 @@ impl ModelDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for ModelDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if !crate::trust::is_chat_channel(&msg.channel) {
+        if !crate::trust::reads_commands(msg) {
             return None;
         }
         let t = msg.text.trim();

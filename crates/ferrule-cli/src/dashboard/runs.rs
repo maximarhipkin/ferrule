@@ -193,6 +193,19 @@ impl Runs {
         env: Vec<(String, OsString)>,
         after: impl FnOnce(&Run) + Send + 'static,
     ) -> std::io::Result<Arc<Run>> {
+        self.start_for(label, args, env, TIMEOUT, after)
+    }
+
+    /// [`Runs::start_then`], stopped after `limit` instead of [`TIMEOUT`]
+    /// (M66: a goal loop's round runs longer than a command).
+    pub fn start_for(
+        &self,
+        label: String,
+        args: Vec<OsString>,
+        env: Vec<(String, OsString)>,
+        limit: Duration,
+        after: impl FnOnce(&Run) + Send + 'static,
+    ) -> std::io::Result<Arc<Run>> {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(&args)
             .envs(env)
@@ -255,9 +268,9 @@ impl Runs {
                     let _ = child.kill().await;
                     (-1, Some("stopped from the page".to_string()))
                 }
-                _ = tokio::time::sleep(TIMEOUT) => {
+                _ = tokio::time::sleep(limit) => {
                     let _ = child.kill().await;
-                    (-1, Some(format!("stopped after {} minutes", TIMEOUT.as_secs() / 60)))
+                    (-1, Some(format!("stopped after {} minutes", limit.as_secs() / 60)))
                 }
             };
             for r in readers {

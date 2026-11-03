@@ -798,6 +798,40 @@ async fn a_gated_command_runs_after_the_owner_says_yes() {
 }
 
 #[tokio::test]
+async fn the_inbox_shows_a_gates_kind_and_tool_and_the_page_can_allow_it_for_the_run() {
+    // M66: the dashboard answers as the chat's "Allow for this run" would.
+    let w = World::new(caps());
+    let hub = w.hub.clone();
+    let page = tokio::spawn(async move {
+        loop {
+            if let Some(q) = hub.approvals().list().into_iter().next() {
+                let said = hub
+                    .approvals()
+                    .decide_in(&q.code, true, ferrule_trust::approval::Scope::Run, "")
+                    .unwrap()
+                    .unwrap();
+                return (q, said);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let push = || shell("git push --force origin main");
+    let r = w.run("s1", telegram(), vec![push(), push()], 10).await;
+    let (q, said) = page.await.unwrap();
+    assert_eq!(
+        (q.kind.as_deref(), q.tool.as_deref(), q.for_run),
+        (Some("force push"), Some("shell"), true)
+    );
+    assert!(said.starts_with("Approved for this run"), "{said}");
+    // Asked once: the second ran on the run's grant.
+    assert_eq!(r.ran.len(), 2, "{:?}", r.ran);
+    assert_eq!(w.owner.sent().len(), 1);
+    let answers = w.audit("approval_answered");
+    assert_eq!(answers[0]["answer"], "always");
+    assert_eq!(answers[1]["route"], "grant");
+}
+
+#[tokio::test]
 async fn anything_but_yes_refuses_and_the_run_goes_on() {
     let w = World::new(caps());
     w.owner

@@ -11,26 +11,36 @@ pub mod chat;
 pub mod cli;
 pub mod config_page;
 pub mod console;
+pub mod control;
 pub mod door;
+pub mod ext_inbox;
+pub mod feedback;
 pub mod files_page;
 mod healthz;
 pub mod http;
+pub mod instructions;
+pub mod learn_page;
+#[cfg(test)]
+mod m66_tests;
 pub mod memory;
 pub mod models_page;
 pub mod notices;
 #[cfg(test)]
 mod page_tests;
 pub mod panel;
+pub mod plans;
 pub mod proactive_page;
 mod public;
 pub mod runs;
 mod safe;
 mod sealed;
+pub mod sessions;
 pub mod setup;
 mod telegram;
 #[cfg(test)]
 pub mod testing;
 pub(crate) mod tool_keys;
+pub mod turn;
 
 use crate::config::{Config, DashboardConfig};
 use anyhow::{bail, Context, Result};
@@ -218,6 +228,8 @@ const STEP_UP_PATHS: &[&str] = &[
     "/api/secrets/delete",
     "/api/secrets/hosts",
     "/api/secrets/remove",
+    // M66: what every new conversation's prompt carries.
+    "/api/instructions/save",
 ];
 const STEP_UP_MS: u64 = 10 * 60 * 1000;
 /// How long the owner has to answer the chat's card.
@@ -678,6 +690,7 @@ impl Dashboard {
             "secrets/delete" => "delete a key",
             "secrets/hosts" => "change where a tool key may be sent",
             "secrets/remove" => "remove a tool key",
+            "instructions/save" => "change the instructions every new conversation reads",
             _ => "change keys",
         };
         let name: String = body
@@ -757,7 +770,9 @@ impl Dashboard {
         let path = self.strip_base(&head.path);
         // M65 §5: one piece of a big upload, raw bytes.
         let piece = head.method == "PUT" && path.starts_with("/api/files/upload/");
-        if !(piece || head.method == "POST" && path == "/api/chat/photo")
+        // M66: a 64 KB instructions file, escaped as JSON.
+        let instructions = head.method == "POST" && path == "/api/instructions/save";
+        if !(piece || instructions || head.method == "POST" && path == "/api/chat/photo")
             || self.health_only.load(Ordering::Relaxed)
         {
             return usual;
@@ -786,6 +801,11 @@ impl Dashboard {
                     http::Limit {
                         body: files_page::CHUNK,
                         deadline: Duration::from_secs(600),
+                    }
+                } else if instructions {
+                    http::Limit {
+                        body: instructions::MAX_BODY,
+                        deadline: Duration::from_secs(30),
                     }
                 } else {
                     http::Limit {
@@ -1715,6 +1735,14 @@ mod tests {
         assert!(!big(&host));
         // And the usual limit is the small one.
         assert_eq!(d.limit_for(&anon).body, http::Limit::default().body);
+        // M66: a full instructions file, escaped, fits; only signed in.
+        let room = |h: &http::Head| d.limit_for(h).body;
+        let escaped = serde_json::to_string(&"\"\n".repeat(instructions::MAX_BYTES / 2)).unwrap();
+        assert!(escaped.len() > http::Limit::default().body);
+        assert!(room(&signed("/api/instructions/save")) > escaped.len() + 200);
+        let mut anon = signed("/api/instructions/save");
+        anon.headers.remove("cookie");
+        assert_eq!(room(&anon), http::Limit::default().body);
     }
 
     #[tokio::test]

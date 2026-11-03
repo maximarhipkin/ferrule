@@ -44,7 +44,10 @@ pub use message::{
     is_group_chat, is_no_reply, is_silent, Attachment, InboundMessage, OutboundMessage, Reaction,
     ReactionSink, NO_REPLY,
 };
-pub use router::{AgentFactory, Drained, LaneSnapshot, Replied, Reply, Reset, Router, NEW_HINT};
+pub use router::{
+    AgentFactory, Drained, LaneSnapshot, Replied, Reply, Reset, Router, TurnStep, MAX_STEPS,
+    NEW_HINT, STEP_RAW, STEP_RAW_CUT,
+};
 pub use scheduler::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, Hold, JobReport, BUILTIN_CHANNEL,
 };

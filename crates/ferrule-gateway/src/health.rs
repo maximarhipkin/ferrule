@@ -937,6 +937,10 @@ mod tests {
             queued: 0,
             text: text.into(),
             resumable: false,
+            steps: Vec::new(),
+            steps_dropped: 0,
+            steps_last: false,
+            tokens: None,
         }
     }
 

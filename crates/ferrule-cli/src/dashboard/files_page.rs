@@ -93,6 +93,11 @@ struct Pending {
 }
 
 impl Library {
+    /// The agent's workspace (M66: the Instructions page's workspace layers).
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     pub fn new(
         workspace: PathBuf,
         max_upload_mb: u64,

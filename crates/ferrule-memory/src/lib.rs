@@ -41,6 +41,28 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// want things done. Every other fact's score halves every 7 days.
 pub const DURABLE_TAGS: &[&str] = &["profile", "preference"];
 
+/// The learning loop's failure notes (`docs/m16-learning-loop.md`,
+/// "Failure notes"): what a run that ended not done said about it. A note
+/// is recalled only when a message matches it, never as one of the newest
+/// facts, and only for [`NOTE_DAYS`] days; it stays in the store (the
+/// dashboard's Memory page lists and forgets it) until then and after.
+pub const FAILURE_NOTE: &str = "failure-note";
+/// How long a failure note is recalled.
+pub const NOTE_DAYS: i64 = 7;
+/// Rows past the 5 newest the session-start block looks at, so failure
+/// notes left out don't leave it short.
+const RECENT_NOTES: usize = 5;
+
+/// Whether `m` is a failure note recall no longer shows at `now`.
+fn faded(m: &Memory, now: i64) -> bool {
+    is_note(m) && now - m.created_at > NOTE_DAYS * 86_400
+}
+
+/// Whether `m` is a failure note.
+pub fn is_note(m: &Memory) -> bool {
+    m.tags.iter().any(|t| t == FAILURE_NOTE)
+}
+
 /// The most profile facts the session-start block carries, whatever the
 /// goal.
 const PROFILE_FACTS: usize = 10;
@@ -438,11 +460,17 @@ impl MemoryStore {
             }
         }
         best.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        best.truncate(limit);
 
-        let mut out = Vec::with_capacity(best.len());
+        let mut out = Vec::with_capacity(limit.min(best.len()));
         for (id, score) in best {
+            if out.len() == limit {
+                break;
+            }
             if let Some(mut m) = self.get(id)? {
+                // A failure note older than a week is no longer recalled.
+                if faded(&m, now as i64) {
+                    continue;
+                }
                 m.score = score;
                 out.push(m);
             }
@@ -549,8 +577,11 @@ impl MemoryStore {
                 push(&m);
             }
         }
-        for m in self.recent(5)? {
-            push(&m);
+        // The newest facts fill the budget; a failure note only comes when
+        // the goal matches it.
+        let newest = self.recent(5 + RECENT_NOTES)?;
+        for m in newest.iter().filter(|m| !is_note(m)).take(5) {
+            push(m);
         }
         Ok(parts.join("\n"))
     }

@@ -118,12 +118,32 @@ pub fn owner_in(hub: &Hub, msg: &ferrule_gateway::InboundMessage) -> Option<bool
 /// Whether `msg` is the owner's: the dashboard's chat is the owner's by
 /// its sign-in, any other channel by `owner_in` (M48).
 pub fn by_owner(hub: &Hub, msg: &ferrule_gateway::InboundMessage) -> bool {
-    msg.channel == "dashboard" || owner_in(hub, msg).is_some()
+    page_chat(msg) || owner_in(hub, msg).is_some()
 }
 
 /// The channels whose chats the owner's commands are read in.
 pub fn is_chat_channel(channel: &str) -> bool {
     ferrule_trust::config::OWNER_CHANNELS.contains(&channel)
+}
+
+/// M66: the dashboard's own chat (`dashboard__owner`): only the page the
+/// owner signed in to writes there, so it is the owner's own chat.
+pub fn page_chat(msg: &ferrule_gateway::InboundMessage) -> bool {
+    msg.channel == crate::dashboard::chat::CHANNEL && msg.chat_id == crate::dashboard::chat::CHAT
+}
+
+/// M66: whether the owner's commands are read in `msg`'s chat: a chat
+/// app's, or the page's own.
+pub fn reads_commands(msg: &ferrule_gateway::InboundMessage) -> bool {
+    is_chat_channel(&msg.channel) || page_chat(msg)
+}
+
+/// [`owner_in`], with the page's own chat the owner's own chat (M66).
+pub fn owner_here(hub: &Hub, msg: &ferrule_gateway::InboundMessage) -> Option<bool> {
+    if page_chat(msg) {
+        return Some(true);
+    }
+    owner_in(hub, msg)
 }
 
 /// Who answers for `tree` from now on (`ferrule run` and `chat` seat the
@@ -387,7 +407,7 @@ impl OwnerDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for OwnerDoor {
     async fn intercept(&self, msg: &ferrule_gateway::InboundMessage) -> Option<String> {
-        if !is_chat_channel(&msg.channel) && msg.channel != "dashboard" {
+        if !reads_commands(msg) {
             return None;
         }
         let mut words = msg.text.split_whitespace();
@@ -407,11 +427,6 @@ impl ferrule_gateway::Interceptor for OwnerDoor {
                 _ => "Usage: /unlearn <pass> <change>. The Undo under a \"Learned\" line sends it; `ferrule learn diff <pass>` numbers the changes.".into(),
             });
         }
-        // The page's chat only has its answers read here: its commands are
-        // its own.
-        if msg.channel == "dashboard" && msg.text.trim_start().starts_with('/') {
-            return None;
-        }
         let chat = match msg.channel.as_str() {
             // As before M31: a Telegram chat id is a number.
             "telegram" => ChatRef::from(msg.chat_id.parse::<i64>().ok()?),
@@ -423,13 +438,24 @@ impl ferrule_gateway::Interceptor for OwnerDoor {
             .unwrap_or("")
             .eq_ignore_ascii_case("/undo")
         {
-            if owner_in(&self.hub, msg).is_none() {
+            if owner_here(&self.hub, msg).is_none() {
                 return Some("Only the owner can undo.".into());
             }
             return Some(match &self.undo {
                 Some(undo) => undo(),
                 None => "/undo isn't available in this gateway.".into(),
             });
+        }
+        // M66: the page's chat is the owner's own, though no channel's
+        // owner setting names it.
+        if page_chat(msg)
+            && first
+                .split('@')
+                .next()
+                .unwrap_or("")
+                .eq_ignore_ascii_case("/resume")
+        {
+            return Some(self.hub.resume_text(&chat.to_string()));
         }
         let owner = by_owner(&self.hub, msg);
         match self.hub.intercept_from(chat.clone(), &msg.text, owner) {

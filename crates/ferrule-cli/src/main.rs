@@ -1766,9 +1766,24 @@ fn build_agent_from(
     // Anyone else's session is taught only what was learned in its own
     // scope: the global lessons and skills may come from the owner's.
     let learn_scope = learn::scope_for(&tree, &tool_ctx.workspace, guest);
+    // Learning page: a root agent's runs and skill uses go to the usage
+    // log, and a run that ends not done leaves a failure note (learn/watch.rs),
+    // never a read-only `/plan` run.
+    let learn_watch = child
+        .is_none()
+        .then(|| {
+            let notes = !planning;
+            learn::watch::RunWatch::new(&cfg, &session_id, &learn_scope, &tree, &memory_db, guest)
+                .map(|w| w.with_notes(notes))
+        })
+        .flatten();
     if cfg.skills.enabled && !planning {
         let (skills, tools) =
             mcp_tools.skill_tools(Some(learn::skill_view(Some(learn_scope.clone()), guest)));
+        // Learning page: each `activate_skill`, counted.
+        if let Some(w) = &learn_watch {
+            tools.on_activate(w.activation_hook());
+        }
         let set = skills.get();
         stamp.skills = set
             .skills
@@ -1936,6 +1951,10 @@ fn build_agent_from(
             cfg.agent.auto_commit_branch,
         )?;
         agent = agent.with_run_observer(Arc::new(autocommit::AutoCommitObserver::new(commit)));
+    }
+    // Learning page: told how each run ends (learn/watch.rs).
+    if let Some(w) = learn_watch {
+        agent = agent.with_run_observer(w);
     }
     if let Some(triggers) = prompt_triggers {
         agent = agent.with_prompt_triggers(triggers);
@@ -3281,7 +3300,9 @@ async fn run_gateway(
             .enabled
             .then(|| trust::hub(&cfg))
             .transpose()?,
-        thumbs.as_ref().map(|t| t.sink()),
+        // Learning page: the page's chat is always marked; Telegram only
+        // while learning is on.
+        thumbs.as_ref().and_then(|t| t.telegram_sink()),
     );
     let mut named_channels = build_channels(&cfg, Some(&workspace), reactions)?;
     if let Some(policy) = managed::policy() {
@@ -3477,6 +3498,14 @@ async fn run_gateway(
     };
 
     connections::attach(&cfg, chat_channels.clone(), &router);
+    // M66: from here on the page's own chat is one of the owner's chats
+    // too, so `/plan`, `/goal` and `/graph` sent there answer there (the
+    // `page_chat` note above predates this); `/connect`, attached just
+    // above, stays on the chat apps.
+    let mut chat_channels = chat_channels;
+    if let Some(ch) = &page_chat {
+        chat_channels.insert(dashboard::chat::CHANNEL.into(), ch.clone());
+    }
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let plan = plan::chats(
         router.clone(),
@@ -3586,7 +3615,8 @@ async fn run_gateway(
         .with_interceptor(Arc::new(trust::OwnerDoor {
             hub: hub.clone(),
             plan: Some(plan),
-            undo: Some(undo),
+            // Learning page: an Undo is the owner's signal.
+            undo: Some(learn::counted_undo(undo)),
         }))
         .with_interceptor(Arc::new(self_service::SelfServiceDoor::new(admin.clone())))
         .with_interceptor(Arc::new(settings_door::SettingsDoor {

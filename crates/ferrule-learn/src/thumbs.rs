@@ -5,9 +5,12 @@
 //! 👍 on a reply in the same chat marks it fixed. Each reaction is one line
 //! of `learn/reactions.jsonl`. Who reacted and on which reply is the
 //! gateway's to decide: only the owner's count, only on its own replies.
+//! The learning page: a 👍/👎 on a dashboard chat reply is a line of
+//! `learn/signals.jsonl` ([`crate::signals`]); both files are read here.
 
 use crate::episode::{content, messages, meta, role, Episode, SCOPE_META};
 use crate::files::{write_atomic, LearnDir};
+use crate::signals::{self, Signal};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -33,6 +36,9 @@ pub struct Thumb {
     /// A 👎's transcript cut, under `learn/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// The owner's words on why (a dashboard 👎 may carry them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// Where a reply ended in its chat's transcript: the length when it was
@@ -69,15 +75,33 @@ impl LearnDir {
         self.root().join("reactions.jsonl")
     }
 
-    /// Every reaction kept, oldest first; unreadable lines skipped.
+    /// Every reaction kept, oldest first; unreadable lines skipped:
+    /// Telegram's (`reactions.jsonl`) and the dashboard's thumbs among the
+    /// signals (`signals.jsonl`).
     pub fn thumbs(&self) -> Vec<Thumb> {
-        fs::read_to_string(self.reactions_path())
+        let mut all: Vec<Thumb> = fs::read_to_string(self.reactions_path())
             .map(|t| {
                 t.lines()
                     .filter_map(|l| serde_json::from_str(l).ok())
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        all.extend(
+            self.signals()
+                .into_iter()
+                .filter(Signal::is_thumb)
+                .map(|s| Thumb {
+                    at: s.at,
+                    up: s.kind == signals::UP,
+                    session: s.session.unwrap_or_default(),
+                    message: s.message.unwrap_or_default(),
+                    transcript: s.transcript,
+                    why: s.why,
+                }),
+        );
+        // Stable: lines of one file keep their order.
+        all.sort_by_key(|t| t.at);
+        all
     }
 
     fn add_thumb(&self, t: &Thumb) -> Result<(), String> {
@@ -100,6 +124,7 @@ pub fn up(dir: &LearnDir, session: &str, message: &str, at: i64) -> Result<(), S
         message: message.into(),
         up: true,
         transcript: None,
+        why: None,
     })
 }
 
@@ -113,6 +138,27 @@ pub fn down(
     mark: &Mark,
     at: i64,
 ) -> Result<(), String> {
+    let rel = keep_cut(dir, session, message, transcript, mark, at)?;
+    dir.add_thumb(&Thumb {
+        at,
+        session: session.into(),
+        message: message.into(),
+        up: false,
+        transcript: Some(rel),
+        why: None,
+    })
+}
+
+/// The transcript up to `mark`, kept under `learn/reactions/` for the
+/// pass; its path under `learn/`.
+fn keep_cut(
+    dir: &LearnDir,
+    session: &str,
+    message: &str,
+    transcript: &Path,
+    mark: &Mark,
+    at: i64,
+) -> Result<String, String> {
     let bytes =
         fs::read(transcript).map_err(|e| format!("the chat's transcript can't be read: {e}"))?;
     let cut = mark
@@ -121,13 +167,40 @@ pub fn down(
     let name = format!("{at}-{}-{}.jsonl", clean(session), clean(message));
     let rel = format!("reactions/{name}");
     write_atomic(&dir.root().join(&rel), cut).map_err(|e| format!("{e:#}"))?;
-    dir.add_thumb(&Thumb {
-        at,
-        session: session.into(),
-        message: message.into(),
-        up: false,
-        transcript: Some(rel),
-    })
+    Ok(rel)
+}
+
+/// The learning page: the owner's 👍 or 👎 on `message`, a reply in
+/// `session`, given on `source` (`dashboard`), as a signal. A 👎 with the
+/// reply's `place` (its transcript and where the reply ended there) keeps
+/// the cut, so it becomes an episode; without one, or when the cut can't
+/// be taken, it is kept as a signal only. `Ok(true)` when it can be
+/// learned from.
+#[allow(clippy::too_many_arguments)]
+pub fn signal(
+    dir: &LearnDir,
+    source: &str,
+    session: &str,
+    message: &str,
+    up: bool,
+    why: Option<&str>,
+    place: Option<(&Path, &Mark)>,
+    at: i64,
+) -> Result<bool, String> {
+    let transcript = match (up, place) {
+        (false, Some((path, mark))) => keep_cut(dir, session, message, path, mark, at).ok(),
+        _ => None,
+    };
+    let learnable = transcript.is_some();
+    let mut s = Signal::new(if up { signals::UP } else { signals::DOWN }, source, at);
+    s.session = Some(session.into());
+    s.message = Some(message.into());
+    // The process's known secrets never reach the file (M54.3's scrubber;
+    // the caller refuses a "why" that looks like a key).
+    s.why = signals::clip_why(why.map(|w| ferrule_core::scrub::text(w.into())).as_deref());
+    s.transcript = transcript;
+    dir.add_signal(&s)?;
+    Ok(learnable)
 }
 
 fn clean(s: &str) -> String {
@@ -169,9 +242,17 @@ pub fn episodes(dir: &LearnDir, cursor: i64) -> Vec<Episode> {
             label: t.session.clone(),
             goal,
             outcome: OUTCOME.into(),
-            detail: format!(
-                "the owner reacted {DOWN} to the bot's reply that ends this transcript: that reply fell short"
-            ),
+            detail: match &t.why {
+                // Scrubbed again on its way to the reflector: a line
+                // written before a secret was known.
+                Some(why) => format!(
+                    "the owner reacted {DOWN} to the bot's reply that ends this transcript: that reply fell short. The owner said why: {}",
+                    ferrule_core::scrub::text(why.clone())
+                ),
+                None => format!(
+                    "the owner reacted {DOWN} to the bot's reply that ends this transcript: that reply fell short"
+                ),
+            },
             fixed: all[i + 1..]
                 .iter()
                 .any(|later| later.up && later.session == t.session),
@@ -181,4 +262,55 @@ pub fn episodes(dir: &LearnDir, cursor: i64) -> Vec<Episode> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_known_secret_in_the_why_is_scrubbed_before_it_is_kept_or_quoted() {
+        const SECRET: &str = "s3cr3t-why-value-0042";
+        ferrule_core::scrub::install(std::sync::Arc::new(|t: &str| {
+            t.replace(SECRET, "[redacted]")
+        }));
+        let d = tempfile::tempdir().unwrap();
+        let dir = LearnDir::new(d.path());
+        let transcript = d.path().join("dashboard__owner.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"plan my day\"}}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}\n",
+        )
+        .unwrap();
+        let mark = Mark::of(&transcript).unwrap();
+        let why = format!("it ignored {SECRET} again");
+        let learnable = signal(
+            &dir,
+            "dashboard",
+            "dashboard__owner",
+            "7",
+            false,
+            Some(&why),
+            Some((&transcript, &mark)),
+            100,
+        )
+        .unwrap();
+        assert!(learnable);
+        let kept = fs::read_to_string(dir.signals_path()).unwrap();
+        assert!(
+            !kept.contains(SECRET) && kept.contains("[redacted]"),
+            "{kept}"
+        );
+        // A line from before the secret was known is scrubbed when quoted.
+        let mut old = Signal::new(signals::DOWN, "dashboard", 200);
+        old.session = Some("dashboard__owner".into());
+        old.message = Some("8".into());
+        old.why = Some(format!("leaked {SECRET}"));
+        old.transcript = dir.signals()[0].transcript.clone();
+        dir.add_signal(&old).unwrap();
+        let eps = episodes(&dir, 0);
+        assert_eq!(eps.len(), 2, "{eps:?}");
+        assert!(eps.iter().all(|e| !e.detail.contains(SECRET)), "{eps:?}");
+        assert!(eps[1].detail.contains("leaked [redacted]"), "{eps:?}");
+    }
 }

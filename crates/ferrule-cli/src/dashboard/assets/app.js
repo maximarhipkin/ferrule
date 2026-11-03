@@ -616,6 +616,11 @@
     file: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2zM14 2v5a1 1 0 0 0 1 1h5M10 9H8M16 13H8M16 17H8",
     key: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4zM16 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0",
     user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+    control: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4",
+    learning: "M22 10 12 5 2 10l10 5 10-5zM6 12v5c3 2 9 2 12 0v-5",
+    instructions: "M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M8 13h8M8 17h6",
+    "thumbs-up": "M7 10v11M7 10l4-8a3 3 0 0 1 3 3v4h5.5a2 2 0 0 1 2 2.3l-1.4 8A2 2 0 0 1 18 21H7M7 10H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3",
+    "thumbs-down": "M17 14V3M17 14l-4 8a3 3 0 0 1-3-3v-4H4.5a2 2 0 0 1-2-2.3l1.4-8A2 2 0 0 1 6 3h11M17 14h3a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1h-3",
     lock: "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-7a2 2 0 0 1 2 -2zM7 11V7a5 5 0 0 1 10 0v4",
     telegram: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
     // things the page says
@@ -760,21 +765,6 @@
   }
 
   // ---- approvals: the owner's questions from any chat (M37 §4.3) ---------
-
-  function approvalsCard(list) {
-    if (!list || !list.length) return null;
-    return el("div", { class: "card" },
-      el("h2", { text: "Waiting for you", class: "mt0" }),
-      list.map((a) => el("div", { class: "check" },
-        led("warn pulse"),
-        el("div", { class: "body" },
-          el("div", { class: "t msg", dir: "auto", text: a.what }),
-          el("div", { class: "d" }, a.chat + " · asked " + secs(a.secs) + " ago",
-            a.left_secs != null ? el("span", { class: "muted", text: " · " + secs(a.left_secs) + " left" }) : null)),
-        el("div", { class: "row" },
-          btn("Allow", "approvals/answer", { code: a.code, allow: true }, "primary"),
-          btn("Refuse", "approvals/answer", { code: a.code, allow: false }, "danger")))));
-  }
 
   // ---- doctor, as a run the page follows (M37 §1.3) ----------------------
 
@@ -1089,8 +1079,8 @@
   const QUICK = [
     ["chat", "chat", "Chat", "Talk to your bot here"],
     ["tasks", "tasks", "Tasks", "Things it does on a schedule"],
-    ["usage", "usage", "Spending", "What it has cost so far"],
-    ["connect", "connect", "Connect", "A brain, chat apps, mail and tools"],
+    ["usage", "usage", "Usage", "What it has cost so far"],
+    ["control", "control", "Control", "Stop, allow and limit it"],
   ];
 
   sections.health = {
@@ -1191,7 +1181,7 @@
             frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
             frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
             el("span", { class: "mono", text: secs(t.busy_secs) }),
-            btn("Stop", "turn/stop", { session: t.session }, "danger"),
+            frag(button("Steps", { kind: "ghost", onclick: () => show("control") }), btn("Stop", "turn/stop", { session: t.session }, "danger")),
           ]})))) : null,
         turns.length > running.length ? el("p", { class: "muted small", text: (turns.length - running.length) + " queued behind them." }) : null,
         hiddenNotices(h.hidden),
@@ -2426,8 +2416,13 @@
           stat("Spent", usd(t.usd), window_),
           stat("Calls to a model", String(t.calls), u.error_pct ? u.error_pct + "% went wrong" : "none went wrong")),
         u.caps ? capsCard(u.caps, el("span", { class: "muted small", text: "A cap stops your bot from spending more. Change them under Advanced." })) : null,
-        t.calls ? card({ title: "Cost per day" }, chart("Cost per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0))
-          : empty("Nothing spent " + window_, "Once your bot answers something, the cost shows up here."));
+        // M66: a model without prices has no cost to chart; its tokens are.
+        t.calls && u.per_day.some((d) => d.usd > 0)
+          ? card({ title: "Cost per day" }, chart("Cost per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0))
+          : t.calls ? card({ title: "Tokens per day" },
+            el("p", { class: "muted small mt0", text: "No prices for the models used, so there's no cost to show: Models › Fill missing prices." }),
+            chart("Tokens per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num))
+            : empty("Nothing spent " + window_, "Once your bot answers something, the cost shows up here."));
       setKids(this.more,
         el("div", { class: "stats" },
           stat("tokens in", num(t.input_tokens), num(t.cached_input_tokens) + " cached"),
@@ -2506,6 +2501,40 @@
     },
   };
 
+  // M66: an audit line in words. The event's fields are JSON after the
+  // tree; anything unknown keeps its name, spaced, and its first fields.
+  const ROUTE = { dashboard: "on the dashboard", terminal: "at the terminal", telegram: "in Telegram", none: "nobody could answer" };
+  function auditWords(x) {
+    let f = {};
+    const at = String(x.text || "").indexOf("{");
+    if (at >= 0) { try { f = JSON.parse(String(x.text).slice(at)); } catch (_) { f = {}; } }
+    const subj = f.subject || f.what || f.name || f.cmd || (f.code ? "the action (code " + f.code + ")" : "an action");
+    const where = [x.tree && x.tree !== "-" ? x.tree.replace("__", ":") : null, f.route && ROUTE[f.route] ? ROUTE[f.route] : null].filter(Boolean).join(" · ");
+    const ev = String(x.level || "");
+    const ans = String(f.answer || "");
+    const said = {
+      approval_asked: ["asked", "The agent asked to run " + subj],
+      approval_answered: ans === "yes" || ans === "always" || ans === "remember"
+        ? ["allowed", "You allowed " + subj + (ans === "always" ? " for this run" : ans === "remember" ? " from now on" : "")]
+        : ans === "unattended" ? ["refused", "Refused " + subj + ": nobody was there to ask"]
+          : ans === "halted" ? ["cancelled", subj + " was cancelled when the run stopped"]
+            : ["refused", "You refused " + subj],
+      approval_allowed: ["allowed", "Allowed " + subj + (f.by ? " (" + f.by + ")" : "")],
+      untrusted_seen: ["read outside", "The agent read outside content" + (f.source ? " (" + f.source + ")" : "") + ": sends ask first now"],
+      kill_on: ["stopped", "The kill switch went on" + (f.reason ? ": " + f.reason : "")],
+      kill_off: ["resumed", "The kill switch went off"],
+      cap_hit: ["cap", "A spending cap stopped a run" + (f.cap ? " (" + f.cap + ")" : "")],
+      plan_proposed: ["plan", "A plan is waiting for your approval"],
+      plan_approved: ["plan", "You approved a plan"],
+      plan_rejected: ["plan", "You rejected a plan"],
+      plan_executed: ["plan", "An approved plan ran"],
+    }[ev];
+    if (said) return { tag: said[0], text: said[1], where };
+    const words = ev.replace(/^dashboard\./, "").replace(/[._]/g, " ");
+    const bits = Object.entries(f).filter(([, v]) => typeof v !== "object").slice(0, 3).map(([k, v]) => k + " " + v).join(", ");
+    return { tag: words.split(" ")[0] || "change", text: words.charAt(0).toUpperCase() + words.slice(1) + (bits ? ": " + bits : ""), where };
+  }
+
   sections.logs = {
     every: 0,
     page: 0,
@@ -2519,7 +2548,7 @@
       this.drawPick = () => setKids(this.pick, chips("Show", [["all", "Everything"], ["warn", "Problems"], ["audit", "Changes"]], this.kindV,
         (v) => { this.kindV = v; this.drawPick(); go(); }));
       this.drawPick();
-      root.append(secHead("Logs", "what happened · secrets and chats never appear here"),
+      root.append(secHead("Activity", "what happened, in words · secrets and chats never appear here"),
         this.pick, el("div", { class: "row mt" }, this.q, button("Reload", { kind: "ghost", icon: "retry", onclick: () => this.load() })),
         this.box);
     },
@@ -2534,11 +2563,15 @@
         return /error|fail|engage/.test(l) ? "bad" : /warn/.test(l) ? "warn" : x.kind === "audit" ? "audit" : "info";
       };
       setKids(this.box,
-        r.rows.length ? el("div", { class: "logwrap" }, r.rows.map((x) =>
-          el("div", { class: "logline" },
+        r.rows.length ? el("div", { class: "logwrap" }, r.rows.map((x) => {
+          const said = x.kind === "audit" ? auditWords(x) : null;
+          return el("div", { class: "logline" + (said ? " said" : ""), title: said ? x.level + " " + (x.tree || "") + " " + x.text : null },
             el("span", { class: "when", text: String(x.at).replace("T", " ").slice(5, 19) }),
-            el("span", { class: "lvl " + lvl(x), text: x.level }),
-            el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)))))
+            el("span", { class: "lvl " + lvl(x), text: said ? said.tag : x.level }),
+            said
+              ? el("span", { class: "txt", dir: "auto" }, el("span", { class: "msg", text: said.text }), said.where ? el("span", { class: "muted", text: "  · " + said.where }) : null)
+              : el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)));
+        }))
           : empty("Nothing matches", this.q.value ? "Try a shorter search." : "Nothing of this kind has happened yet."),
         el("div", { class: "pager" },
           el("button", { type: "button", disabled: this.page === 0, onclick: () => { this.page--; this.load(); } }, icon("chevron-left"), el("span", { text: "Newer" })),
@@ -2643,7 +2676,8 @@
         r.agents.length ? el("div", { class: "plain-list" }, r.agents.map((a) => el("div", { class: "item" },
           a.status === "running" ? led("ok pulse") : null,
           el("div", { class: "grow" }, el("div", { class: "t", text: a.name }), el("div", { class: "d" }, text(a.task))),
-          a.status === "running" ? tag("running", "ok") : tag(a.status, a.status === "failed" ? "bad" : null))))
+          a.status === "running" ? tag("running", "ok") : tag(a.status, a.status === "failed" ? "bad" : null),
+          a.status === "running" && a.id ? btn("Close", "agents/close", { id: a.id }, "danger") : null)))
           : empty("No helpers running", "When your bot splits a big job, its helpers show up here."),
         advanced("agents", "role, depth, tokens, model",
           r.agents.length ? table(["agent", "role", "tokens", "model"], r.agents.map((a) => ({ cells: [
@@ -2780,8 +2814,18 @@
         : null;
       this.sendBtn.onclick = () => this.send();
       this.stopBtn.onclick = () => this.stop();
-      this.input.addEventListener("input", () => this.grow());
+      // M66: how the next message runs, which model this chat uses, the
+      // slash commands, and the steps of the answer being written.
+      this.mode = this.mode || "normal";
+      this.tools = el("div", { class: "chat-tools" });
+      this.menu = el("div", { class: "cmd-menu", role: "listbox", "aria-label": "Commands", hidden: true });
+      this.stepsBox = el("div", { class: "chat-steps" });
+      this.stepsFor = null;
+      this.drawTools();
+      this.input.addEventListener("input", () => { this.grow(); this.cmdMenu(); });
       this.input.addEventListener("keydown", (e) => {
+        if (!this.menu.hidden && ["ArrowDown", "ArrowUp", "Escape", "Tab"].includes(e.key)) { e.preventDefault(); this.cmdMove(e.key); return; }
+        if (!this.menu.hidden && e.key === "Enter" && this.menu.querySelector("[aria-selected=true]")) { e.preventDefault(); this.cmdMove("Tab"); return; }
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
       });
       this.input.addEventListener("paste", (e) => {
@@ -2789,8 +2833,15 @@
         if (f) { e.preventDefault(); this.attach(f); }
       });
       window.addEventListener("scroll", () => { if (this.pill && this.nearBottom()) this.pill.hidden = true; }, { passive: true });
-      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log, this.typing,
-        el("div", { class: "composer" }, this.pill, this.note, this.preview,
+      const fresh = button("New conversation", { kind: "ghost", icon: "plus", onclick: async (e) => {
+        const yes = await ask({ title: "Start a new conversation?", text: "The agent forgets this conversation's context; it's saved, and its memory stays.", confirm: "Start new" });
+        if (!yes) return;
+        try { await api("/api/chat/new", {}); } catch (err) { return toast(err.message, true); }
+        this.stepsFor = null;
+        this.load();
+      } });
+      root.append(secHead("Chat", "the same agent, in its own session", fresh), this.top, this.log, this.stepsBox, this.typing,
+        el("div", { class: "composer" }, this.pill, this.note, this.preview, this.menu, this.tools,
           el("div", { class: "row" }, attach, shoot, el("div", { class: "grow" }, this.input), this.stopBtn, this.sendBtn),
           this.gallery, this.camera));
       this.drawn = false;
@@ -2798,6 +2849,95 @@
       if (this.wantPick) { this.wantPick = false; setTimeout(() => this.pick(), 60); }
     },
     pick() { if (this.gallery && !this.gallery.disabled) this.gallery.click(); else this.wantPick = true; },
+    // The next message's mode and this chat's model (a pin on the
+    // dashboard's lane, the same pin Models shows).
+    async drawTools() {
+      const MODES = [["normal", "Normal"], ["plan", "Plan first"], ["goal", "Goal"]];
+      const HINT = {
+        normal: "",
+        plan: "It explores read-only, writes a plan and waits for your approval before changing anything.",
+        goal: "It keeps working until your check passes (Config: agent.verify_command), within the caps.",
+      };
+      if (!this.modelList) {
+        try {
+          const [c, m] = await Promise.all([api("/api/models/choices"), api("/api/models").catch(() => ({ pins: [] }))]);
+          this.modelList = { models: (c.models || []).filter((x) => x.ready), def: c.default || "", pin: ((m.pins || []).find((p) => p.channel === "dashboard") || {}).model || "" };
+        } catch (_) { this.modelList = { models: [], def: "", pin: "" }; }
+      }
+      const ml = this.modelList;
+      const sel = el("select", { "aria-label": "Model for this chat", class: "sm" },
+        el("option", { value: "", text: "Model: default" + (ml.def ? " (" + ml.def + ")" : "") }),
+        ml.models.map((x) => el("option", { value: x.reference, text: x.reference })));
+      sel.value = ml.pin || "";
+      sel.onchange = async () => {
+        const v = sel.value;
+        const r = v ? await act("models/pin", { chat: "owner", channel: "dashboard", model: v }, null)
+          : await act("models/unpin", { chat: "owner", channel: "dashboard" }, null);
+        if (r) ml.pin = v; else sel.value = ml.pin || "";
+      };
+      setKids(this.tools,
+        chips("Mode", MODES, this.mode, (v) => { this.mode = v; this.drawTools(); this.input.focus(); }),
+        ml.models.length > 1 || ml.pin ? sel : null,
+        el("span", { class: "muted small grow", text: HINT[this.mode] || "Type / for commands." }));
+    },
+    // "/" opens the commands the chat understands (GET /api/commands).
+    async cmdMenu() {
+      const v = this.input.value;
+      if (!v.startsWith("/") || v.includes(" ") || v.includes("\n")) { this.menu.hidden = true; return; }
+      if (!this.commands) {
+        try { this.commands = (await api("/api/commands")).commands || []; } catch (_) { this.commands = []; }
+      }
+      const q = v.toLowerCase();
+      const hits = this.commands.filter((c) => c.cmd.toLowerCase().startsWith(q)).slice(0, 8);
+      if (!hits.length) { this.menu.hidden = true; return; }
+      setKids(this.menu, hits.map((c, i) => {
+        const o = el("button", { type: "button", role: "option", "aria-selected": String(i === 0), class: "cmd" },
+          el("span", { class: "mono", text: c.cmd + (c.args ? " " + c.args : "") }), el("span", { class: "muted small", text: c.what || "" }));
+        o.onclick = () => this.cmdPick(c);
+        o.dataset.cmd = c.cmd;
+        return o;
+      }));
+      this.menu.hidden = false;
+    },
+    cmdPick(c) {
+      this.input.value = c.cmd + (c.args ? " " : "");
+      this.menu.hidden = true;
+      this.input.focus();
+      this.grow();
+    },
+    cmdMove(key) {
+      const opts = [...this.menu.querySelectorAll("[role=option]")];
+      if (key === "Escape") { this.menu.hidden = true; return; }
+      let i = opts.findIndex((o) => o.getAttribute("aria-selected") === "true");
+      if (key === "Tab") { const c = (this.commands || []).find((x) => x.cmd === (opts[i] || opts[0]).dataset.cmd); if (c) this.cmdPick(c); return; }
+      i = (i + (key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
+      opts.forEach((o, j) => o.setAttribute("aria-selected", String(j === i)));
+    },
+    // The steps of the answer being written, live; then the last answer's.
+    steps(waiting, lastId) {
+      const key = waiting ? "live" : "last-" + lastId;
+      if (this.stepsFor === key) return;
+      this.stepsFor = key;
+      if (waiting) {
+        setKids(this.stepsBox, el("div", { class: "card flat live" }, liveTurn({ lane: "dashboard" })));
+        return;
+      }
+      const body = el("div", { class: "details-body" });
+      const d = disc("chat-steps", "chat-steps-disc", frag(icon("console"), " How it got there ", el("span", { class: "muted small", text: "· the steps of the last answer" })), body);
+      d.addEventListener("toggle", () => { if (d.open && !body.firstChild) body.append(liveTurn({ lane: "dashboard" }, { head: false })); });
+      if (d.open) body.append(liveTurn({ lane: "dashboard" }, { head: false }));
+      setKids(this.stepsBox, lastId ? d : null);
+    },
+    // 👍/👎 on an answer: a signal for learning (and a 👎 asks why).
+    async react(e, thumb, b) {
+      let why = "";
+      if (thumb === "down") {
+        why = await ask({ title: "What went wrong?", text: "Optional. The agent learns from it; it never sees this as a message.", confirm: "Send", input: { label: "What went wrong" } });
+        if (why === null) return;
+      }
+      const r = await act("chat/react", { id: e.id, thumb, why: why || "" }, b);
+      if (r) { this.reacted = this.reacted || {}; this.reacted[e.id] = thumb; const row = this.rows.get(e.id); if (row) row.sig = ""; this.draw(false); }
+    },
     grow() {
       // Measured at one row, then as many as the text needs, up to eight.
       const cs = getComputedStyle(this.input);
@@ -2842,6 +2982,8 @@
       const grew = c.entries.length > 0;
       const stick = this.nearBottom() || !this.drawn;
       this.draw(c.waiting);
+      const lastBot = [...this.entries.values()].filter((e) => e.who !== "you").sort((a, b) => b.id - a.id)[0];
+      this.steps(!!c.waiting, lastBot ? lastBot.id : 0);
       this.typing.hidden = !c.waiting;
       this.stopBtn.hidden = !c.waiting;
       if (grew) {
@@ -2887,6 +3029,8 @@
         el("div", { class: "foot" },
           el("span", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
           mine ? null : el("button", { type: "button", class: "ghost icon sm", "aria-label": "Copy the answer", title: "Copy the answer", onclick: () => copyText(e.text) }, icon("copy")),
+          mine ? null : el("button", { type: "button", class: "ghost icon sm thumb" + ((this.reacted || {})[e.id] === "up" ? " on" : ""), "aria-label": "Good answer", title: "Good answer", "aria-pressed": String((this.reacted || {})[e.id] === "up"), onclick: (ev) => this.react(e, "up", ev.currentTarget) }, icon("thumbs-up")),
+          mine ? null : el("button", { type: "button", class: "ghost icon sm thumb" + ((this.reacted || {})[e.id] === "down" ? " on" : ""), "aria-label": "Bad answer", title: "Bad answer", "aria-pressed": String((this.reacted || {})[e.id] === "down"), onclick: (ev) => this.react(e, "down", ev.currentTarget) }, icon("thumbs-down")),
           retry ? el("button", { type: "button", class: "ghost sm", onclick: (ev) => this.again(ev.currentTarget) }, icon("retry"), el("span", { text: "Try again" })) : null));
     },
     // The last thing the owner said, said again.
@@ -2915,8 +3059,14 @@
           this.sendBtn.disabled = false;
           await api("/api/chat/photo", { text: t, mime: photo.mime, data: photo.data }, { signal: this.sending.signal });
           this.detach();
-        } else await api("/api/chat/send", { text: t });
-        if (said === undefined) { this.input.value = ""; this.grow(); delete this.input.dataset.dirty; }
+        } else {
+          const prefix = said === undefined && !t.startsWith("/") ? { plan: "/plan ", goal: "/goal " }[this.mode] || "" : "";
+          await api("/api/chat/send", { text: prefix + t });
+        }
+        if (said === undefined) {
+          this.input.value = ""; this.grow(); delete this.input.dataset.dirty; this.menu.hidden = true;
+          if (this.mode !== "normal") { this.mode = "normal"; this.drawTools(); }
+        }
         this.load();
       } catch (e) {
         if (e.name === "AbortError") toast("Cancelled: the photo wasn't sent.");
@@ -3223,7 +3373,26 @@
         restart ? el("div", { class: "alert warn" }, el("div", { class: "body" },
           el("div", { class: "what", text: "A channel's settings changed since the gateway started." }),
           el("div", { class: "row" }, btn("Restart the gateway", "gateway/restart", {}, "primary")))) : null,
-        el("div", { class: "tiles" }, c.channels.map((x) => this.card(x))));
+        // M66: what's set up, open; the rest folded, one line each, so
+        // the page isn't eleven empty forms.
+        (() => {
+          const set = c.channels.filter((x) => x.configured || x.state === "restart");
+          const rest = c.channels.filter((x) => !set.includes(x));
+          return frag(
+            set.length ? el("div", { class: "tiles" }, set.map((x) => this.card(x))) : null,
+            rest.length ? el("h2", { text: set.length ? "Add another chat app" : "Add a chat app" }) : null,
+            rest.length ? el("div", { class: "stack folded" }, rest.map((x) => {
+              const st = CHANNEL_STATE[x.state] || [x.state, null];
+              const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+              s.append(el("path", { d: x.icon }));
+              return disc("chadd:" + x.name, "card fold", frag(s, el("strong", { text: x.title }), el("span", { class: "grow" }), tag(st[0], st[1])),
+                el("div", { class: "details-body" }, this.card(x)));
+            })) : null);
+        })());
+    },
+    focus(tile) {
+      opened.add("chadd:" + tile);
+      setTimeout(() => { const n = document.getElementById("channel-" + tile); if (n) n.scrollIntoView({ block: "start" }); }, 400);
     },
 
     card(x) {
@@ -3523,25 +3692,43 @@
         const shown = f.value === null || f.value === undefined ? "" : String(f.value);
         if (f.kind === "bool" || f.kind === "choice") {
           const opts = f.kind === "bool" ? ["true", "false"] : f.choices || [];
+          const dv = f.default === undefined || f.default === null ? null : f.kind === "bool" ? (f.default ? "on" : "off") : String(f.default);
           input = el("select", { name: f.key, "aria-label": f.key },
-            el("option", { value: "", text: "default" }),
+            el("option", { value: "", text: dv === null ? "default" : "default (" + dv + ")" }),
             opts.map((o) => el("option", { value: o, text: f.kind === "bool" ? (o === "true" ? "on" : "off") : o, selected: shown === o })));
           input.onchange = () => {
             const v = input.value;
             set(f.key, v === "" ? null : f.kind === "bool" ? v === "true" : v, input);
           };
-          return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), input);
+          return fieldRow(f, input);
         }
         const text = f.kind === "text";
-        input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key, dir: text ? "ltr" : null });
+        const dflt = f.default === undefined || f.default === null || f.default === "" ? "default" : "default: " + f.default;
+        input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: dflt, "aria-label": f.key, dir: text ? "ltr" : null });
         input.value = shown;
         const save = el("button", { text: "Save" });
         save.onclick = () => {
           const v = input.value.trim();
           set(f.key, v === "" ? null : text ? v : Number(v), save);
         };
-        return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), el("div", { class: "row" }, input, save));
+        return fieldRow(f, el("div", { class: "row" }, input, save));
       };
+      // M66: the help is the name; the key is the small print; a value
+      // that differs from the default says so.
+      const fieldRow = (f, control) => el("div", { class: "check cfg" },
+        el("div", { class: "body" },
+          el("div", { class: "t", text: f.help || f.key }),
+          el("div", { class: "d" }, el("code", { text: f.key }),
+            f.value !== null && f.value !== undefined && f.value !== "" ? frag(" ", tag("set", "accent")) : null)),
+        control);
+      // Grouped by area: the server's group, else the key's first word.
+      const AREA = { agent: "Agent", agents: "Sub-agents", plans: "Plans", gateway: "Chat apps", trust: "Safety", health: "Health", scheduler: "Schedule", dashboard: "Dashboard", learning: "Learning", proactive: "Proactive", routing: "Routing", memory: "Memory" };
+      const grouped = new Map();
+      for (const f of c.fields || []) {
+        const g = f.group || AREA[f.key.split(".")[0]] || "Other";
+        if (!grouped.has(g)) grouped.set(g, []);
+        grouped.get(g).push(f);
+      }
       const raw = el("textarea", { rows: 18, spellcheck: "false", class: "mono", "aria-label": "config file" });
       raw.value = c.text || "";
       const said = el("div");
@@ -3602,7 +3789,9 @@
         c.problem ? el("div", { class: "alert bad" }, el("div", { class: "body" },
           el("div", { class: "what", text: "The file doesn't load" + (c.problem.line ? " (line " + c.problem.line + ")" : "") }),
           el("div", { class: "fix msg", dir: "auto", text: c.problem.error }))) : null,
-        (c.fields || []).length ? el("div", { class: "card" }, el("h2", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
+        grouped.size ? frag(el("h2", { text: "Settings" }), [...grouped.entries()].map(([g, list], i) =>
+          disc("cfg-" + g, "card cfg-group", frag(el("strong", { text: g }), el("span", { class: "muted small", text: " · " + list.length + (list.some((f) => f.value !== null && f.value !== undefined && f.value !== "") ? ", " + list.filter((f) => f.value !== null && f.value !== undefined && f.value !== "").length + " set" : "") })),
+            el("div", { class: "details-body" }, list.map(row))))) : null,
         el("div", { class: "card" },
           el("h2", { class: "mt0", text: "The file" }),
           el("p", { class: "muted small", text: "Secrets show as placeholders and stay as they are when you save. Commands, gates, secret routing and who gets in can only change on the machine." }),
@@ -3816,14 +4005,6 @@
       try {
         r = await api("/api/backups");
       } catch (e) { r = null; }
-      // The Autonomy row needs the config; without one it isn't shown.
-      try {
-        this.autonomy = (await api("/api/settings")).autonomy || null;
-      } catch (e) { this.autonomy = null; }
-      // M56.2: what the owner said "Always here" to.
-      try {
-        this.grants = (await api("/api/grants")).grants || [];
-      } catch (e) { this.grants = null; }
       this.draw(r);
       // A backup runs in the background: look again until it is done.
       clearTimeout(this.poll);
@@ -3838,25 +4019,10 @@
       const lang = card({ title: tr("Language"), icon: "globe" },
         el("p", { class: "muted small mt0", text: tr("Hebrew reads right to left. What you and your bot write always follows its own direction.") }),
         chips(tr("Language"), [["en", "English"], ["he", "עברית"]], LANG, (v) => { if (v !== LANG && window.ferruleLang) window.ferruleLang.set(v); }));
-      // The owner's switch (M54): a managed bot's sandbox is the panel's.
-      const auto = this.autonomy && !MANAGED.on
-        ? card({ title: tr("Autonomy"), icon: "lock" },
-          el("p", { class: "muted small mt0", text: tr("Protected autonomous does everything itself and can't see your keys. Changing it restarts the bot.") }),
-          this.autonomy === "off" ? el("p", { class: "small", text: tr("Sandbox off (set on the machine)") }) : null,
-          chips(tr("Autonomy"), [["owner", tr("Protected autonomous")], ["ask", tr("Ask me first")]], this.autonomy,
-            async (v) => { if (v !== this.autonomy && await act("sandbox/mode", { mode: v })) this.load(); }))
-        : null;
-      const gr = this.grants;
-      const stand = gr ? card({ title: tr("Standing approvals"), icon: "check" },
-        el("p", { class: "muted small mt0", text: tr("What you allowed with Always here. It runs without asking until you revoke it, except a send after the bot read something from outside.") }),
-        gr.length ? el("div", { class: "plain-list" }, gr.map((g) => el("div", { class: "item" },
-          el("div", { class: "grow" },
-            el("div", { class: "t mono", dir: "ltr", text: g.what }),
-            el("div", { class: "d", text: ago(g.at) })),
-          g.widen ? button(tr("Whole domain"), { kind: "ghost", onclick: async (e) => { if (await act("grants/widen", { id: g.id }, e.currentTarget)) this.load(); } }) : null,
-          button(tr("Revoke"), { icon: "trash", kind: "ghost", aria: tr("Revoke") + " " + g.what, onclick: async (e) => { if (await act("grants/revoke", { id: g.id }, e.currentTarget)) this.load(); } }))))
-          : el("p", { class: "muted small", text: tr("None yet. A question about a command in one folder, or a send to the same address, offers Always here.") }))
-        : null;
+      // M66: autonomy and standing approvals live on Control now.
+      const safety = card({ title: "Safety", icon: "control" },
+        el("p", { class: "muted small mt0", text: "Autonomy, standing approvals, the kill switch and the spending caps are on the Control page." }),
+        el("div", { class: "row" }, button("Open Control", { onclick: () => show("control") })));
       const list = r && r.files && r.files.length
         ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item file" },
           el("div", { class: "grow" },
@@ -3878,7 +4044,7 @@
           button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
           button(tr("Keyboard shortcuts"), { onclick: () => shortcuts() }),
           button(tr("Sign out"), { icon: "power", onclick: () => document.getElementById("logout").click() })));
-      setKids(this.box, look, lang, auto, stand, bak, more);
+      setKids(this.box, look, lang, safety, bak, more);
     },
     async backup() {
       const r = await act("backup", {});
@@ -4091,21 +4257,362 @@
     },
   };
 
+  // ---- M66: a turn's steps, live (GET /api/turn) -------------------------
+  // What the agent did, one line a step: a model call, a tool and a short
+  // summary of its arguments, a check. Never the tool's output: the
+  // dashboard shows what happened, not transcripts (docs/dashboard.md).
+
+  const STEP_ICON = { tool: "console", model: "models", verify: "check", retry: "retry", fallback: "routing", escalate: "up" };
+  const when = (t) => (typeof t === "number" ? ago(t) : t && !isNaN(Date.parse(t)) ? ago(Math.round(Date.parse(t) / 1000)) : t || "");
+  const kfmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n));
+  const dur = (s) => (s === null || s === undefined ? "" : s < 10 ? s.toFixed(1) + " s" : secs(Math.round(s)));
+
+  function stepsList(steps, dropped) {
+    if (!steps || !steps.length) return el("p", { class: "muted small m0", text: "No steps yet." });
+    return el("ol", { class: "steps-live" },
+      dropped ? el("li", { class: "st more muted small", text: dropped + " earlier steps not shown" }) : null,
+      steps.map((s) => el("li", { class: "st " + (s.status || "") },
+        el("span", { class: "st-ico", "aria-hidden": "true" }, s.status === "running" ? el("span", { class: "spin" }) : icon(s.status === "error" ? "x" : STEP_ICON[s.kind] || "check")),
+        el("span", { class: "st-name mono", dir: "ltr", text: s.name || s.kind }),
+        el("span", { class: "st-sum msg", dir: "auto", text: s.summary || "" }),
+        el("span", { class: "st-time mono", text: s.status === "running" ? "…" : dur(s.secs) }),
+        el("span", { class: "sr", text: s.status === "error" ? " (failed)" : s.status === "running" ? " (running)" : "" }))));
+  }
+
+  // A box that follows one turn while it runs, then rests on its last view.
+  function liveTurn(query, opts) {
+    opts = opts || {};
+    const box = el("div", { class: "live-turn" });
+    let first = true;
+    const tick = async () => {
+      if (!first && !box.isConnected) return;
+      first = false;
+      let t;
+      try { t = await api("/api/turn?" + new URLSearchParams(query)); } catch (e) {
+        setKids(box, el("p", { class: "muted small m0", text: e.status === 404 ? "This turn has ended." : e.message }));
+        return;
+      }
+      const tokens = t.tokens_in !== undefined ? kfmt(t.tokens_in || 0) + " in · " + kfmt(t.tokens_out || 0) + " out" : null;
+      setKids(box,
+        opts.head === false ? null : el("div", { class: "row small muted lt-head" },
+          t.busy ? led("ok pulse") : led("off"),
+          el("span", { class: "grow msg", dir: "auto", text: t.busy ? (t.activity ? "Now: " + t.activity : "Working…") : t.last ? "Last answer" : "Idle" }),
+          tokens ? el("span", { class: "mono", text: tokens }) : null,
+          t.busy_secs !== undefined && t.busy_secs !== null ? el("span", { class: "mono", text: secs(t.busy_secs) }) : null),
+        stepsList(t.steps, t.dropped));
+      if (opts.onTurn) opts.onTurn(t);
+      if (t.busy) setTimeout(tick, 1500);
+    };
+    setTimeout(tick, 0);
+    return box;
+  }
+
+  // ---- M66: approvals with their scope (once, this run, always here) -----
+
+  function approvalsCard(list, opts) {
+    if (!list || !list.length) return null;
+    opts = opts || {};
+    const answer = async (a, allow, scope, b) => {
+      await act("approvals/answer", Object.assign({ code: a.code, allow }, scope ? { scope } : {}), b);
+    };
+    return el("div", { class: "card approvals" },
+      el("div", { class: "card-head" }, icon("alert"), el("h2", { text: "Waiting for you" }),
+        el("span", { class: "muted small", text: list.length === 1 ? "the agent is paused on this" : "the agent is paused on these" })),
+      list.map((a) => el("div", { class: "check" },
+        led("warn pulse"),
+        el("div", { class: "body" },
+          el("div", { class: "t msg", dir: "auto", text: a.what }),
+          el("div", { class: "d" },
+            a.kind ? tag(a.kind, "warn") : null, a.kind ? " " : null,
+            a.tool ? el("span", { class: "mono", text: a.tool + " · " }) : null,
+            a.chat + " · asked " + secs(a.secs) + " ago",
+            a.left_secs != null ? el("span", { class: "muted", text: " · " + secs(a.left_secs) + " left" }) : null)),
+        el("div", { class: "row" },
+          button("Allow", { kind: "primary", onclick: (e) => answer(a, true, null, e.currentTarget) }),
+          a.can_run ? button("Allow for this run", { onclick: (e) => answer(a, true, "run", e.currentTarget) }) : null,
+          a.can_always ? button("Always here", { onclick: (e) => answer(a, true, "here", e.currentTarget) }) : null,
+          button("Refuse", { kind: "danger", onclick: (e) => answer(a, false, null, e.currentTarget) })))),
+      opts.foot || null);
+  }
+
+  // ---- M66: Control — what the agent may do, and what it is doing --------
+  // One page for the switches that used to be spread over Home's menu,
+  // Settings and Usage: what's running (with its steps and Stop), what's
+  // waiting for you, the kill switch, autonomy, the caps, standing
+  // approvals, plans and add-ons waiting, and conversations to resume.
+
+  sections.control = {
+    title: "Control",
+    every: 3,
+    open: new Set(),
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Control", "what your agent may do, and what it's doing"), this.box);
+    },
+    async load(h) {
+      const get = (p) => api(p).catch((e) => ({ error: e.message, status: e.status }));
+      const [c, ap, grants, plans, pend, sess, st] = await Promise.all([
+        get("/api/control"), get("/api/approvals"), get("/api/grants"), get("/api/plans"),
+        get("/api/extensions/pending"), get("/api/sessions"), get("/api/settings"),
+      ]);
+      this.last = { h: h || lastHealth || {}, c, ap, grants, plans, pend, sess, autonomy: st && !st.error ? st.autonomy || null : null };
+      this.draw();
+    },
+    draw() {
+      const { h, c, ap, grants, plans, pend, sess, autonomy } = this.last;
+      const turns = (h.turns || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+      const kill = (c && !c.error && c.kill) || h.kill || null;
+      // Right now: running turns, each with its steps and Stop.
+      const now = card({ title: "Right now", icon: "health" },
+        turns.length ? el("div", { class: "plain-list" }, turns.map((t) => {
+          const key = t.session || t.place;
+          const open = this.open.has(key);
+          const toggleBtn = button(open ? "Hide steps" : "Steps", { kind: "ghost", onclick: () => { if (open) this.open.delete(key); else this.open.add(key); this.draw(); } });
+          toggleBtn.setAttribute("aria-expanded", String(open));
+          return el("div", { class: "item turn" },
+            el("div", { class: "row" },
+              led(t.stuck ? "bad" : "ok pulse"),
+              el("div", { class: "grow" },
+                el("div", { class: "t msg", dir: "auto", text: t.text || "(a message)" }),
+                el("div", { class: "d" }, el("span", { class: "mono", text: t.place }), " · " + secs(t.busy_secs),
+                  t.activity ? el("span", { class: "msg", dir: "auto", text: " · " + t.activity }) : null,
+                  t.stuck ? frag(" ", tag("stuck", "bad")) : null)),
+              t.session ? toggleBtn : null,
+              btn("Stop", "turn/stop", { session: t.session }, "danger")),
+            open && t.session ? liveTurn({ session: t.session }) : null);
+        })) : el("p", { class: "muted small m0", text: "Nothing is running. Messages and scheduled tasks show up here while the agent works on them, step by step." }));
+      // The kill switch, with a reason that's kept with it.
+      let killCard = null;
+      if (kill) {
+        const why = el("input", { class: "grow", placeholder: "Why (optional): it's shown with the switch", dir: "auto", "aria-label": "Why stop everything" });
+        killCard = card({ title: "Kill switch", icon: "power", cls: kill.on ? "kill on" : "kill" },
+          kill.on
+            ? frag(el("p", { class: "m0" }, tag("on", "bad"), " Nothing runs: chats, tasks and sub-agents are stopped",
+              kill.by ? " by " + kill.by : "", kill.at ? ", " + (kill.at_unix ? ago(kill.at_unix) : isNaN(Date.parse(kill.at)) ? kill.at : ago(Math.round(Date.parse(kill.at) / 1000))) : "", "."),
+            kill.reason ? el("p", { class: "muted small msg", dir: "auto", text: "Why: " + kill.reason }) : null,
+            el("div", { class: "row" }, btn("Resume everything", "kill/off", {}, "primary")))
+            : frag(el("p", { class: "muted small m0", text: "Off: every run proceeds. On, it stops every running turn and refuses new ones until you resume, from here, /resume in a chat or `ferrule stop --clear`." }),
+              el("div", { class: "row key-row" }, why,
+                button("Stop everything", { kind: "danger primary", icon: "power", onclick: (e) => act("kill/on", { reason: why.value.trim() }, e.currentTarget) }))));
+      }
+      // Autonomy: the sandbox mode (M54), with the words Settings used.
+      const auto = autonomy && !MANAGED.on
+        ? card({ title: tr("Autonomy"), icon: "lock" },
+          el("p", { class: "muted small mt0", text: tr("Protected autonomous does everything itself and can't see your keys. Changing it restarts the bot.") }),
+          autonomy === "off" ? el("p", { class: "small", text: tr("Sandbox off (set on the machine)") }) : null,
+          chips(tr("Autonomy"), [["owner", tr("Protected autonomous")], ["ask", tr("Ask me first")]], autonomy,
+            async (v) => { if (v !== autonomy && await act("sandbox/mode", { mode: v })) this.load(); }),
+          c && !c.error ? el("p", { class: "muted small", text: [
+            "Approvals time out after " + secs(c.approval_timeout_secs),
+            c.owner_chat ? "they go to " + c.owner_chat + " and this page" : "they show on this page",
+            c.untrusted_send_gate ? "a send after reading outside content asks first" : "sends after outside content don't ask",
+          ].join(" · ") + "." }) : null)
+        : null;
+      // Limits: the caps, as Usage has them.
+      const limits = h.spend ? frag(el("h2", { text: "Limits" }), capsCard(h.spend)) : null;
+      // Standing approvals ("Always here", M56.2).
+      const gr = grants && !grants.error ? grants.grants || [] : null;
+      const stand = gr ? card({ title: tr("Standing approvals"), icon: "check" },
+        el("p", { class: "muted small mt0", text: tr("What you allowed with Always here. It runs without asking until you revoke it, except a send after the bot read something from outside.") }),
+        gr.length ? el("div", { class: "plain-list" }, gr.map((g) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t mono", dir: "ltr", text: g.what }),
+            el("div", { class: "d", text: ago(g.at) })),
+          g.widen ? button(tr("Whole domain"), { kind: "ghost", onclick: async (e) => { if (await act("grants/widen", { id: g.id }, e.currentTarget)) this.load(); } }) : null,
+          button(tr("Revoke"), { icon: "trash", kind: "ghost", aria: tr("Revoke") + " " + g.what, onclick: async (e) => { if (await act("grants/revoke", { id: g.id }, e.currentTarget)) this.load(); } }))))
+          : el("p", { class: "muted small", text: tr("None yet. A question about a command in one folder, or a send to the same address, offers Always here.") }))
+        : null;
+      // Plans waiting (plan mode, M19 §8).
+      const pl = plans && !plans.error ? (plans.plans || []).filter((p) => !p.status || p.status === "pending" || p.status === "proposed") : [];
+      const planCard = pl.length ? card({ title: "Plans waiting", icon: "tasks" },
+        el("p", { class: "muted small mt0", text: "Plan mode explored read-only and wrote these. Nothing changes until you approve one." }),
+        pl.map((p) => el("div", { class: "plan" },
+          el("div", { class: "d small muted" }, el("span", { class: "mono", text: p.chat || "" }), p.created ? " · " + when(p.created) : ""),
+          el("pre", { class: "out msg", dir: "auto", text: p.text || "" }),
+          el("div", { class: "row" },
+            btn("Approve and run", "plans/approve", { id: p.id }, "primary"),
+            button("Reject", { kind: "danger", onclick: async (e) => {
+              const why = await ask({ title: "Reject this plan?", text: "Optionally say why; the agent sees it.", confirm: "Reject", danger: true, input: { label: "Why" } });
+              if (why !== null) act("plans/reject", { id: p.id, why }, e.currentTarget);
+            } }))))) : null;
+      // Add-ons the agent asked for that need you (M13).
+      const items = pend && !pend.error ? pend.items || [] : [];
+      const addons = items.length ? card({ title: "Add-ons waiting", icon: "extensions" },
+        el("p", { class: "muted small mt0", text: "Tools and skills the agent wanted to install that a check flagged or that need your yes." }),
+        items.map((x) => el("div", { class: "check" },
+          led(x.status === "flagged" ? "bad" : "warn"),
+          el("div", { class: "body" },
+            el("div", { class: "t" }, el("strong", { text: x.name }), " ", tag(x.kind || "add-on"), " ", tag(x.status, x.status === "flagged" ? "bad" : "warn")),
+            el("div", { class: "d mono", dir: "ltr", text: x.source || "" }),
+            (x.findings || []).length ? el("ul", { class: "small" }, x.findings.map((f) => el("li", { class: "msg", dir: "auto", text: typeof f === "string" ? f : f.what || JSON.stringify(f) }))) : null),
+          el("div", { class: "row" }, btn("Deny", "extensions/deny", { id: x.id }, "danger")))),
+        pend.approve ? el("p", { class: "muted small msg", dir: "auto", text: pend.approve }) : null) : null;
+      // Conversations: recent sessions; a goal left pending can go on.
+      const ss = sess && !sess.error ? sess.sessions || [] : null;
+      const convo = ss ? disc("control-sessions", "card", frag("Conversations ", el("span", { class: "muted small", text: "· " + ss.length + " recent" + (ss.some((s) => s.goal_pending) ? ", some goals unfinished" : "") })),
+        el("div", { class: "details-body" }, ss.length ? table(["where", "started with", "messages", "updated", ""], ss.map((s) => ({ cells: [
+          el("span", { class: "mono small", text: s.place }),
+          frag(el("span", { class: "msg", dir: "auto", text: s.first || "–" }), s.goal_pending ? frag(" ", tag("goal unfinished", "warn")) : null),
+          String(s.messages != null ? s.messages : "–"),
+          el("span", { class: "muted", text: when(s.updated) }),
+          s.goal_pending ? btn("Resume", "sessions/resume", { id: s.id }, "primary") : null,
+        ] }))) : el("div", { class: "empty", text: "no conversations yet" }))) : null;
+      setKids(this.box,
+        approvalsCard(ap && !ap.error ? ap.approvals : []),
+        now, killCard, auto, planCard, addons, stand, limits, convo,
+        c && c.error && c.status === 404 ? el("p", { class: "muted small", text: "This server is older than the page: some controls aren't here yet." }) : null);
+    },
+  };
+
+  // ---- M66: Instructions — the agent's own words about how to work -------
+  // The layers the prompt is built from (AGENTS.md, CLAUDE.md, GEMINI.md,
+  // ferrule.md; global and per workspace). A save applies to conversations
+  // that start after it: a running one keeps its prompt, byte for byte.
+
+  sections.instructions = {
+    title: "Instructions",
+    every: 0,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Instructions", "how your agent should work"), this.box);
+    },
+    async load() {
+      let r;
+      try { r = await api("/api/instructions"); } catch (e) { return sectionError(this.box, e); }
+      const layers = r.layers || [];
+      setKids(this.box,
+        el("p", { class: "muted small m0", text: r.note || "The agent reads these at the start of every conversation. A change applies to new conversations; ones already running keep theirs." }),
+        layers.length ? layers.map((l) => {
+          const ta = el("textarea", { class: "mono instr", rows: Math.min(22, Math.max(6, (l.text || "").split("\n").length + 2)), dir: "auto", spellcheck: "false", "aria-label": l.label, disabled: !l.editable });
+          ta.value = l.text || "";
+          const save = button(l.exists ? "Save" : "Create", { kind: "primary" });
+          const said = el("span", { class: "muted small" });
+          ta.addEventListener("input", () => { ta.dataset.dirty = "1"; said.textContent = "Not saved yet"; });
+          save.onclick = async () => {
+            const res = await act("instructions/save", Object.assign({ id: l.id, text: ta.value }, l.hash ? { base_hash: l.hash } : {}), save);
+            if (res) { delete ta.dataset.dirty; said.textContent = ""; this.load(); }
+          };
+          return card({ title: l.label, icon: "file", right: tag(l.scope === "global" ? "every workspace" : "this workspace", l.scope === "global" ? "accent" : null) },
+            el("div", { class: "muted small mono", dir: "ltr", text: l.path + (l.exists ? " · " + bytes(l.bytes || 0) : " · not created yet") }),
+            ta,
+            l.editable ? el("div", { class: "row" }, save, said) : el("p", { class: "muted small msg", dir: "auto", text: l.why || "Read-only here." }));
+        }) : el("div", { class: "empty", text: "No instruction files found." }));
+    },
+  };
+
+  // ---- M66: Learning — what the agent learned, and the switch ------------
+  // The nightly pass (M16/M53) turns what went wrong into lessons and
+  // skills; failure notes keep a failed run's own words for next time;
+  // 👍/👎 and corrections are its signals. Everything kept can be undone.
+
+  sections.learning = {
+    title: "Learning",
+    every: 15,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Learning", "how your agent gets better"), this.box);
+    },
+    async load() {
+      let r;
+      try { r = await api("/api/learn"); } catch (e) { return sectionError(this.box, e); }
+      this.r = r;
+      this.draw();
+    },
+    draw() {
+      const r = this.r;
+      const set = async (body, b) => { if (await act("learn/settings", Object.assign(r.hash ? { base_hash: r.hash } : {}, body), b)) this.load(); };
+      const passes = r.passes || [];
+      const proposed = passes.flatMap((p) => (p.changes || []).filter((x) => x.outcome === "proposed"));
+      const kindWord = { lesson_add: "new lesson", lesson_edit: "lesson changed", lesson_retire: "lesson retired", skill: "skill" };
+      const outcomeTone = { kept: "ok", rejected: "bad", proposed: "warn", reverted: null };
+      const uses = (u) => u ? [u.activations != null ? u.activations + " uses" : null, u.sessions != null ? u.sessions + " conversations" : null, u.failed ? u.failed + " failed" : null, u.thumbs_down ? u.thumbs_down + " 👎" : null].filter(Boolean).join(" · ") : "";
+      const sw = card({ title: "Learning", icon: "learning", right: toggle("Learning", r.enabled, (e) => set({ enabled: !r.enabled }, e.currentTarget)) },
+        el("p", { class: "muted small mt0", text: r.enabled
+          ? "On: " + (r.schedule || "a pass runs every night") + ", it looks at what went wrong (failed runs, 👎, corrections) and proposes one change each: a lesson or a skill. Each is tested before it's kept, and you can undo it."
+          : "Off. Turn it on and a nightly pass looks at what went wrong and proposes lessons and skills, each tested before it's kept. Failure notes and 👎 are recorded either way." }),
+        r.needs_restart ? el("p", { class: "small warn", text: "Saved; Telegram's 👍/👎 follow after a restart. The nightly pass and failure notes follow now." }) : null,
+        r.running ? el("p", { class: "small" }, led("ok pulse"), " A pass is running now.") : null,
+        el("div", { class: "row" },
+          (() => { const b = button("Run a pass now", { kind: r.enabled ? "primary" : null, onclick: (e) => act("learn/run", {}, e.currentTarget).then(() => this.load()) }); b.disabled = !!r.running; return b; })(),
+          button("Preview (dry run)", { kind: "ghost", onclick: (e) => act("learn/run", { dry_run: true }, e.currentTarget).then(() => this.load()) })),
+        el("div", { class: "kv-row small" },
+          el("span", { class: "muted", text: "Failure notes" }),
+          toggle("Failure notes", r.failure_notes, (e) => set({ failure_notes: !r.failure_notes }, e.currentTarget)),
+          el("span", { class: "muted msg", text: "after a run that didn't finish, its own last words are kept for 7 days so the next try knows" })));
+      const fb = r.feedback || {};
+      const stats = el("div", { class: "stats" },
+        stat("last pass", r.last_pass ? when(r.last_pass.at) : "never", r.last_pass ? r.last_pass.kept + " kept · " + r.last_pass.rejected + " rejected" + (r.last_pass.proposed ? " · " + r.last_pass.proposed + " to review" : "") : null),
+        stat("lessons", String((r.lessons || []).length), "in the playbook"),
+        stat("learned skills", String((r.skills || []).length)),
+        stat("feedback, 7 days", "👍 " + (fb.up_7d || 0) + " · 👎 " + (fb.down_7d || 0), (fb.signals_7d || 0) + " other signals"));
+      const review = proposed.length ? card({ title: "To review", icon: "alert", cls: "accent" },
+        el("p", { class: "muted small mt0", text: "The test couldn't prove these help or hurt. Nothing changes until you keep one." }),
+        proposed.map((x) => el("div", { class: "check" },
+          led("warn"),
+          el("div", { class: "body" },
+            el("div", { class: "t msg", dir: "auto", text: x.summary }),
+            el("div", { class: "d" }, tag(kindWord[x.kind] || x.kind), x.scope ? " · " + x.scope : "", x.why ? el("span", { class: "msg", dir: "auto", text: " · " + x.why }) : null)),
+          el("div", { class: "row" }, btn("Keep", "learn/keep", { id: x.id }, "primary"), btn("Drop", "learn/drop", { id: x.id }, "danger"))))) : null;
+      const lessons = (r.lessons || []).length ? card({ title: "Lessons", icon: "memory" },
+        el("p", { class: "muted small mt0", text: "Short rules the agent reads at the start of a conversation in their scope. The numbers are signals, not proof." }),
+        table(["lesson", "scope", "since", "track record"], r.lessons.map((l) => ({ cells: [
+          el("span", { class: "msg", dir: "auto", text: l.text }),
+          el("span", { class: "mono small", text: l.scope || "everywhere" }),
+          el("span", { class: "muted", text: when(l.added) }),
+          el("span", { class: "muted small", text: uses(l.uses) || "–" }),
+        ] })))) : null;
+      const skills = (r.skills || []).length ? card({ title: "Skills it learned or wrote", icon: "extensions" },
+        table(["skill", "scope", "since", "track record"], r.skills.map((s) => ({ cells: [
+          frag(el("strong", { class: "mono", text: s.name }), " ", tag(s.origin === "agent" ? "it wrote this" : "learned", s.origin === "agent" ? "accent" : null),
+            s.description ? el("span", { class: "sub msg", dir: "auto", text: s.description }) : null),
+          el("span", { class: "mono small", text: s.scope || "everywhere" }),
+          el("span", { class: "muted", text: when(s.added) }),
+          el("span", { class: "muted small", text: uses(s.uses) || "–" }),
+        ] })))) : null;
+      const history = card({ title: "Passes", icon: "clock" },
+        passes.length ? passes.map((p) => disc("pass-" + p.id, "pass", frag(el("strong", { text: when(p.at) }), " ",
+          el("span", { class: "muted small", text: "· " + (p.status || "") + ((p.changes || []).length ? " · " + p.changes.length + " changes" : "") + (p.spent_usd ? " · $" + Number(p.spent_usd).toFixed(4) : "") })),
+          el("div", { class: "details-body plain-list" }, (p.changes || []).length ? p.changes.map((x) => el("div", { class: "item" },
+            el("div", { class: "grow" },
+              el("div", { class: "t msg", dir: "auto", text: x.summary }),
+              el("div", { class: "d" }, tag(x.outcome, outcomeTone[x.outcome]), " ", tag(kindWord[x.kind] || x.kind), x.scope ? " · " + x.scope : "", x.why ? el("span", { class: "msg", dir: "auto", text: " · " + x.why }) : null)),
+            x.outcome === "kept" ? btn("Undo", "learn/revert", { id: x.id }) : null))
+            : el("p", { class: "muted small", text: "Nothing to change." }))))
+          : el("p", { class: "muted small m0", text: r.enabled ? "No pass yet: the first one runs on schedule, or press Run a pass now." : "No pass has run." }));
+      const notes = (r.notes || []).length ? card({ title: "Failure notes", icon: "file" },
+        el("p", { class: "muted small mt0", text: "What a run that didn't finish said last. Recalled when a later message is about the same thing; each fades after 7 days." }),
+        el("div", { class: "plain-list" }, r.notes.map((n) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t msg", dir: "auto", text: n.text }),
+            el("div", { class: "d mono small", text: (n.scope || "") + " · " + when(n.at) })))))) : null;
+      setKids(this.box, sw, stats, review, lessons, skills, notes, history);
+    },
+  };
+
   // ---- navigation and polling --------------------------------------------
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
   // The groups put what a beginner touches daily first (D3).
 
+  // M66: what you watch and steer first; what the agent learns and is
+  // told next; one Setup entry, whose pages are tabs (SUBPAGES).
   const GROUPS = [
-    [/*tr*/"Everyday", ["health", "chat", "files", "tasks", "proactive", "memory", "usage"]],
-    [/*tr*/"Setup", ["connect", "channels", "connections", "models"]],
-    [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
+    [/*tr*/"Everyday", ["health", "chat", "control", "tasks", "files", "usage"]],
+    [/*tr*/"Agent", ["learning", "memory", "instructions", "proactive", "agents"]],
+    [/*tr*/"Setup", ["connect", "models"]],
+    [/*tr*/"Advanced", ["logs", "console", "config", "settings"]],
   ];
-  const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
-  const TABS = ["health", "chat", "connect", "tasks"];
+  // Pages reached by a tab on their parent rather than the sidebar.
+  const SUBPAGES = { channels: "connect", connections: "connect", extensions: "connect", routing: "models" };
+  const TABGROUPS = [
+    ["connect", [["connect", /*tr*/"Overview"], ["channels", /*tr*/"Chat apps"], ["connections", /*tr*/"Services"], ["extensions", /*tr*/"Add-ons"]]],
+    ["models", [["models", /*tr*/"Models"], ["routing", /*tr*/"Routing"]]],
+  ];
+  const order = [...GROUPS.flatMap((g) => g[1]), ...Object.keys(SUBPAGES)].filter((s) => sections[s]);
+  const TABS = ["health", "chat", "control", "connect"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", files: /*tr*/"uploads and media", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
-  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", files: /*tr*/"Files", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", control: /*tr*/"stop, allow, limit", learning: /*tr*/"how it gets better", instructions: /*tr*/"how it should work", files: /*tr*/"uploads and media", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", control: /*tr*/"Control", learning: /*tr*/"Learning", instructions: /*tr*/"Instructions", files: /*tr*/"Files", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Activity", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   // What /api/login or /api/session said: the CSRF token and the session's limits.
@@ -4171,7 +4678,7 @@
   function markNav() {
     for (const a of document.querySelectorAll("#rail a, #tabs a, #sheet a")) {
       const s = a.dataset.s;
-      const on = s === current;
+      const on = s === current || SUBPAGES[current] === s;
       a.classList.toggle("on", on || (s === "more" && !TABS.includes(current)));
       if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       const n = s === "more" ? order.filter((x) => !TABS.includes(x)).reduce((t, x) => t + (badges[x] || 0), 0) : badges[s] || 0;
@@ -4190,6 +4697,13 @@
     banner = el("div");
     document.getElementById("main").replaceChildren(banner, root);
     sections[name].mount(root);
+    const tabs = TABGROUPS.find(([, list]) => list.some(([s]) => s === name));
+    if (tabs) root.prepend(el("nav", { class: "subtabs", "aria-label": title(tabs[0]) },
+      tabs[1].filter(([s]) => sections[s]).map(([s, label]) => {
+        const a = el("a", { href: "#" + s, class: s === name ? "on" : null, "aria-current": s === name ? "page" : null, text: tr(label) });
+        a.onclick = (e) => { e.preventDefault(); show(s); };
+        return a;
+      })));
     if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
     markNav();
     window.scrollTo(0, 0);

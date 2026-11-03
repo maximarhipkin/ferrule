@@ -120,6 +120,22 @@ struct RunState {
 pub const DENIALS_IN_A_ROW: u32 = 3;
 pub const DENIALS_IN_A_RUN: u32 = 20;
 
+/// M66: a gated call's question, for [`Hub::ask_gate_with`]: what
+/// [`Hub::ask_gate`] takes, and what the dashboard's inbox shows of it.
+pub struct Gate<'a> {
+    pub subject: &'a str,
+    pub question: &'a str,
+    pub timeout: Duration,
+    /// "Allow for this run" is offered.
+    pub for_run: bool,
+    /// "Always here" is offered, keeping this.
+    pub remember: Option<&'a Spec>,
+    /// The gate's kind ("recursive delete", "force push").
+    pub kind: Option<&'a str>,
+    /// The tool that was called.
+    pub tool: Option<&'a str>,
+}
+
 /// A question for `Hub::ask_in`.
 pub struct Question<'a> {
     /// What the audit log calls it.
@@ -963,6 +979,16 @@ impl Hub {
         Ok(was)
     }
 
+    /// `/resume`'s answer: the kill switch off, by `by` (M66: also from an
+    /// owner's chat no channel lists, the dashboard's).
+    pub fn resume_text(&self, by: &str) -> String {
+        match self.clear(by) {
+            Ok(true) => "Resumed: runs can start again.".into(),
+            Ok(false) => "ferrule wasn't stopped.".into(),
+            Err(e) => format!("Couldn't remove the stop file ({e})."),
+        }
+    }
+
     pub fn stopped(&self) -> Option<StopInfo> {
         self.stop.status()
     }
@@ -994,14 +1020,31 @@ impl Hub {
         for_run: bool,
         remember: Option<&Spec>,
     ) -> Result<(), String> {
-        let q = Question {
+        let gate = Gate {
             subject,
-            what: subject,
-            text: question,
+            question,
             timeout,
+            for_run,
+            remember,
+            kind: None,
+            tool: None,
+        };
+        self.ask_gate_with(tree, gate).await
+    }
+
+    /// [`Hub::ask_gate`], saying what kind of call it is and its tool, for
+    /// the dashboard's inbox (M66).
+    pub async fn ask_gate_with(&self, tree: &str, g: Gate<'_>) -> Result<(), String> {
+        let q = Question {
+            subject: g.subject,
+            what: g.subject,
+            text: g.question,
+            timeout: g.timeout,
             op: None,
         };
-        self.ask(tree, None, q, for_run, remember).await.map(|_| ())
+        self.ask(tree, None, q, g.for_run, g.remember, (g.kind, g.tool))
+            .await
+            .map(|_| ())
     }
 
     /// Asks in `chat` (the primary owner chat when `None`), as `ask_owner`
@@ -1013,7 +1056,7 @@ impl Hub {
         chat: Option<ChatRef>,
         q: Question<'_>,
     ) -> Result<String, String> {
-        self.ask(tree, chat, q, false, None).await
+        self.ask(tree, chat, q, false, None, (None, None)).await
     }
 
     async fn ask(
@@ -1023,6 +1066,7 @@ impl Hub {
         q: Question<'_>,
         for_run: bool,
         remember: Option<&Spec>,
+        (kind, tool): (Option<&str>, Option<&str>),
     ) -> Result<String, String> {
         let Question {
             subject,
@@ -1059,6 +1103,9 @@ impl Hub {
             self.approvals
                 .open_for(&chat, what, Some(timeout), op.map(str::to_string))
         };
+        if kind.is_some() || tool.is_some() {
+            self.approvals.about(&code, kind, tool);
+        }
         let mut waiting = Waiting {
             hub: self,
             code: code.clone(),
@@ -1245,11 +1292,7 @@ impl Hub {
                 if !self.is_owner(&chat) {
                     return Intercept::Reply("Only the owner chat can resume ferrule.".into());
                 }
-                return Intercept::Reply(match self.clear(&chat.to_string()) {
-                    Ok(true) => "Resumed: runs can start again.".into(),
-                    Ok(false) => "ferrule wasn't stopped.".into(),
-                    Err(e) => format!("Couldn't remove the stop file ({e})."),
-                });
+                return Intercept::Reply(self.resume_text(&chat.to_string()));
             }
             "/plan" if rest.is_empty() => {
                 return Intercept::Reply(
