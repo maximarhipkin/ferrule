@@ -30,7 +30,13 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.16** (2026-11-04, PRs #77 and #78): M67, the bot picks the
+  - **v0.14.17** (2026-11-04, PR #80): M68, your own agents.
+    `[agents.custom.<name>]` (what it's for, a role, a model,
+    instructions), added and changed on the Agents page's **Your agents**
+    card; `spawn_agent {agent: name}` starts one on its role and model,
+    its instructions before the task. Every crate is at 0.14.17 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.16** (2026-11-04, PRs #77 and #78): M67, the bot picks the
     OpenRouter model for each job. `[models] bot_picks` (off by default,
     on the Config page) lets `spawn_agent` name any OpenRouter model
     (connected for the spawn) and `generate_image` / `generate_video` any
@@ -38,8 +44,7 @@ below it is append-only.
     price; the caps still hold. Each job's default model is a Config
     field. A Claude plan that isn't ready shows why and takes a new
     setup-token on its card; the Google sign-in is off the page until a
-    build ships an OAuth client. Every crate is at 0.14.16 except
-    `ferrule-plugin-sdk`.
+    build ships an OAuth client.
   - Before it, **v0.14.15** (2026-11-04, PR #76): M66 and the native Gemini plan.
     `plan = "gemini-cli"` signs in to a Google / Antigravity plan over
     HTTPS with no `agy` or `gemini` on the host (the native client is the
@@ -11495,3 +11500,33 @@ passed. No new tests: `find_models` and the bot's picks have none.
 config-only. Owner-defined named agents (each with its own model and
 instructions), which the owner also asked for, are M12 part 6 and not
 built here.
+
+### 2026-11-04 — M68: your own agents (Claude, Opus 5.5)
+
+Claims **M68**.
+
+**Why.** The owner asked for helpers they define, each with its own
+OpenRouter model and instructions, that the bot opens by name (a video
+editor, a designer), alongside M67's picking of a model per job.
+
+**What changed.** `docs/agents.md`, "Your own agents".
+- `[agents.custom.<name>]`: `about`, `role` (worker by default),
+  `model`, `instructions`. `check_roles` refuses a bad name or role at
+  startup; the supervisor gets them as `NamedAgent`s
+  (`Supervisor::set_named_agents`).
+- `spawn_agent {agent: name}`: offered (an `enum`, each with what it's
+  for) only when there are some; it brings the agent's role and model
+  (checked like any spawn's model) and puts its instructions before the
+  task. The Agents page's list shows the task without them.
+- Dashboard: a **Your agents** card on the Agents page (outside the
+  5-second poll), `GET agents/own`, `POST agents/own/save` (an
+  OpenRouter id that isn't connected is connected for it) and `POST
+  agents/own/delete` (asks first); both say a restart applies it, with a
+  Restart button.
+
+**Checks.** `make check`: fmt, clippy (no warnings), 2,003 tests
+passed. No new tests for the named agents; the card wasn't tried in a
+browser.
+
+**Open.** Not run live. A named agent's model isn't checked at startup:
+a model removed later fails that agent's spawns, with the reason.
