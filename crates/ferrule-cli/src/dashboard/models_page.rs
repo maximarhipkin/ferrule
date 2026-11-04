@@ -51,6 +51,12 @@ pub(super) fn choices(ctx: &Ctx) -> Answer {
                 .models
                 .iter()
                 .any(|r| &r.provider == name && r.key_present);
+            // Why not: a plan's sign-in word, or the key that's missing.
+            let missing = view
+                .models
+                .iter()
+                .find(|r| &r.provider == name && !ready)
+                .map(|r| r.missing.clone());
             let preset = crate::setup::presets()
                 .iter()
                 .find(|x| x.base_url == p.base_url);
@@ -59,6 +65,7 @@ pub(super) fn choices(ctx: &Ctx) -> Answer {
                 "title": preset.map_or(name.as_str(), |x| x.label),
                 "connected": true,
                 "ready": ready,
+                "missing": missing,
                 "plan": p.plan.map(|p| p.as_str()),
                 "needs_key": p.plan.is_none() && preset.is_none_or(|x| !x.key_url.is_empty()),
                 "key_url": preset.map(|x| x.key_url).filter(|u| !u.is_empty()),
@@ -83,7 +90,10 @@ pub(super) fn choices(ctx: &Ctx) -> Answer {
             "key_url": Some(x.key_url).filter(|u| !u.is_empty()),
         }));
     }
-    for plan in [Plan::Chatgpt, Plan::ClaudeCode, Plan::GeminiCli] {
+    // ponytail: the Google sign-in isn't offered for now (no OAuth client
+    // ships since 2786ffe; OpenRouter covers Gemini). One already in the
+    // config still shows. Add Plan::GeminiCli back once a client ships.
+    for plan in [Plan::Chatgpt, Plan::ClaudeCode] {
         let on = cfg
             .as_ref()
             .is_some_and(|c| c.providers.values().any(|p| p.plan == Some(plan)));

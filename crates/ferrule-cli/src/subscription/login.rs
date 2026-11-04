@@ -277,7 +277,7 @@ impl PlanDoor {
                 return "The Claude plan signs out on the dashboard's Models page (/dashboard sends the link).".into()
             }
             "gemini" | "gemini-cli" | "google" if login => {
-                return "The Gemini plan signs in on the dashboard's Models page (/dashboard sends the link) or with `ferrule login gemini`.".into()
+                return "The Gemini plan signs in with `ferrule login gemini`, at a terminal on the bot's machine.".into()
             }
             "gemini" | "gemini-cli" | "google" => {
                 return "The Gemini plan signs out on the dashboard's Safe page (/dashboard sends the link) or with `ferrule logout gemini`.".into()
