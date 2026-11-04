@@ -4,7 +4,6 @@
 use super::media::MediaShared;
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
-use ferrule_media::MediaBackend as _;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
