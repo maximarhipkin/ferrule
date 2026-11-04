@@ -240,9 +240,10 @@ pub fn build(
     // M36: the version, the last check and update, what's pinned.
     if let Some(data) = config::data_dir_path() {
         let auto = cfg.update.auto;
+        let claude = crate::update::claude::Claude::from_config(cfg, &data);
         health = health.with_section(
             "updates",
-            Arc::new(move || crate::update::status_lines(&data, auto)),
+            Arc::new(move || crate::update::status_lines(&data, auto, claude.as_ref())),
         );
     }
     let notice = startup_notice(cfg, &health);

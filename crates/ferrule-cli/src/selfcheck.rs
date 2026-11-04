@@ -190,7 +190,11 @@ impl Check {
         })
         .await;
         let e = match ran {
-            Ok(Ok(_)) => return,
+            Ok(Ok(v)) => {
+                // A failed update for a claude replaced since is over.
+                crate::update::claude::settle_saved(&self.data, &v);
+                return;
+            }
             Ok(Err(e)) => format!("{e:#}"),
             Err(e) => e.to_string(),
         };

@@ -71,7 +71,7 @@ pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result
     let mut st = State::load(state_dir);
     st.claude_checked = Some(state::now());
     if let Ok(v) = &installed {
-        st.claude_installed = Some(v.clone());
+        settle(&mut st, v);
     }
     if let Ok(v) = &latest {
         st.claude_latest = Some(v.clone());
@@ -115,6 +115,9 @@ pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result
         claude_latest: st.claude_latest,
         ..State::load(state_dir)
     };
+    if let Ok(v) = &installed {
+        settle(&mut st, v);
+    }
     match &result {
         Ok(u) => {
             st.claude_installed = Some(u.to.clone());
@@ -143,6 +146,61 @@ pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result
     }
     save(&st, state_dir);
     result.map(Some)
+}
+
+/// Records the version claude is now. A failed update recorded for
+/// another version is over: claude was replaced since (by hand, or by its
+/// own updater), so it's closed with an untold update. `true`: one was.
+pub fn settle(st: &mut State, installed: &str) -> bool {
+    st.claude_installed = Some(installed.to_string());
+    let Some(from) = stale_failure(st, installed).map(|e| e.from.clone()) else {
+        return false;
+    };
+    st.push(EventKind::ClaudeUpdated, &from, installed, "");
+    true
+}
+
+/// The last claude event, when it's a failure for a version other than
+/// `installed`. One with no version (updating is off) stays.
+pub fn stale_failure<'a>(st: &'a State, installed: &str) -> Option<&'a state::Event> {
+    st.events
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind, EventKind::ClaudeUpdated | EventKind::ClaudeFailed))
+        .filter(|e| e.kind == EventKind::ClaudeFailed && !e.from.is_empty() && e.from != installed)
+}
+
+/// How long [`installed_now`] keeps what it read.
+const NOW_FOR: Duration = Duration::from_secs(60);
+static NOW: Mutex<Option<(PathBuf, Instant, Option<String>)>> = Mutex::new(None);
+
+/// The version the configured claude says it is, read now (at most once a
+/// minute): the update state's is from the last check, and the owner may
+/// have replaced claude since. `None`: it couldn't be read. Blocks.
+pub fn installed_now(claude: &Claude) -> Option<String> {
+    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((binary, at, v)) = now.as_ref() {
+        if *binary == claude.binary && at.elapsed() < NOW_FOR {
+            return v.clone();
+        }
+    }
+    let v = update::detect(&claude.binary)
+        .and_then(|i| cli::version(&i.found, &claude.config_dir, claude.sandbox.as_ref()))
+        .map_err(|e| tracing::debug!("claude's version: {e:#}"))
+        .ok();
+    *now = Some((claude.binary.clone(), Instant::now(), v.clone()));
+    v
+}
+
+/// [`settle`] in the saved state, written when it closed a failure (the
+/// gateway can't write the system service's state: [`super::report`]
+/// skips the stale failure then).
+pub fn settle_saved(data: &Path, installed: &str) {
+    let dir = super::state_dir(data);
+    let mut st = State::load(&dir);
+    if settle(&mut st, installed) {
+        save(&st, &dir);
+    }
 }
 
 /// How claude was installed, its version and npm's newest.

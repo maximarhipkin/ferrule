@@ -517,10 +517,18 @@ pub fn health(ctx: &Ctx) -> Value {
     }
     // M36: the update state; what went wrong is a problem too.
     if let Some(data) = ctx.data.as_deref() {
-        let auto = crate::config::Config::load()
-            .ok()
-            .and_then(|(c, _)| c.update.auto);
-        let report = crate::update::report(data, auto, crate::update::units_installed());
+        let cfg = crate::config::Config::load().ok().map(|(c, _)| c);
+        let auto = cfg.as_ref().and_then(|c| c.update.auto);
+        let claude_now = cfg
+            .as_ref()
+            .and_then(|c| crate::update::claude::Claude::from_config(c, data))
+            .and_then(|c| crate::update::claude::installed_now(&c));
+        let report = crate::update::report(
+            data,
+            auto,
+            crate::update::units_installed(),
+            claude_now.as_deref(),
+        );
         for (_, line) in report
             .iter()
             .filter(|(t, _)| *t == crate::update::Tone::Warn)
