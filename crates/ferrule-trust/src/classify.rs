@@ -100,6 +100,15 @@ pub struct Gated {
 
 /// The gate's verdict on one tool call: `Some` needs the owner's approval.
 pub fn classify(tool: &str, args: &Value, bound_hosts: &[HostPattern]) -> Option<Gated> {
+    // Bind the approval to both the destination and the complete text. This
+    // leaves the box, so the outside-content gate applies in owner mode too.
+    // No `to` field means no standing connected-recipient grant can cover it.
+    if tool == "send_message" {
+        return Some(Gated {
+            kind: Kind::ConnectedWrite,
+            command: format!("send_message {args}"),
+        });
+    }
     if tool != "shell" {
         return None;
     }

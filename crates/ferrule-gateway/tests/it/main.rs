@@ -10,6 +10,7 @@ mod matrix;
 mod mattermost;
 mod media;
 mod send_file;
+mod send_message;
 mod signal;
 mod slack;
 mod streaming;

@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.14.17-c4764a" alt="release v0.14.17"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.14.18-c4764a" alt="release v0.14.18"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
   <img src="https://img.shields.io/badge/tests-2013-8a929a" alt="2013 workspace tests">
@@ -292,7 +292,7 @@ from v0.6.0 or older runs the one-liner once to get there.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.14.17`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.14.18`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup
@@ -654,6 +654,9 @@ and keep `cargo clippy --workspace --all-targets` clean.
 and a dated entry for every session.
 
 ## Documentation
+
+- [Owner-only Telegram cross-chat text](docs/cross-chat-send.md) — admitted
+  destinations, authorization boundaries and delivery semantics.
 
 **Getting started**
 

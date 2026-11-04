@@ -1647,6 +1647,13 @@ impl Channel for TelegramChannel {
         "telegram"
     }
 
+    fn allows_cross_chat_send(&self, chat_id: &str) -> bool {
+        chat_id
+            .parse::<i64>()
+            .ok()
+            .is_some_and(|id| id != 0 && id.to_string() == chat_id && self.allowed(id))
+    }
+
     /// `sendChatAction typing`, which shows for 5 s: again every 4.
     async fn typing(&self, chat_id: &str, _message_id: &str, on: bool) -> Typing {
         if !on {

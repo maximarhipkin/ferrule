@@ -2717,7 +2717,8 @@
         return el("div", { class: "stack details-body" }, name, about, el("div", { class: "row" }, role, model), ins, el("div", { class: "row" }, save, del));
       };
       setKids(this.own,
-        secHead("Your agents", "helpers you define: what each is for, its model, its instructions"),
+        el("h2", { text: "Your agents" }),
+        el("p", { class: "muted", text: "helpers you define: what each is for, its model, its instructions" }),
         el("datalist", { id: "own-agent-models" }, (r.models || []).map((m) => el("option", { value: m }))),
         r.on ? null : el("p", { class: "said bad", text: "Sub-agents are off ([agents] enabled = false), so your bot can't start these." }),
         this.restart ? el("div", { class: "said ok row" }, el("span", { class: "grow", text: "Saved. Your bot offers the change after a restart." }),

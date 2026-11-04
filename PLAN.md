@@ -371,6 +371,14 @@ below it is append-only.
 
 ## Session Log
 
+### 2026-11-04 — Publish owner-only admitted Telegram cross-chat send (0.14.18)
+
+Owner authorized the normal GitHub PR/CI/release workflow after the local preparation below. Reapplied the patch on current remote main (0d2c431), in an isolated worktree preserving the original uncommitted checkout. Initially prepared 0.14.16; concurrent main #78 reserved that version, so merged main 3525bc2 and advanced workspace crates and lockfile to 0.14.17 (plugin SDK stays 0.1.0). Concurrent main #80 then reserved 0.14.17; after all three platforms passed on 930fd31, merged main f9801af and advanced to 0.14.18 without changing either existing tag. Merge is conditional on normal three-platform CI passing for the final exact head; the local baseline failures below are not grounds to bypass CI. Release publication does not authorize a runtime installation/restart or a Telegram send.
+
+### 2026-11-04 — Prepare owner-only admitted Telegram cross-chat send
+
+Added `send_message` to the root configured owner private Telegram session only; execution rechecks the origin and the adapter’s current destination admission, default-deny elsewhere. Reuses gateway credentials internally and binds trust approval to exact destination/text. Eight gateway and two trust regressions pass; CLI cargo check passes. Patch also applies cleanly to local `v0.14.15` (0d2c431), validated separately without rebasing this checkout. On that version, full fmt and workspace clippy pass; the complete workspace test run finishes with 2016 passed, 8 failed, 29 ignored (exit 101). Failures are the existing local-model doctor integration test and seven existing SSH integration tests, not the new tests. All eight reproduce with identical diagnostics on a clean v0.14.15 baseline in a separate worktree; the cross-chat patch does not introduce them. No commit, push, deployment, runtime configuration edit, secret access or actual Telegram send. See `docs/cross-chat-send.md` and external handoff `../handoffs/cross-chat-send-2026-11-04.md` for exact evidence. Full verification is NOT green; do not release on the strength of this run.
+
 ### 2026-09-23 — Rename to Ferrule, NanoClaw/OpenClaw research, full architecture read
 
 **Scope of this session:** deep-dive learning pass + rename + branding, per

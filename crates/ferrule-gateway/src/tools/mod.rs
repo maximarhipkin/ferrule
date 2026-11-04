@@ -8,6 +8,7 @@ pub mod find_models;
 pub mod look;
 pub mod media;
 pub mod send_file;
+pub mod send_message;
 pub mod watch;
 
 pub use chat::{chat_tools, AskUserTool, EditMessageTool, Questions, ReactTool};
@@ -17,4 +18,5 @@ pub use media::{
     SpeakTool,
 };
 pub use send_file::{FileOut, SendFileTool};
+pub use send_message::SendMessageTool;
 pub use watch::{Ffmpeg, WatchVideoTool};
