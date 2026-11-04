@@ -281,4 +281,19 @@ pub trait MediaBackend: Send + Sync {
     async fn speech_price(&self, _model: &str) -> Result<Option<f64>, MediaError> {
         Ok(None)
     }
+    /// M67: the models the backend has for a job (`text`, `vision`,
+    /// `image`, `video`, `speech`), as its list gives them; empty when it
+    /// has no list.
+    async fn models(&self, _kind: &str) -> Result<Vec<serde_json::Value>, MediaError> {
+        Ok(Vec::new())
+    }
+}
+
+/// M67: what a model id looks like (`vendor/model[:variant]`), before a
+/// backend says whether it has one.
+pub fn is_model_id(s: &str) -> bool {
+    (3..=120).contains(&s.len())
+        && s.contains('/')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/.:-_".contains(c))
 }

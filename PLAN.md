@@ -11410,3 +11410,37 @@ macOS also failed `gateway::tests::status_is_answered_while_the_chats_turn_hangs
 once (the `/status` came 30 ms after the turn, before it reached the
 model); nothing on the branch changes that path, so it's left to the
 rerun.
+
+### 2026-11-04 — M67: the bot picks the model for each job (Claude, Opus 5.5)
+
+Claims **M67**.
+
+**Why.** The owner runs the bot on the Claude plan with OpenRouter
+connected, and wants the bot to open sub-agents on the OpenRouter model
+each job needs (images, video, vision, editing), picked by the bot when
+the job needs it or when asked, without a new key. Everything was
+there but config-only and owner-listed: `spawn_agent`'s `model` took a
+connected model only when the owner asked (M21), and the media tools
+only `[media]`'s lists.
+
+**What changed.** `docs/m67-bot-picks-models.md`.
+- `[models] bot_picks` (off by default), a Config page field.
+- On: `spawn_agent` may name any OpenRouter id (connected on the
+  OpenRouter provider for the spawn; `deny` still refuses), its
+  `model` description says to pick by job (`Supervisor::set_model_hint`);
+  `generate_image` / `generate_video` take any model id
+  (`MediaLimits::any_model`); a new `find_models {kind, search?}` tool
+  (chat and media sub-agents) lists OpenRouter's models for a job with
+  prices (`MediaBackend::models`). Caps unchanged.
+- The Config page's new **Models** group: the switch and
+  `[media] image_model`, `video_model`, `vision_model`,
+  `speech_model` (a `model` field kind: an OpenRouter id, checked with
+  `ferrule_media::is_model_id`).
+
+**Checks.** `make check`: fmt, clippy (no warnings), 2,003 tests
+passed. No new tests: `find_models` and the bot's picks have none.
+
+**Open.** Not run against OpenRouter. Per-role defaults stay
+config-only. Owner-defined named agents (each with its own model and
+instructions), which the owner also asked for, are M12 part 6 and not
+built here.

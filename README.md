@@ -691,6 +691,9 @@ and a dated entry for every session.
   [`m65-video.md`](docs/m65-video.md) (video the agent watches, edits and
   checks before sending; a vision helper for a model that can't see; big
   uploads and a media library in the dashboard) ·
+  [`m67-bot-picks-models.md`](docs/m67-bot-picks-models.md) (one switch:
+  the bot picks the OpenRouter model for each sub-agent, image and
+  video, with `find_models`) ·
   [`connections.md`](docs/connections.md) (Jira, Gmail, Google, Notion…:
   which way in, step by step) ·
   [`ssh.md`](docs/ssh.md) (workspaces on other machines).

@@ -3722,7 +3722,7 @@
           };
           return fieldRow(f, input);
         }
-        const text = f.kind === "text";
+        const text = f.kind === "text" || f.kind === "model";
         const dflt = f.default === undefined || f.default === null || f.default === "" ? "default" : "default: " + f.default;
         input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: dflt, "aria-label": f.key, dir: text ? "ltr" : null });
         input.value = shown;
