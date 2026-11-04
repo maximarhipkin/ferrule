@@ -98,6 +98,7 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
         max_videos_per_day: cfg.media.max_videos_per_day,
         max_usd_per_video: cfg.media.max_usd_per_video,
         reference_models: cfg.media.reference_models.clone(),
+        any_model: cfg.models.bot_picks,
     });
     // Media dollars answer to [trust]'s caps and count toward them.
     match crate::trust::hub(cfg) {

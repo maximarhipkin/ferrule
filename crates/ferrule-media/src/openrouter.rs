@@ -410,6 +410,18 @@ impl MediaBackend for OpenRouterMedia {
             .and_then(VideoPrice::of))
     }
 
+    async fn models(&self, kind: &str) -> Result<Vec<Value>, MediaError> {
+        let path = match kind {
+            "image" => "/models?output_modalities=image",
+            "speech" => "/models?output_modalities=speech",
+            "video" => "/videos/models",
+            // Text out; `vision` is the ones that also take images in.
+            _ => "/models",
+        };
+        let list = self.price_list(path).await?;
+        Ok(list.as_array().cloned().unwrap_or_default())
+    }
+
     async fn speech_price(&self, model: &str) -> Result<Option<f64>, MediaError> {
         let list = self.price_list("/models?output_modalities=speech").await?;
         let price = |v: &Value| {

@@ -299,6 +299,13 @@ pub struct ModelsConfig {
     /// `ferrule model catalog` read prices from when no connected provider
     /// is OpenRouter. Unset: OpenRouter's; "": none.
     pub catalog_url: Option<String>,
+    /// M67: the bot picks the model for each job itself: `spawn_agent`
+    /// may name any model the connected OpenRouter has (connected for it
+    /// on the spot), and the media tools any OpenRouter image or video
+    /// model, with `find_models` to choose. `deny`, `[media]`'s caps and
+    /// `[trust]`'s dollar caps still hold. Off: only connected models and
+    /// `[media]`'s lists (M21).
+    pub bot_picks: bool,
 }
 
 /// `[routing]` (docs/m25-routing.md): start every turn on the cheap tier

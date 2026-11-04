@@ -1361,6 +1361,12 @@ pub(crate) fn child_builder(
                 .in_tree(&spec.tree)
                 .with_references(owners),
             ));
+            // M67: the bot picks its own image or video model.
+            if media.picks() {
+                agent.register_tool(Arc::new(ferrule_gateway::tools::FindModelsTool::new(
+                    media.clone(),
+                )));
+            }
             if media.speaks() {
                 agent.register_tool(Arc::new(
                     ferrule_gateway::tools::SpeakTool::new(media, &spec.id).in_tree(&spec.tree),
@@ -3157,6 +3163,12 @@ async fn gateway_factory(
                     )
                     .with_references(owners),
                 ));
+                // M67: the models to pick from, for a sub-agent or a media job.
+                if media.picks() {
+                    agent.register_tool(Arc::new(ferrule_gateway::tools::FindModelsTool::new(
+                        media.clone(),
+                    )));
+                }
                 // M51.4: a voice reply.
                 if media.speaks() {
                     agent.append_system_prompt(ferrule_agents::prompts::CHAT_VOICE);
