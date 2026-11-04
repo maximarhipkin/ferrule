@@ -7,8 +7,11 @@ API or an admission/configuration tool.
 ## Availability and boundary
 
 The gateway root factory registers this tool only for the exact private
-`telegram__<owner_chat>` session, with a positive `[trust].owner_chat`.
-Group, scheduler, other-channel and child-agent sessions do not receive it.
+`telegram__<owner_chat>` session, with a positive owner ID resolved by the
+existing trust configuration: `[trust].owner_chat`, or, if unset, the first
+positive private chat in `telegram_allowed_chats`. This does not create a new
+owner-selection rule. Group, scheduler, other-channel and child-agent sessions
+do not receive it.
 At execution, the tool also checks the router's actual origin lane.
 
 Parameters are only `chat_id` (a canonical nonzero signed integer string) and
@@ -20,7 +23,9 @@ is added. Other adapters default to refusing cross-chat admission.
 Delivery uses the running gateway's existing Telegram adapter and credentials.
 Success returns the destination and adapter's message ID when available. An
 ambiguous transport failure is not automatically retried by the tool: repeating
-it could duplicate a post. The existing adapter may retry explicit rate limits.
+it could duplicate a post. The existing adapter may retry explicit rate limits. Admission is checked at
+call entry, not again during those in-flight retries: revoking a destination
+prevents subsequent calls, but does not cancel an already accepted delivery.
 
 ## Authorization and trust
 
