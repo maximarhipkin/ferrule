@@ -371,9 +371,9 @@ below it is append-only.
 
 ## Session Log
 
-### 2026-11-04 — Publish owner-only admitted Telegram cross-chat send (0.14.17)
+### 2026-11-04 — Publish owner-only admitted Telegram cross-chat send (0.14.18)
 
-Owner authorized the normal GitHub PR/CI/release workflow after the local preparation below. Reapplied the patch on current remote main (0d2c431), in an isolated worktree preserving the original uncommitted checkout. Initially prepared 0.14.16; concurrent main #78 reserved that version, so merged main 3525bc2 and advanced workspace crates and lockfile to 0.14.17 (plugin SDK stays 0.1.0). Merge is conditional on normal three-platform CI passing; the local baseline failures below are not grounds to bypass CI. Release publication does not authorize a runtime installation/restart or a Telegram send.
+Owner authorized the normal GitHub PR/CI/release workflow after the local preparation below. Reapplied the patch on current remote main (0d2c431), in an isolated worktree preserving the original uncommitted checkout. Initially prepared 0.14.16; concurrent main #78 reserved that version, so merged main 3525bc2 and advanced workspace crates and lockfile to 0.14.17 (plugin SDK stays 0.1.0). Concurrent main #80 then reserved 0.14.17; after all three platforms passed on 930fd31, merged main f9801af and advanced to 0.14.18 without changing either existing tag. Merge is conditional on normal three-platform CI passing for the final exact head; the local baseline failures below are not grounds to bypass CI. Release publication does not authorize a runtime installation/restart or a Telegram send.
 
 ### 2026-11-04 — Prepare owner-only admitted Telegram cross-chat send
 
