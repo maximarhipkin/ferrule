@@ -2264,14 +2264,22 @@ async fn update_check(r: &mut Report, cfg: &config::Config, offline: bool) {
     let Some(data) = config::data_dir_path() else {
         return;
     };
-    if let Some(claude) = crate::update::claude::Claude::from_config(cfg, &data) {
-        match crate::update::claude::doctor_line(&claude, offline).await {
+    let claude = crate::update::claude::Claude::from_config(cfg, &data);
+    let mut claude_now = None;
+    if let Some(claude) = &claude {
+        match crate::update::claude::doctor_line(claude, offline).await {
             (true, line) => r.ok("updates", line),
             (false, line) => r.note("updates", line),
         }
+        let c = claude.clone();
+        claude_now = tokio::task::spawn_blocking(move || crate::update::claude::installed_now(&c))
+            .await
+            .ok()
+            .flatten();
     }
     let units = crate::update::units_installed();
-    for (tone, line) in crate::update::report(&data, cfg.update.auto, units) {
+    for (tone, line) in crate::update::report(&data, cfg.update.auto, units, claude_now.as_deref())
+    {
         match tone {
             crate::update::Tone::Ok => r.ok("updates", line),
             crate::update::Tone::Note => r.note("updates", line),

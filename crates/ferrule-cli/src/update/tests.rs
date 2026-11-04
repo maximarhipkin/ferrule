@@ -1088,7 +1088,7 @@ fn the_report_says_how_updates_happen_and_what_went_wrong() {
     state.pin("v0.6.0");
     state.pin("v0.7.0");
     state.save(&state_dir).unwrap();
-    let lines = super::report(data, None, true);
+    let lines = super::report(data, None, true, None);
     assert!(
         lines[0].1.contains("installed by itself when idle"),
         "{lines:?}"
@@ -1105,7 +1105,7 @@ fn the_report_says_how_updates_happen_and_what_went_wrong() {
     assert!(lines
         .iter()
         .any(|(_, l)| l == "never installed by itself: v0.7.0"));
-    let off = super::report(data, Some(false), true);
+    let off = super::report(data, Some(false), true, None);
     assert!(off[0].1.contains("installed when you say so"));
 }
 
@@ -1388,7 +1388,7 @@ async fn claude_is_updated_when_npm_has_a_newer_one_and_left_alone_when_current(
     );
     assert!(!binary.with_file_name("fake-update.json").exists());
     assert_eq!(State::load(&state_dir).events.len(), 1);
-    let lines = super::status_lines(&data, None);
+    let lines = super::status_lines(&data, None, None);
     assert!(
         lines
             .iter()
@@ -1403,6 +1403,62 @@ async fn claude_is_updated_when_npm_has_a_newer_one_and_left_alone_when_current(
         .unwrap();
     assert_eq!(done.from, done.to, "the fake is already the latest");
     assert_eq!(State::load(&state_dir).events.len(), 1, "nothing changed");
+}
+
+#[tokio::test]
+async fn a_failure_for_a_claude_replaced_since_is_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let state_dir = super::state_dir(&data);
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let mut st = State {
+        claude_checked: Some(state::now()),
+        claude_installed: Some("2.1.280".into()),
+        ..State::default()
+    };
+    st.push(
+        EventKind::ClaudeFailed,
+        "2.1.280",
+        "2.1.312",
+        "claude is a unknown install: update it the way you installed it",
+    );
+    st.save(&state_dir).unwrap();
+    let warned = |now: Option<&str>| {
+        super::report(&data, None, true, now)
+            .into_iter()
+            .any(|(t, l)| t == super::Tone::Warn && l.contains("its update failed"))
+    };
+    // Still the old one, or unknown: the failure stands.
+    assert!(warned(None));
+    assert!(warned(Some("2.1.280")));
+    // Replaced by hand: status shows the live version, no failure.
+    assert!(!warned(Some("2.1.318")));
+    assert!(super::report(&data, None, true, Some("2.1.318"))
+        .iter()
+        .any(|(t, l)| *t == super::Tone::Ok && l.starts_with("claude 2.1.318, up to date")));
+
+    // The next check (2.1.283 runs, npm has no newer) clears the record,
+    // quietly.
+    let binary = native_claude(dir.path());
+    let mock = npm("2.1.283").await;
+    let claude = claude_at(&binary, dir.path(), &mock);
+    assert_eq!(
+        super::claude::run(&state_dir, &claude, None).await.unwrap(),
+        None
+    );
+    let st = State::load(&state_dir);
+    let last = st.events.last().unwrap();
+    assert_eq!(last.kind, EventKind::ClaudeUpdated);
+    assert_eq!(
+        (last.from.as_str(), last.to.as_str()),
+        ("2.1.280", "2.1.283")
+    );
+    assert_eq!(super::notice::event_text(last), None, "not told");
+    assert_eq!(st.claude_installed.as_deref(), Some("2.1.283"));
+    assert!(!warned(None));
+    // Once: settling again records nothing.
+    let mut st = st;
+    assert!(!super::claude::settle(&mut st, "2.1.283"));
 }
 
 #[tokio::test]
@@ -1427,7 +1483,7 @@ async fn a_failing_claude_update_is_told_once_until_it_works() {
         lines[0].starts_with("The claude CLI couldn't be updated") && lines[0].contains("EACCES"),
         "{lines:?}"
     );
-    let report = super::report(&data, None, false);
+    let report = super::report(&data, None, false, None);
     assert!(
         report
             .iter()
@@ -1773,7 +1829,7 @@ async fn an_update_asked_for_that_installs_nothing_still_answers_the_chat() {
     assert!(said.contains("`work`"), "{said}");
     assert_eq!(*service.restarts.lock().unwrap(), 0);
     // Answers, not standing failures: /status doesn't show them.
-    let report = super::report(&s.data, None, true);
+    let report = super::report(&s.data, None, true, None);
     assert!(
         report.iter().all(|(_, l)| !l.contains("wasn't installed")),
         "{report:?}"

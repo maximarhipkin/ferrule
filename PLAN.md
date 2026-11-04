@@ -371,6 +371,10 @@ below it is append-only.
 
 ## Session Log
 
+### 2026-11-04 — Status re-reads claude's version; a failure for a replaced claude is cleared (0.14.19, Claude, Opus 5.5)
+
+`ferrule status` and the dashboard kept showing "claude 2.1.280: its update failed 133 h ago: claude is a unknown install" after the owner replaced `/usr/local/bin/claude` (2.1.318) by hand. Root cause: the last `ClaudeFailed` event in the update state was only ever closed by a `ClaudeUpdated` that ferrule itself ran; a claude replaced outside ferrule, or one already current, never closed it, and the status line read the version from the last daily check, not the binary. Now `update::report` takes the version read now (`update::claude::installed_now`, `--version` cached a minute) and skips a failure recorded for another version; `claude::settle` records the live version and closes such a failure with an untold `ClaudeUpdated`, in every check (`claude::run`) and in the gateway's self-check (`settle_saved`; the gateway can't write the system service's state, so the report's skip covers that case). A failure for the version still installed stays visible. Test: `update::tests::a_failure_for_a_claude_replaced_since_is_cleared`.
+
 ### 2026-11-04 — Publish owner-only admitted Telegram cross-chat send (0.14.18)
 
 Owner authorized the normal GitHub PR/CI/release workflow after the local preparation below. Reapplied the patch on current remote main (0d2c431), in an isolated worktree preserving the original uncommitted checkout. Initially prepared 0.14.16; concurrent main #78 reserved that version, so merged main 3525bc2 and advanced workspace crates and lockfile to 0.14.17 (plugin SDK stays 0.1.0). Concurrent main #80 then reserved 0.14.17; after all three platforms passed on 930fd31, merged main f9801af and advanced to 0.14.18 without changing either existing tag. Merge is conditional on normal three-platform CI passing for the final exact head; the local baseline failures below are not grounds to bypass CI. Release publication does not authorize a runtime installation/restart or a Telegram send.

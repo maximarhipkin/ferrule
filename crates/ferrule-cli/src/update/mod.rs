@@ -509,7 +509,14 @@ pub enum Tone {
 
 /// The update state in words (status, `/status`, doctor, dashboard): how
 /// updates happen here, the last check, the last update and what's pinned.
-pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String)> {
+/// `claude_now`: claude's version read now ([`claude::installed_now`]),
+/// which wins over the last check's.
+pub fn report(
+    data: &Path,
+    auto: Option<bool>,
+    units: bool,
+    claude_now: Option<&str>,
+) -> Vec<(Tone, String)> {
     let state = state::State::load(&state_dir(data));
     let ago = |at: u64| {
         ferrule_gateway::health::human(Duration::from_secs(state::now().saturating_sub(at)))
@@ -597,7 +604,9 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
         });
     }
     if let Some(at) = state.claude_checked {
-        let installed = state.claude_installed.as_deref().unwrap_or("?");
+        let installed = claude_now
+            .or(state.claude_installed.as_deref())
+            .unwrap_or("?");
         let failed = state
             .events
             .iter()
@@ -608,7 +617,9 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
                     state::EventKind::ClaudeUpdated | state::EventKind::ClaudeFailed
                 )
             })
-            .filter(|e| e.kind == state::EventKind::ClaudeFailed);
+            .filter(|e| e.kind == state::EventKind::ClaudeFailed)
+            // Recorded for a claude replaced since: not this one's.
+            .filter(|_| claude_now.is_none_or(|v| claude::stale_failure(&state, v).is_none()));
         lines.push(match (failed, state.claude_latest.as_deref()) {
             (Some(e), _) => (
                 Tone::Warn,
@@ -648,8 +659,13 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
 }
 
 /// The report as plain lines.
-pub fn status_lines(data: &Path, auto: Option<bool>) -> Vec<String> {
-    report(data, auto, units_installed())
+pub fn status_lines(
+    data: &Path,
+    auto: Option<bool>,
+    claude: Option<&claude::Claude>,
+) -> Vec<String> {
+    let now = claude.and_then(claude::installed_now);
+    report(data, auto, units_installed(), now.as_deref())
         .into_iter()
         .map(|(_, line)| line)
         .collect()
