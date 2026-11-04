@@ -144,6 +144,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "logs" => logs(ctx, req),
             "extensions" | "settings" => settings_view(ctx),
             "agents" => agents(ctx),
+            "agents/own" => own_agents(ctx),
             "eval" => ok(ctx.evals.view()),
             "run" => run_view(ctx, req),
             "runs" => ok(json!({ "runs": ctx.runs.list() })),
@@ -282,6 +283,8 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "sessions/resume" => super::sessions::resume(ctx, body),
         "instructions/save" => super::instructions::save(ctx, body),
         "agents/close" => agents_close(ctx, body).await,
+        "agents/own/save" => own_agent_save(ctx, body),
+        "agents/own/delete" => own_agent_delete(ctx, body),
         "extensions/deny" => super::ext_inbox::deny(ctx, body),
         "backup" => super::backup_page::start(ctx),
         "backups/delete" => super::backup_page::delete(ctx, body),
@@ -2564,6 +2567,143 @@ async fn agents_close(ctx: &Ctx, body: &Value) -> Answer {
     }
 }
 
+/// M68: the owner's own agents (`[agents.custom]`) and the connected
+/// models one can run on.
+fn own_agents(ctx: &Ctx) -> Answer {
+    let Some(cfg) = config(ctx) else {
+        return missing("the config");
+    };
+    let agents: Vec<Value> = cfg
+        .agents
+        .custom
+        .iter()
+        .map(|(name, c)| {
+            json!({
+                "name": name,
+                "about": c.about,
+                "role": c.role.as_deref().unwrap_or("worker"),
+                "model": c.model,
+                "instructions": c.instructions,
+            })
+        })
+        .collect();
+    let models: Vec<String> = ctx
+        .models
+        .as_ref()
+        .map(|m| m.view().models.into_iter().map(|r| r.reference).collect())
+        .unwrap_or_default();
+    ok(json!({ "agents": agents, "models": models, "on": cfg.agents.enabled }))
+}
+
+/// `POST agents/own/save {name, about, role?, model?, instructions?}`: one
+/// of the owner's agents, written to `[agents.custom.<name>]`. A model
+/// that isn't connected but is an OpenRouter id is connected for it (the
+/// owner chose it). The gateway offers it after a restart.
+fn own_agent_save(ctx: &Ctx, body: &Value) -> Answer {
+    let Some(m) = &ctx.models else {
+        return missing("the models");
+    };
+    let name = need!(arg(body, "name")).to_string();
+    if !crate::agents::agent_name_ok(&name) {
+        return bad(
+            400,
+            "A name is 1–32 of a-z, 0-9 and -, and not worker, planner, verifier or media.",
+        );
+    }
+    let about = need!(arg(body, "about")).to_string();
+    let field = |k: &str| {
+        body.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let role = field("role").unwrap_or_else(|| "worker".into());
+    if ferrule_agents::Role::parse(&role).is_none() {
+        return bad(400, "The role is worker, planner, verifier or media.");
+    }
+    let instructions = field("instructions").unwrap_or_default();
+    if instructions.len() > 8000 {
+        return bad(400, "Instructions are at most 8,000 characters.");
+    }
+    let model = match field("model") {
+        None => None,
+        Some(word) => match m.resolve(&word) {
+            Ok(e) => Some(e.reference()),
+            Err(why) => {
+                let or = config(ctx).and_then(|c| {
+                    c.providers
+                        .iter()
+                        .find(|(_, p)| p.plan.is_none() && p.base_url.contains("openrouter.ai"))
+                        .map(|(n, _)| n.clone())
+                });
+                let id = or.as_deref().map(|o| {
+                    word.strip_prefix(&format!("{o}/"))
+                        .unwrap_or(&word)
+                        .to_string()
+                });
+                match (or, id) {
+                    (Some(or), Some(id)) if ferrule_media::is_model_id(&id) => {
+                        if let Err(e) = m.add_model(&or, &id, None, &by()) {
+                            return bad(400, format!("{e:#}"));
+                        }
+                        Some(format!("{or}/{id}"))
+                    }
+                    _ => return bad(400, format!("`{word}` can't be its model: {why}")),
+                }
+            }
+        },
+    };
+    let done = m.edit_config(|t, _| {
+        let tbl = crate::setup::table(t.root(), &["agents", "custom", &name])?;
+        crate::setup::put(tbl, "about", about.as_str());
+        crate::setup::put(tbl, "role", role.as_str());
+        match &model {
+            Some(model) => crate::setup::put(tbl, "model", model.as_str()),
+            None => {
+                tbl.remove("model");
+            }
+        }
+        crate::setup::put(tbl, "instructions", instructions.as_str());
+        Ok(())
+    });
+    match done {
+        Ok(()) => ok(json!({
+            "ok": true,
+            "said": format!("Saved {name}. Your bot offers it after a restart."),
+            "restart": true,
+        })),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
+/// `POST agents/own/delete {name}`.
+fn own_agent_delete(ctx: &Ctx, body: &Value) -> Answer {
+    let Some(m) = &ctx.models else {
+        return missing("the models");
+    };
+    let name = need!(arg(body, "name")).to_string();
+    need!(confirmed(
+        body,
+        format!("Delete your agent {name}? Its model stays connected.")
+    ));
+    let done = m.edit_config(|t, _| {
+        crate::setup::table(t.root(), &["agents", "custom"])?.remove(&name);
+        Ok(())
+    });
+    match done {
+        Ok(()) => ok(
+            json!({ "ok": true, "said": format!("Deleted {name}; gone after a restart."), "restart": true }),
+        ),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
+/// M68: a task without the owner's standing instructions put before it.
+fn own_task(task: &str) -> &str {
+    task.split_once("\n## Your task\n").map_or(task, |(_, t)| t)
+}
+
 /// Sub-agents that aren't closed. Read-only.
 fn agents(ctx: &Ctx) -> Answer {
     let Some(data) = &ctx.data else {
@@ -2588,7 +2728,8 @@ fn agents(ctx: &Ctx) -> Answer {
                 "depth": r.depth,
                 "name": r.name,
                 "role": r.role,
-                "task": clip(&ctx.redactor.redact(&r.task), 120),
+                // M68: an agent of the owner's has its instructions first.
+                "task": clip(&ctx.redactor.redact(own_task(&r.task)), 120),
                 "status": r.status.as_str(),
                 "tokens": r.tokens,
                 "model": r.model,

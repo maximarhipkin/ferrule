@@ -1747,6 +1747,12 @@ Current State; numbers are claimed there before anything is built.
   caps still hold. Each job's default model (`[media] image_model`,
   `video_model`, `vision_model`, `speech_model`) is a Config page field.
   Not run live.
+- **M68, your own agents** (`docs/agents.md`, "Your own agents"):
+  `[agents.custom.<name>]` (what it's for, a role, a model,
+  instructions), added and changed on the Agents page's **Your agents**
+  card; `spawn_agent {agent: name}` starts one with its role and model,
+  its instructions before the task. The bot picks one by what it's for.
+  Not run live.
 
 **Still open from earlier tracks.**
 

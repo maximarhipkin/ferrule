@@ -102,6 +102,7 @@ pub fn supervisor(
         models.resolve(&format!("{or}/{id}")).map(|e| e.reference())
     }));
     sup.set_worktrees_dir(data.join("worktrees"));
+    sup.set_named_agents(named_agents(cfg));
     Ok(Some(sup))
 }
 
@@ -120,7 +121,44 @@ pub fn live() -> Option<Arc<Supervisor>> {
     LIVE.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
 }
 
+/// M68: `[agents.custom]`, as the supervisor offers them (roles checked
+/// by [`check_roles`]).
+pub fn named_agents(cfg: &Config) -> Vec<ferrule_agents::NamedAgent> {
+    cfg.agents
+        .custom
+        .iter()
+        .map(|(name, c)| ferrule_agents::NamedAgent {
+            name: name.clone(),
+            about: c.about.clone(),
+            role: c
+                .role
+                .as_deref()
+                .and_then(Role::parse)
+                .unwrap_or(Role::Worker),
+            model: c.model.clone().filter(|m| !m.trim().is_empty()),
+            instructions: c.instructions.clone(),
+        })
+        .collect()
+}
+
+/// M68: a name the page and `spawn_agent` take for an agent of the owner's.
+pub fn agent_name_ok(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && Role::parse(name).is_none()
+}
+
 pub fn check_roles(cfg: &Config) -> Result<()> {
+    for (name, c) in &cfg.agents.custom {
+        if !agent_name_ok(name) {
+            bail!("[agents.custom.{name}]: a name is 1–32 of a-z, 0-9 and -, and not a role's");
+        }
+        if let Some(r) = c.role.as_deref().filter(|r| Role::parse(r).is_none()) {
+            bail!("[agents.custom.{name}] role = \"{r}\": the roles are worker, planner, verifier and media");
+        }
+    }
     for (role, rc) in &cfg.agents.roles {
         if Role::parse(role).is_none() {
             bail!(

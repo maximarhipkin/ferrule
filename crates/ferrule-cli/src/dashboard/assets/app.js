@@ -2688,7 +2688,43 @@
 
   sections.agents = {
     every: 5,
-    mount(root) { this.box = el("div"); root.append(this.box); },
+    mount(root) { this.own = el("div"); this.box = el("div"); root.append(this.own, this.box); this.loadOwn(); },
+    // M68: the owner's own agents, drawn apart from the 5-second poll so a
+    // form being typed in isn't wiped; redrawn after a save or a delete.
+    async loadOwn() {
+      let r;
+      try { r = await api("/api/agents/own"); } catch (e) { return sectionError(this.own, e); }
+      const form = (a) => {
+        const f = a || {};
+        const name = el("input", { type: "text", name: "name", placeholder: "a name, like video-editor", dir: "ltr", readonly: !!a, "aria-label": "Name" });
+        name.value = f.name || "";
+        const about = el("input", { type: "text", name: "about", placeholder: "What it's for, in a line: cuts, captions and checks videos", "aria-label": "What it's for" });
+        about.value = f.about || "";
+        const role = el("select", { name: "role", "aria-label": "Role" },
+          ["worker", "planner", "verifier", "media"].map((x) => el("option", { value: x, text: x, selected: (f.role || "worker") === x })));
+        const model = el("input", { type: "text", name: "model", list: "own-agent-models", dir: "ltr",
+          placeholder: "Its model: a connected one or an OpenRouter id; empty, the bot's", "aria-label": "Model" });
+        model.value = f.model || "";
+        const ins = el("textarea", { name: "instructions", rows: 4, placeholder: "Its standing instructions, put before every task it gets", "aria-label": "Instructions" });
+        ins.value = f.instructions || "";
+        const save = el("button", { class: "primary", text: a ? "Save" : "Add agent" });
+        save.onclick = async () => {
+          const body = { name: name.value.trim(), about: about.value.trim(), role: role.value, model: model.value.trim(), instructions: ins.value };
+          if (await act("agents/own/save", body, save)) { this.restart = true; this.loadOwn(); }
+        };
+        const del = a ? el("button", { class: "danger ghost", text: "Delete" }) : null;
+        if (del) del.onclick = async () => { if (await act("agents/own/delete", { name: a.name }, del)) { this.restart = true; this.loadOwn(); } };
+        return el("div", { class: "stack details-body" }, name, about, el("div", { class: "row" }, role, model), ins, el("div", { class: "row" }, save, del));
+      };
+      setKids(this.own,
+        secHead("Your agents", "helpers you define: what each is for, its model, its instructions"),
+        el("datalist", { id: "own-agent-models" }, (r.models || []).map((m) => el("option", { value: m }))),
+        r.on ? null : el("p", { class: "said bad", text: "Sub-agents are off ([agents] enabled = false), so your bot can't start these." }),
+        this.restart ? el("div", { class: "said ok row" }, el("span", { class: "grow", text: "Saved. Your bot offers the change after a restart." }),
+          btn("Restart now", "gateway/restart", {}, "primary")) : null,
+        r.agents.map((a) => disc("own-agent-" + a.name, "card", el("span", {}, el("strong", { text: a.name }), el("span", { class: "muted", text: " · " + (a.about || "") })), form(a))),
+        disc("own-agent-new", "card", "Add an agent", form(null)));
+    },
     async load() {
       let r;
       try {
