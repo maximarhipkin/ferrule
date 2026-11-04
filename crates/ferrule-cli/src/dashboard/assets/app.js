@@ -970,7 +970,6 @@
   // what it is, badge, tone]. The rest are one tap away.
   const PLANS = [
     ["chatgpt", "C", "ChatGPT plan", "Plus, Pro or Business: type a code on OpenAI's page.", "No key", "ok"],
-    ["gemini-cli", "G", "Google", "Gemini and Antigravity plans: sign in with Google.", "1M context", "accent"],
     ["claude-code", "A", "Claude plan", "Pro or Max: paste a setup-token.", null, "warn"],
   ];
   const KEYS = [
@@ -1538,14 +1537,18 @@
         }
         return box;
       }
-      if (p.plan === "claude-code" && !p.connected && MANAGED.on) {
+      // Connected but not signed in (an expired or missing token, claude
+      // gone) needs the same paste as a first sign-in, and the reason.
+      const claudeOff = p.plan === "claude-code" && (!p.connected || !p.ready);
+      if (claudeOff && p.missing) box.append(el("div", { class: "said bad msg", dir: "auto", text: p.missing }));
+      if (claudeOff && MANAGED.on) {
         box.append(el("p", { class: "muted small", text: MANAGED.claude_plan }));
         return box;
       }
-      if (p.plan === "claude-code" && !p.connected) {
-        const t = el("input", { type: "password", name: "token", autocomplete: "new-password", placeholder: "sk-ant-oat…", "data-secret": "1" });
+      if (claudeOff) {
+        const t = el("input", { type: "password", name: "token", autocomplete: "new-password", placeholder: "sk-ant-oat…", "aria-label": "Claude setup-token", "data-secret": "1" });
         const b = el("button", { class: "primary", text: "Check and save" });
-        b.onclick = () => { const v = t.value.trim(); wipeSecrets(box); if (v) act("plans/claude", { token: asSecret(v) }, b); };
+        b.onclick = () => { const v = t.value.trim(); wipeSecrets(box); if (v) act("plans/claude", { token: asSecret(v) }, b).then((r) => { if (r) this.loadChoices(); }); };
         box.append(el("p", { class: "muted small", text: "Run `claude setup-token` on any machine signed in to your Claude plan and paste the token it prints." }),
           el("div", { class: "row key-row" }, t, b));
         return box;

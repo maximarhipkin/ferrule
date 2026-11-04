@@ -199,6 +199,11 @@ and the dashboard show each plan's windows and when they reset.
 
 ## Gemini plan
 
+The dashboard doesn't offer the Google sign-in for now: `ferrule login
+gemini` at a terminal does, and OpenRouter's key reaches Gemini models
+without one. A Gemini plan already in the config still shows on
+**Models**.
+
 Ferrule doesn't ship a Google OAuth client. Put the client's id and
 secret in `private/secrets.env` (or export them) before signing in:
 
@@ -210,8 +215,7 @@ FERRULE_GEMINI_CLIENT_SECRET=...
 The gateway reads the file when it starts, so restart it after adding
 them. They aren't a tool key: don't add them with the Safe's **Add a
 key**, which would let the agent's commands send them to the hosts you
-name. Without them, `ferrule login gemini` and the **Models** page's
-Google sign-in say so and send nothing to Google, and an existing
+name. Without them, `ferrule login gemini` says so and send nothing to Google, and an existing
 sign-in is kept: its refresh fails with the same sentence until the
 client is back.
 
