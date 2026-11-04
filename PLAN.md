@@ -11487,3 +11487,33 @@ passed. No new tests: `find_models` and the bot's picks have none.
 config-only. Owner-defined named agents (each with its own model and
 instructions), which the owner also asked for, are M12 part 6 and not
 built here.
+
+### 2026-11-04 — M68: your own agents (Claude, Opus 5.5)
+
+Claims **M68**.
+
+**Why.** The owner asked for helpers they define, each with its own
+OpenRouter model and instructions, that the bot opens by name (a video
+editor, a designer), alongside M67's picking of a model per job.
+
+**What changed.** `docs/agents.md`, "Your own agents".
+- `[agents.custom.<name>]`: `about`, `role` (worker by default),
+  `model`, `instructions`. `check_roles` refuses a bad name or role at
+  startup; the supervisor gets them as `NamedAgent`s
+  (`Supervisor::set_named_agents`).
+- `spawn_agent {agent: name}`: offered (an `enum`, each with what it's
+  for) only when there are some; it brings the agent's role and model
+  (checked like any spawn's model) and puts its instructions before the
+  task. The Agents page's list shows the task without them.
+- Dashboard: a **Your agents** card on the Agents page (outside the
+  5-second poll), `GET agents/own`, `POST agents/own/save` (an
+  OpenRouter id that isn't connected is connected for it) and `POST
+  agents/own/delete` (asks first); both say a restart applies it, with a
+  Restart button.
+
+**Checks.** `make check`: fmt, clippy (no warnings), 2,003 tests
+passed. No new tests for the named agents; the card wasn't tried in a
+browser.
+
+**Open.** Not run live. A named agent's model isn't checked at startup:
+a model removed later fails that agent's spawns, with the reason.

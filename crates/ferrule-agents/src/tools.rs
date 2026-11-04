@@ -211,24 +211,55 @@ impl AgentTool {
     }
 
     fn spawn(&self, args: &Value) -> Result<String, CoreError> {
-        let task = str_arg(args, "task")
+        let mut task = str_arg(args, "task")
             .ok_or_else(|| self.fail("`task` is required"))?
             .to_string();
-        let role = match str_arg(args, "role") {
-            None => Role::Worker,
-            Some(r) => Role::parse(r).ok_or_else(|| {
+        // M68: one of the owner's own agents brings its role, model and
+        // instructions; the task follows its instructions.
+        let named = match str_arg(args, "agent") {
+            None => None,
+            Some(n) => {
+                let all = self.sup.named_agents();
+                let names: Vec<String> = all.iter().map(|a| a.name.clone()).collect();
+                Some(all.into_iter().find(|a| a.name == n).ok_or_else(|| {
+                    self.fail(format!(
+                        "no agent named {n:?}; the owner's agents are: {}",
+                        if names.is_empty() {
+                            "none".into()
+                        } else {
+                            names.join(", ")
+                        }
+                    ))
+                })?)
+            }
+        };
+        let role = match (&named, str_arg(args, "role")) {
+            (Some(a), _) => a.role,
+            (None, None) => Role::Worker,
+            (None, Some(r)) => Role::parse(r).ok_or_else(|| {
                 self.fail(format!(
                     "unknown role {r:?}; use worker, planner, verifier or media"
                 ))
             })?,
         };
-        let name = str_arg(args, "name").map(str::to_string);
+        if let Some(a) = named.as_ref().filter(|a| !a.instructions.trim().is_empty()) {
+            task = format!(
+                "## Your standing instructions (the owner's, for {})\n{}\n\n## Your task\n{task}",
+                a.name,
+                a.instructions.trim()
+            );
+        }
+        let name = str_arg(args, "name")
+            .map(str::to_string)
+            .or_else(|| named.as_ref().map(|a| a.name.clone()));
         let worktree = args
             .get("worktree")
             .and_then(Value::as_bool)
             .unwrap_or(true);
         let fork = args.get("fork").and_then(Value::as_bool).unwrap_or(false);
-        let model = str_arg(args, "model").map(str::to_string);
+        let model = str_arg(args, "model")
+            .map(str::to_string)
+            .or_else(|| named.as_ref().and_then(|a| a.model.clone()));
         let effort = match str_arg(args, "effort") {
             None => None,
             Some(e @ ("low" | "medium" | "high")) => Some(e.to_string()),
@@ -380,7 +411,7 @@ impl Tool for AgentTool {
              run it on. Leave it out to use its role's model or yours."
                 .into()
         });
-        let (description, parameters) = match self.kind {
+        let (description, mut parameters) = match self.kind {
             Kind::Spawn => (
                 prompts::SPAWN_DESCRIPTION,
                 json!({
@@ -466,6 +497,24 @@ impl Tool for AgentTool {
                 };
             }
         };
+        // M68: the owner's own agents, by name, with what each is for.
+        let named = self.sup.named_agents();
+        if self.kind == Kind::Spawn && !named.is_empty() {
+            let list: Vec<String> = named
+                .iter()
+                .map(|a| format!("{}: {}", a.name, a.about.trim()))
+                .collect();
+            parameters["properties"]["agent"] = json!({
+                "type": "string",
+                "enum": named.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+                "description": format!(
+                    "One of the owner's own agents, when the job is what it's for: it runs with \
+                     its own role, model and instructions (role and model here are then not \
+                     needed). {}",
+                    list.join("; ")
+                ),
+            });
+        }
         ToolDefinition {
             name: self.kind.name().into(),
             description: description.into(),

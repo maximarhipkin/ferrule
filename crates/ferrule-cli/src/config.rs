@@ -1684,6 +1684,23 @@ pub struct AgentsConfig {
     /// Per role (`worker`, `planner`, `verifier`): a provider other than
     /// the one the root runs on.
     pub roles: HashMap<String, RoleConfig>,
+    /// M68: the owner's own agents, by name: `spawn_agent {agent: name}`
+    /// starts one with its role, model and instructions.
+    pub custom: BTreeMap<String, CustomAgentConfig>,
+}
+
+/// M68: `[agents.custom.<name>]`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CustomAgentConfig {
+    /// What it's for, in a line: how the bot knows when to start it.
+    pub about: String,
+    /// worker (the default), planner, verifier or media.
+    pub role: Option<String>,
+    /// A connected model (M21); unset, its role's or the root's.
+    pub model: Option<String>,
+    /// Its standing instructions, put before every task it's given.
+    pub instructions: String,
 }
 
 impl Default for AgentsConfig {
@@ -1698,6 +1715,7 @@ impl Default for AgentsConfig {
             budget_window_hours: (l.budget_window_secs / 3600) as u32,
             fork_tokens: l.fork_tokens,
             roles: HashMap::new(),
+            custom: BTreeMap::new(),
         }
     }
 }
@@ -2066,6 +2084,12 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # provider = "local"
 # [agents.roles.media]      # M51.3: image, video and voice jobs; a cheap model
 # model = "openrouter/google/gemini-2.5-flash"  # that calls tools ([media] on)
+#
+# [agents.custom.video-editor]  # M68: your own agent; the bot starts it by name
+# about = "cuts, captions and checks videos"   # how the bot knows when
+# role = "worker"                               # worker, planner, verifier, media
+# model = "openrouter/google/gemini-3.8-flash"  # a connected model
+# instructions = "Use the video-editing skill. Watch the result before reporting."
 #
 # [trust]                    # M19 (docs/m19-trust-cost.md). Caps are 0 = off;
 # max_tokens_per_run = 5000000  # a run is one prompt and its sub-agents.

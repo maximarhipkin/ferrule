@@ -67,6 +67,39 @@ and `task_done` (now `tasks`). Those names still work for one release,
 so a transcript or a session that uses them goes on working. They are
 never offered, and each call logs a deprecation warning.
 
+## Your own agents (M68)
+
+Define a helper once, and the bot starts it by name when a job is what
+it's for: `spawn_agent {agent: "video-editor", task}`. Each one has
+
+- a **name** (1–32 of `a-z`, `0-9` and `-`, not a role's),
+- **what it's for**, in a line: `spawn_agent` lists every agent with it,
+  which is how the bot knows when to pick one,
+- a **role** (worker by default; `media` gets the image, video and voice
+  tools),
+- a **model** (a connected one; empty, its role's or the bot's),
+- **instructions**, put before every task it's given (under "Your
+  standing instructions", then "Your task"; the Agents page shows only
+  the task).
+
+Add, change and delete them on the dashboard's **Agents** page, under
+**Your agents**. A model typed there that isn't connected but is an
+OpenRouter id is connected on the OpenRouter provider when it's saved.
+The gateway reads them when it starts, so the card offers a restart
+after a change. In the file:
+
+```toml
+[agents.custom.video-editor]
+about = "cuts, captions and checks videos"
+role = "worker"
+model = "openrouter/google/gemini-3.8-flash"
+instructions = "Use the video-editing skill. Watch the result before reporting."
+```
+
+A name or a role that doesn't check out stops the agents at startup,
+with the reason (`ferrule doctor` says it too); a model that isn't
+connected fails that agent's spawn, with the reason, and nothing else.
+
 ## Config
 
 On by default. Every setting is optional:

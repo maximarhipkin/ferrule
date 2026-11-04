@@ -122,6 +122,18 @@ pub struct ChildSpec {
     pub effort: Option<String>,
 }
 
+/// M68: an agent the owner defined (`[agents.custom.<name>]`): what it's
+/// for, the role and model it runs as, and its standing instructions.
+/// `spawn_agent {agent: name}` starts one.
+#[derive(Debug, Clone)]
+pub struct NamedAgent {
+    pub name: String,
+    pub about: String,
+    pub role: Role,
+    pub model: Option<String>,
+    pub instructions: String,
+}
+
 /// Checks a model `spawn_agent` names: its canonical ref, or why it
 /// can't run on it (M21: connected models only).
 pub type ModelCheck = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
@@ -293,6 +305,8 @@ pub struct Supervisor {
     /// M67: `spawn_agent`'s `model` description when the embedding
     /// program lets the agent pick (any model, not only when asked).
     model_hint: RwLock<Option<String>>,
+    /// M68: the owner's own agents, by name.
+    named: RwLock<Vec<NamedAgent>>,
     /// The root's hooks: children inherit PreToolUse/PostToolUse, and
     /// SubagentStart/Stop fire around their runs (M18).
     hooks: RwLock<HookSet>,
@@ -336,6 +350,7 @@ impl Supervisor {
             worktrees: RwLock::new(None),
             models: RwLock::new(None),
             model_hint: RwLock::new(None),
+            named: RwLock::new(Vec::new()),
             hooks: RwLock::new(HookSet::default()),
             finishing: AtomicUsize::new(0),
             me: me.clone(),
@@ -354,6 +369,15 @@ impl Supervisor {
 
     pub fn model_hint(&self) -> Option<String> {
         self.model_hint.read().unwrap().clone()
+    }
+
+    /// M68: the owner's own agents `spawn_agent` offers by name.
+    pub fn set_named_agents(&self, named: Vec<NamedAgent>) {
+        *self.named.write().unwrap() = named;
+    }
+
+    pub fn named_agents(&self) -> Vec<NamedAgent> {
+        self.named.read().unwrap().clone()
     }
 
     pub fn set_waker(&self, waker: Arc<dyn Waker>) {
