@@ -1739,6 +1739,14 @@ Current State; numbers are claimed there before anything is built.
     `docs/dashboard.md` (Files), `docs/housekeeping.md` (posters, the
     trash), a note atop `docs/m51-media.md`, the README's link, and
     `docs/m65-video.md`'s "As built".
+- **M67, the bot picks the model for each job** (`docs/m67-bot-picks-models.md`):
+  `[models] bot_picks` (off by default; on the Config page) lets
+  `spawn_agent` name any model the connected OpenRouter has (connected
+  for the spawn) and the media tools any image or video model, with a
+  `find_models {kind, search?}` tool to choose by job and price; the
+  caps still hold. Each job's default model (`[media] image_model`,
+  `video_model`, `vision_model`, `speech_model`) is a Config page field.
+  Not run live.
 
 **Still open from earlier tracks.**
 

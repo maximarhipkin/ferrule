@@ -638,6 +638,37 @@ struct Field {
 }
 
 const FORM: &[Field] = &[
+    // M67: who does what. The bot's own pick, then each job's default.
+    Field {
+        key: "models.bot_picks",
+        kind: "bool",
+        choices: &[],
+        help: "Let the bot pick the best OpenRouter model for each job (sub-agents, images, video), within the dollar caps",
+    },
+    Field {
+        key: "media.image_model",
+        kind: "model",
+        choices: &[],
+        help: "Images: the OpenRouter model generate_image uses",
+    },
+    Field {
+        key: "media.video_model",
+        kind: "model",
+        choices: &[],
+        help: "Video: the OpenRouter model generate_video uses",
+    },
+    Field {
+        key: "media.vision_model",
+        kind: "model",
+        choices: &[],
+        help: "Eyes: the OpenRouter model that describes images for a model that can't see (the Claude plan)",
+    },
+    Field {
+        key: "media.speech_model",
+        kind: "model",
+        choices: &[],
+        help: "Voice: the OpenRouter model speak uses",
+    },
     Field {
         key: "agent.stream",
         kind: "bool",
@@ -872,6 +903,7 @@ const FORM: &[Field] = &[
 /// M66: where the page puts a form field, by its section.
 fn group_of(key: &str) -> &'static str {
     match key.split('.').next().unwrap_or("") {
+        "models" | "media" => "Models",
         "agent" | "agents" | "plans" => "Agent",
         "gateway" => "Chat apps",
         "trust" | "health" => "Safety",
@@ -890,6 +922,11 @@ fn group_of(key: &str) -> &'static str {
 /// depends on more than the file (said in the field's help).
 fn default_of(base: &Config, now: &Config, key: &str) -> Option<Value> {
     Some(match key {
+        "models.bot_picks" => json!(base.models.bot_picks),
+        "media.image_model" => json!(base.media.image_model),
+        "media.video_model" => json!(base.media.video_model),
+        "media.vision_model" => json!(base.media.vision_model),
+        "media.speech_model" => json!(base.media.speech_model),
         "agent.stream" => json!(base.agent.stream),
         "agent.parallel_tools" => json!(base.agent.parallel_tools),
         "agent.edit_file" => json!(base.agent.edit_file),
@@ -1175,6 +1212,8 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
         {
             Some(s.as_str().into())
         }
+        // M67: an OpenRouter model id, `vendor/model[:variant]`.
+        ("model", Value::String(s)) if ferrule_media::is_model_id(s) => Some(s.as_str().into()),
         _ => {
             return bad(
                 400,
@@ -1185,6 +1224,7 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
                         "int" => "a whole number".to_string(),
                         "float" => "a number".to_string(),
                         "text" => "a short code: letters, digits, - or _".to_string(),
+                        "model" => "an OpenRouter model id, like google/veo-3.1-lite".to_string(),
                         _ => format!("one of {}", field.choices.join(", ")),
                     }
                 ),

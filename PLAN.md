@@ -30,7 +30,17 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.15** (2026-11-04, PR #76): M66 and the native Gemini plan.
+  - **v0.14.16** (2026-11-04, PRs #77 and #78): M67, the bot picks the
+    OpenRouter model for each job. `[models] bot_picks` (off by default,
+    on the Config page) lets `spawn_agent` name any OpenRouter model
+    (connected for the spawn) and `generate_image` / `generate_video` any
+    image or video model, with a `find_models` tool to choose by job and
+    price; the caps still hold. Each job's default model is a Config
+    field. A Claude plan that isn't ready shows why and takes a new
+    setup-token on its card; the Google sign-in is off the page until a
+    build ships an OAuth client. Every crate is at 0.14.16 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.15** (2026-11-04, PR #76): M66 and the native Gemini plan.
     `plan = "gemini-cli"` signs in to a Google / Antigravity plan over
     HTTPS with no `agy` or `gemini` on the host (the native client is the
     default; a logout sticks); the OAuth client isn't shipped, the owner
@@ -45,8 +55,7 @@ below it is append-only.
     feedback from every surface, failure notes kept after a failed run,
     changes it couldn't prove listed for the owner, a measure of whether
     a lesson or skill helped, routing that remembers per scope, memory
-    upkeep and a weekly check. Every crate is at 0.14.15 except
-    `ferrule-plugin-sdk`.
+    upkeep and a weekly check.
   - Before it, **v0.14.14** (2026-11-03, PR #75): silent turns. A turn that ends
     with exactly `NO_REPLY` posts nothing in any chat, and one that ends
     with no text posts nothing in a group (Telegram, Signal, personal
@@ -11444,3 +11453,37 @@ now says it. Nothing in 0.14.13 → 0.14.15 changes how readiness is
 worked out. To bring the Google sign-in back: add `Plan::GeminiCli` to
 the offered plans in `models_page::choices` and its tile to `PLANS`,
 once a client ships (e.g. built in from CI secrets with `option_env!`).
+
+### 2026-11-04 — M67: the bot picks the model for each job (Claude, Opus 5.5)
+
+Claims **M67**.
+
+**Why.** The owner runs the bot on the Claude plan with OpenRouter
+connected, and wants the bot to open sub-agents on the OpenRouter model
+each job needs (images, video, vision, editing), picked by the bot when
+the job needs it or when asked, without a new key. Everything was
+there but config-only and owner-listed: `spawn_agent`'s `model` took a
+connected model only when the owner asked (M21), and the media tools
+only `[media]`'s lists.
+
+**What changed.** `docs/m67-bot-picks-models.md`.
+- `[models] bot_picks` (off by default), a Config page field.
+- On: `spawn_agent` may name any OpenRouter id (connected on the
+  OpenRouter provider for the spawn; `deny` still refuses), its
+  `model` description says to pick by job (`Supervisor::set_model_hint`);
+  `generate_image` / `generate_video` take any model id
+  (`MediaLimits::any_model`); a new `find_models {kind, search?}` tool
+  (chat and media sub-agents) lists OpenRouter's models for a job with
+  prices (`MediaBackend::models`). Caps unchanged.
+- The Config page's new **Models** group: the switch and
+  `[media] image_model`, `video_model`, `vision_model`,
+  `speech_model` (a `model` field kind: an OpenRouter id, checked with
+  `ferrule_media::is_model_id`).
+
+**Checks.** `make check`: fmt, clippy (no warnings), 2,003 tests
+passed. No new tests: `find_models` and the bot's picks have none.
+
+**Open.** Not run against OpenRouter. Per-role defaults stay
+config-only. Owner-defined named agents (each with its own model and
+instructions), which the owner also asked for, are M12 part 6 and not
+built here.

@@ -59,6 +59,10 @@ pub struct MediaLimits {
     /// M65 §3: the video models that take reference images
     /// (`input_references`); a reference for any other is refused.
     pub reference_models: Vec<String>,
+    /// M67 (`[models] bot_picks`): a call may name any model id, not only
+    /// the lists; the backend says when it has no such model, and the
+    /// caps above still hold.
+    pub any_model: bool,
 }
 
 /// The media backend, the jobs table, and the way back to the chat — one
@@ -168,13 +172,15 @@ impl MediaShared {
 
     /// The model for a call: the default when it names none, else one
     /// of [`Self::allowed`]. A model never enters through a tool call's
-    /// free text (M21): the owner lists it in the config first.
+    /// free text (M21): the owner lists it in the config first, or lets
+    /// the bot pick (M67, `any_model`).
     fn pick(&self, kind: JobKind, asked: Option<&str>) -> Result<String, String> {
         let allowed = self.allowed(kind);
         let Some(asked) = asked.map(str::trim).filter(|m| !m.is_empty()) else {
             return Ok(allowed[0].clone());
         };
-        if allowed.iter().any(|m| m == asked) {
+        if allowed.iter().any(|m| m == asked) || (self.picks() && ferrule_media::is_model_id(asked))
+        {
             return Ok(asked.to_string());
         }
         let key = match kind {
@@ -187,10 +193,28 @@ impl MediaShared {
         ))
     }
 
+    /// M67: the bot may name any model (`[models] bot_picks`).
+    pub fn picks(&self) -> bool {
+        self.limits().any_model
+    }
+
     /// The `model` parameter of a tool's definition: only when there's a
-    /// choice, and then only the allowed ones.
+    /// choice, and then only the allowed ones (any id when the bot picks).
     fn model_param(&self, kind: JobKind) -> Option<Value> {
         let allowed = self.allowed(kind);
+        if self.picks() {
+            let what = match kind {
+                JobKind::Video => "video",
+                _ => "image",
+            };
+            return Some(json!({
+                "type": "string",
+                "description": format!(
+                    "The OpenRouter {what} model best for this job (find_models kind={what} lists them, with prices); {} when omitted",
+                    allowed[0]
+                ),
+            }));
+        }
         (allowed.len() > 1).then(|| {
             json!({
                 "type": "string",

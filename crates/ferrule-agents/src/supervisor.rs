@@ -290,6 +290,9 @@ pub struct Supervisor {
     /// Which models a child may be asked to run on; none, and a spawn
     /// that names one is refused.
     models: RwLock<Option<ModelCheck>>,
+    /// M67: `spawn_agent`'s `model` description when the embedding
+    /// program lets the agent pick (any model, not only when asked).
+    model_hint: RwLock<Option<String>>,
     /// The root's hooks: children inherit PreToolUse/PostToolUse, and
     /// SubagentStart/Stop fire around their runs (M18).
     hooks: RwLock<HookSet>,
@@ -332,6 +335,7 @@ impl Supervisor {
             waker: RwLock::new(None),
             worktrees: RwLock::new(None),
             models: RwLock::new(None),
+            model_hint: RwLock::new(None),
             hooks: RwLock::new(HookSet::default()),
             finishing: AtomicUsize::new(0),
             me: me.clone(),
@@ -341,6 +345,15 @@ impl Supervisor {
     /// How a model named in `spawn_agent` is checked (M21).
     pub fn set_model_check(&self, check: ModelCheck) {
         *self.models.write().unwrap() = Some(check);
+    }
+
+    /// M67: what `spawn_agent` says about its `model` parameter.
+    pub fn set_model_hint(&self, hint: String) {
+        *self.model_hint.write().unwrap() = Some(hint);
+    }
+
+    pub fn model_hint(&self) -> Option<String> {
+        self.model_hint.read().unwrap().clone()
     }
 
     pub fn set_waker(&self, waker: Arc<dyn Waker>) {

@@ -374,6 +374,12 @@ impl AgentTool {
 #[async_trait]
 impl Tool for AgentTool {
     fn definition(&self) -> ToolDefinition {
+        // M67: the embedding program may let the agent pick its model.
+        let model_help = self.sup.model_hint().unwrap_or_else(|| {
+            "Only if the owner asked for it: a connected model (provider/model or an alias) to \
+             run it on. Leave it out to use its role's model or yours."
+                .into()
+        });
         let (description, parameters) = match self.kind {
             Kind::Spawn => (
                 prompts::SPAWN_DESCRIPTION,
@@ -385,7 +391,7 @@ impl Tool for AgentTool {
                         "role": {"type": "string", "enum": ["worker", "planner", "verifier", "media"]},
                         "worktree": {"type": "boolean", "description": "In a git repo: its own worktree and branch (default true). false shares your files."},
                         "fork": {"type": "boolean", "description": "Start it from a copy of the end of your conversation, then the task (default false: the task alone)."},
-                        "model": {"type": "string", "description": "Only if the owner asked for it: a connected model (provider/model or an alias) to run it on. Leave it out to use its role's model or yours."},
+                        "model": {"type": "string", "description": model_help},
                         "effort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Reasoning effort for all its turns, where its model takes one: low for lookups and mechanical edits, high for hard design or debugging. Leave it out for the usual."}
                     },
                     "required": ["task"]

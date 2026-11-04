@@ -70,12 +70,46 @@ pub fn supervisor(
     let _ = me.set(Arc::downgrade(&sup));
     *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sup);
     let models = crate::models::shared()?;
+    // M67: with `[models] bot_picks`, the agent picks any model the
+    // connected OpenRouter has; one that isn't connected yet is connected
+    // for the spawn (`deny` still refuses it).
+    let openrouter = cfg
+        .providers
+        .iter()
+        .find(|(_, p)| p.plan.is_none() && p.base_url.contains("openrouter.ai"))
+        .map(|(name, _)| name.clone())
+        .filter(|_| cfg.models.bot_picks);
+    if openrouter.is_some() {
+        sup.set_model_hint(PICK_HINT.into());
+    }
     sup.set_model_check(Arc::new(move |word| {
-        models.resolve(word).map(|e| e.reference())
+        let why = match models.resolve(word) {
+            Ok(e) => return Ok(e.reference()),
+            Err(why) => why,
+        };
+        let Some(or) = &openrouter else {
+            return Err(why);
+        };
+        let word = word.trim();
+        let id = word.strip_prefix(&format!("{or}/")).unwrap_or(word);
+        // Connected but refused (denied), or not an id at all: as it was.
+        if models.catalog().resolve_unchecked(word).is_ok() || !ferrule_media::is_model_id(id) {
+            return Err(why);
+        }
+        models
+            .add_model(or, id, None, "the bot")
+            .map_err(|e| format!("{e:#}"))?;
+        models.resolve(&format!("{or}/{id}")).map(|e| e.reference())
     }));
     sup.set_worktrees_dir(data.join("worktrees"));
     Ok(Some(sup))
 }
+
+/// M67: `spawn_agent`'s `model`, when the bot picks.
+const PICK_HINT: &str = "The model best suited to this agent's job: pick it yourself when the \
+    job needs a different strength (find_models kind=text lists OpenRouter's, with prices; it \
+    must take tools). A connected model (provider/model or an alias) or an OpenRouter id like \
+    google/gemini-3.8-flash. Leave it out to use its role's model or yours.";
 
 /// M66: the supervisor this process runs its agents on (the gateway's),
 /// so the page's Close stops a running one too.
