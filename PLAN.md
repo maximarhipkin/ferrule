@@ -11418,3 +11418,37 @@ macOS also failed `gateway::tests::status_is_answered_while_the_chats_turn_hangs
 once (the `/status` came 30 ms after the turn, before it reached the
 model); nothing on the branch changes that path, so it's left to the
 rerun.
+
+### 2026-11-04 — After 0.14.15: a Claude plan that isn't ready can sign in again; the Google sign-in is off the page for now (Claude, Opus 5.5)
+
+No milestone claimed.
+
+**Why.** After updating to 0.14.15 the owner's Claude plan read "not
+ready" on the brain picker with no way to sign in: the Claude card
+offered the setup-token box only while the provider wasn't in the
+config, and never said why it wasn't ready. Google sign-in couldn't
+start either: since 2786ffe it needs `FERRULE_GEMINI_CLIENT_ID` and
+`FERRULE_GEMINI_CLIENT_SECRET`, which no build ships. The owner chose
+to take the Google sign-in off the page for now and use OpenRouter.
+
+**What changed.**
+- `GET models/choices`: a connected provider that isn't ready carries
+  `missing` (its first model's reason: the plan's sign-in word, or the
+  key). The Gemini plan is no longer offered when it isn't in the config.
+- The Claude card shows the reason and the setup-token box whenever
+  the plan isn't ready, connected or not, and reloads after a save.
+- The brain picker's plans are ChatGPT and Claude; the checklist's
+  hint names OpenRouter; `/login gemini` in a chat points at `ferrule
+  login gemini` instead of the page; `docs/subscriptions.md` says so.
+- Kept: the Gemini plan's code, `ferrule login gemini`, the routes, and
+  the Google card for a Gemini plan already in the config.
+
+**Checks.** `make check`: fmt, clippy (no warnings), 2,003 tests
+passed. The page's two changes weren't tried in a browser.
+
+**Open.** Why the owner's Claude plan stopped being ready after the
+update isn't known from here (the server wasn't reachable): the card
+now says it. Nothing in 0.14.13 → 0.14.15 changes how readiness is
+worked out. To bring the Google sign-in back: add `Plan::GeminiCli` to
+the offered plans in `models_page::choices` and its tile to `PLANS`,
+once a client ships (e.g. built in from CI secrets with `option_env!`).
