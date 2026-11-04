@@ -1163,6 +1163,89 @@ async fn a_tool_that_asks_for_approval_goes_through_the_gate() {
     assert!(matches!(v, Verdict::Allow), "gates off: {v:?}");
 }
 
+/// Cross-chat sends bind approval to the exact destination and text, remain
+/// gated after outside content in owner mode, and cannot run unattended.
+#[tokio::test]
+async fn cross_chat_send_uses_existing_trust_policy_and_exact_payload() {
+    use ferrule_core::{Guard as _, GuardedCall, Verdict};
+    let args = json!({"chat_id": "-5293598802", "text": "האקדמיה פעילה"});
+    let call = || GuardedCall {
+        tool: "send_message",
+        args: &args,
+        changes_files: false,
+        needs_approval: true,
+    };
+    let w = World::new(caps());
+    let guard = TrustGuard::root(w.hub.clone(), "scheduler__t", unattended());
+    let verdict = guard.before_tool_call(call()).await;
+    assert!(
+        matches!(&verdict, Verdict::Refuse(t) if t.contains("-5293598802") && t.contains("האקדמיה פעילה") && t.contains("nobody can approve it")),
+        "{verdict:?}"
+    );
+    let planning = TrustGuard::root(w.hub.clone(), "s1", telegram()).planning(true);
+    assert!(
+        matches!(planning.before_tool_call(call()).await, Verdict::Refuse(t) if t.contains("plan mode"))
+    );
+
+    // Owner mode retains its normal no-card policy; outside content follows
+    // the existing untrusted_send_gate setting.
+    let w = World::new(TrustConfig {
+        untrusted_send_gate: true,
+        ..caps()
+    });
+    let guard = TrustGuard::root(w.hub.clone(), "s1", unattended())
+        .gates(false)
+        .untrusted_gate(true);
+    assert!(matches!(
+        guard.before_tool_call(call()).await,
+        Verdict::Allow
+    ));
+    let guard = guard.guest_input(true);
+    guard.begin();
+    assert!(
+        matches!(guard.before_tool_call(call()).await, Verdict::Refuse(t) if t.contains("nobody can approve it"))
+    );
+}
+
+#[tokio::test]
+async fn cross_chat_send_approval_does_not_cover_changed_destination_or_text() {
+    use ferrule_core::{Guard as _, GuardedCall, Verdict};
+    let w = World::new(caps());
+    w.owner.replies.lock().unwrap().extend(["yes", "no", "no"]);
+    let guard = TrustGuard::root(w.hub.clone(), "s1", telegram());
+    guard.begin();
+    let payloads = [
+        json!({"chat_id": "-5293598802", "text": "האקדמיה פעילה"}),
+        json!({"chat_id": "-2", "text": "האקדמיה פעילה"}),
+        json!({"chat_id": "-5293598802", "text": "טקסט אחר"}),
+    ];
+    for (i, args) in payloads.iter().enumerate() {
+        let verdict = guard
+            .before_tool_call(GuardedCall {
+                tool: "send_message",
+                args,
+                changes_files: false,
+                needs_approval: true,
+            })
+            .await;
+        if i == 0 {
+            assert!(matches!(verdict, Verdict::Allow), "{verdict:?}");
+        } else {
+            assert!(matches!(verdict, Verdict::Refuse(_)), "{verdict:?}");
+        }
+    }
+    let questions: Vec<_> = w
+        .owner
+        .sent()
+        .into_iter()
+        .filter(|text| text.contains("ferrule wants to run"))
+        .collect();
+    assert_eq!(questions.len(), 3);
+    for (question, payload) in questions.iter().zip(payloads.iter()) {
+        assert!(question.contains(&payload.to_string()), "{question}");
+    }
+}
+
 // ---- plan mode -------------------------------------------------------
 
 #[tokio::test]

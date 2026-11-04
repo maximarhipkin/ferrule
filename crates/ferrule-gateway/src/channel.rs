@@ -90,6 +90,13 @@ pub trait Channel: Send + Sync {
     /// adapter produces, and as the routing key back to it for replies.
     fn name(&self) -> &str;
 
+    /// Whether this is an already admitted destination for the owner-only
+    /// cross-chat text tool. Deny by default; adapters must check their live
+    /// admission policy, not a model-supplied address or a historical lane.
+    fn allows_cross_chat_send(&self, _chat_id: &str) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> ChannelCapabilities {
         ChannelCapabilities::default()
     }

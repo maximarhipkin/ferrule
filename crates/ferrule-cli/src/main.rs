@@ -3195,6 +3195,17 @@ async fn gateway_factory(
                 }
             }
         }
+        // Cross-chat text is a root owner's private Telegram capability only.
+        // Never add it to the child builder or scheduled/group sessions.
+        if let Some(tool) = trust::owner_chat(&tree_cfg).and_then(|owner_chat| {
+            ferrule_gateway::tools::SendMessageTool::for_owner(
+                files.clone(),
+                session_id,
+                owner_chat,
+            )
+        }) {
+            agent.register_tool(Arc::new(tool));
+        }
         // M56.6: ask with buttons, react, edit its last reply; its own chat only.
         if channels::of_session(session_id).is_some() {
             for tool in ferrule_gateway::tools::chat_tools(&files, session_id) {
