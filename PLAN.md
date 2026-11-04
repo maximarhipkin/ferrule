@@ -30,7 +30,13 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.16** (2026-11-04, PRs #77 and #78): M67, the bot picks the
+  - **v0.14.17** (2026-11-04, PR #80): M68, your own agents.
+    `[agents.custom.<name>]` (what it's for, a role, a model,
+    instructions), added and changed on the Agents page's **Your agents**
+    card; `spawn_agent {agent: name}` starts one on its role and model,
+    its instructions before the task. Every crate is at 0.14.17 except
+    `ferrule-plugin-sdk`.
+  - Before it, **v0.14.16** (2026-11-04, PRs #77 and #78): M67, the bot picks the
     OpenRouter model for each job. `[models] bot_picks` (off by default,
     on the Config page) lets `spawn_agent` name any OpenRouter model
     (connected for the spawn) and `generate_image` / `generate_video` any
@@ -38,8 +44,7 @@ below it is append-only.
     price; the caps still hold. Each job's default model is a Config
     field. A Claude plan that isn't ready shows why and takes a new
     setup-token on its card; the Google sign-in is off the page until a
-    build ships an OAuth client. Every crate is at 0.14.16 except
-    `ferrule-plugin-sdk`.
+    build ships an OAuth client.
   - Before it, **v0.14.15** (2026-11-04, PR #76): M66 and the native Gemini plan.
     `plan = "gemini-cli"` signs in to a Google / Antigravity plan over
     HTTPS with no `agy` or `gemini` on the host (the native client is the
