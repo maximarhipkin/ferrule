@@ -423,7 +423,9 @@ it sends to you alone (every addressee one of your own chats or the
 connections' own mail accounts, so a morning briefing can email you).
 `[trust] untrusted_send_gate = false` turns it off: in the file, on the
 Config page, or with `config_set` on your own card (after a restart)
-([m19-trust-cost.md](m19-trust-cost.md) §6b). The new ops:
+([m19-trust-cost.md](m19-trust-cost.md) §6b). `[trust] trusted_connections
+= ["higgsfield"]`, set the same way, lets one connected service's changes
+through without asking; every other gate stays. The new ops:
 
 | Op | What it does |
 |---|---|

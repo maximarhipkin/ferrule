@@ -46,11 +46,12 @@ const OPEN: &[&str] = &[
     "browser.enabled",
     "plans.claude_code.turn_timeout_minutes",
     "trust.untrusted_send_gate",
+    "trust.trusted_connections",
 ];
 
 /// Fields in [`OPEN`] that loosen a gate: the chat changes them only on the
 /// owner's card, in owner mode too, and never by restoring a copy.
-pub(crate) const CARDED: &[&str] = &["trust.untrusted_send_gate"];
+pub(crate) const CARDED: &[&str] = &["trust.untrusted_send_gate", "trust.trusted_connections"];
 
 /// Whole-number fields the page and the chat keep inside a range: the
 /// key, the least and the most.
@@ -233,6 +234,19 @@ fn refusal(field: &str) -> String {
     )
 }
 
+/// The field a leaf's path belongs to: a list's items (`….0`, `….1`) are
+/// the list's.
+fn field_of(path: &str) -> &str {
+    let mut k = path;
+    while let Some((head, last)) = k.rsplit_once('.') {
+        if last.parse::<usize>().is_err() {
+            break;
+        }
+        k = head;
+    }
+    k
+}
+
 /// The first field the page may not change that `new` changes.
 pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
     if let Some(twice) = twice_named(new.as_table(), "") {
@@ -253,7 +267,7 @@ pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<Str
         .filter(|k| a.get(*k) != b.get(*k))
         .find(|k| {
             let segs: Vec<&str> = k.split('.').collect();
-            !OPEN.contains(&k.as_str())
+            !OPEN.contains(&field_of(k))
                 && !follows(k)
                 && (WHOLE.contains(&segs[0])
                     || channel_key(&segs)
@@ -267,7 +281,11 @@ pub(crate) fn carded_change(old: &DocumentMut, new: &DocumentMut) -> Option<Stri
     let (a, b) = (leaves(old), leaves(new));
     CARDED
         .iter()
-        .find(|k| a.get(**k) != b.get(**k))
+        .find(|c| {
+            a.keys()
+                .chain(b.keys())
+                .any(|k| field_of(k) == **c && a.get(k) != b.get(k))
+        })
         .map(|k| k.to_string())
 }
 
@@ -774,6 +792,14 @@ const FORM: &[Field] = &[
         choices: &[],
         help: "Ask before a POST, PUT or PATCH through a saved key after the run read outside content (a guest's message, a web page). Off: HTTP writes through bound keys no longer ask after outside content; recursive deletes, force pushes and DELETEs still follow [trust] gates (after a restart)",
     },
+    // Lets one connected service's changes through every gate; the rest
+    // stay (docs/m19-trust-cost.md §6b). On the owner's card from the chat.
+    Field {
+        key: "trust.trusted_connections",
+        kind: "names",
+        choices: &[],
+        help: "Connected services whose changes don't ask, also after the run read outside content (comma-separated MCP server names, like higgsfield). Sending a message, other services' changes, recursive deletes, force pushes and HTTP writes still ask (after a restart)",
+    },
     // The chat notice only: systemd's watchdog and the heartbeat don't
     // read it (a lane is stuck after 10 min for them when it's 0).
     Field {
@@ -949,6 +975,7 @@ fn default_of(base: &Config, now: &Config, key: &str) -> Option<Value> {
         "gateway.telegram_group_mention_only" => json!(base.gateway.telegram_group_mention_only),
         "gateway.busy_notices" => json!(base.gateway.busy_notices()),
         "trust.untrusted_send_gate" => json!(base.trust.untrusted_send_gate),
+        "trust.trusted_connections" => json!(base.trust.trusted_connections),
         "health.watchdog_after_secs" => json!(base.health.watchdog_after_secs),
         "scheduler.tick_interval_secs" => json!(base.scheduler.tick_interval_secs),
         "dashboard.idle_minutes" => json!(base.dashboard.idle_minutes),
@@ -992,6 +1019,9 @@ fn field_value(doc: &DocumentMut, key: &str) -> Value {
         Some(toml_edit::Value::Integer(i)) => json!(*i.value()),
         Some(toml_edit::Value::Float(f)) => json!(*f.value()),
         Some(toml_edit::Value::String(s)) => json!(s.value()),
+        Some(toml_edit::Value::Array(a)) => {
+            json!(a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+        }
         _ => Value::Null,
     }
 }
@@ -1181,6 +1211,33 @@ pub fn version_restore(ctx: &Ctx, body: &Value) -> Answer {
     commit(ctx, &path, old.as_ref(), &new, "restore", guard)
 }
 
+/// A `names` field's value: a JSON list of strings or one comma-separated
+/// string, each a short code (letters, digits, `-`, `_`), deduplicated in
+/// order. `None` when one isn't.
+fn names(raw: &Value) -> Option<Vec<String>> {
+    let items: Vec<String> = match raw {
+        Value::String(s) => s.split(',').map(|n| n.trim().to_string()).collect(),
+        Value::Array(a) => a
+            .iter()
+            .map(|v| v.as_str().map(|n| n.trim().to_string()))
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for n in items.into_iter().filter(|n| !n.is_empty()) {
+        let ok = n.len() <= 64
+            && n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !ok {
+            return None;
+        }
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    Some(out)
+}
+
 /// `POST /api/config/set {key, value, base_hash?}`: one form field.
 pub fn set(ctx: &Ctx, body: &Value) -> Answer {
     let key = need!(arg(body, "key"));
@@ -1212,6 +1269,12 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
         {
             Some(s.as_str().into())
         }
+        // Names (connected services): a list, or one comma-separated
+        // string from the page; each a short code. Empty: the default.
+        ("names", Value::Array(_) | Value::String(_)) if names(raw).is_some() => {
+            let list = names(raw).unwrap_or_default();
+            (!list.is_empty()).then(|| list.into_iter().collect::<toml_edit::Array>().into())
+        }
         // M67: an OpenRouter model id, `vendor/model[:variant]`.
         ("model", Value::String(s)) if ferrule_media::is_model_id(s) => Some(s.as_str().into()),
         _ => {
@@ -1224,6 +1287,7 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
                         "int" => "a whole number".to_string(),
                         "float" => "a number".to_string(),
                         "text" => "a short code: letters, digits, - or _".to_string(),
+                        "names" => "names: letters, digits, - or _, comma-separated".to_string(),
                         "model" => "an OpenRouter model id, like google/veo-3.1-lite".to_string(),
                         _ => format!("one of {}", field.choices.join(", ")),
                     }
@@ -1508,6 +1572,7 @@ mod tests {
                 "int" => d.is_u64(),
                 "float" => d.is_number(),
                 "choice" => d.as_str().is_some_and(|c| f.choices.contains(&c)),
+                "names" => d.is_array(),
                 _ => d.is_string() || d.is_null(),
             };
             assert!(fits || d.is_null(), "{}: {d}", f.key);
@@ -1602,6 +1667,19 @@ mod tests {
             guarded_change(&DocumentMut::new(), &both).as_deref(),
             Some("trust.gates")
         );
+        // So are the trusted connections, a list: any item changed.
+        let one = doc("[trust]\ntrusted_connections = [\"higgsfield\"]\n");
+        let two = doc("[trust]\ntrusted_connections = [\"higgsfield\", \"notion\"]\n");
+        assert_eq!(guarded_change(&one, &two), None);
+        assert_eq!(
+            carded_change(&one, &two).as_deref(),
+            Some("trust.trusted_connections")
+        );
+        assert_eq!(
+            carded_change(&two, &DocumentMut::new()).as_deref(),
+            Some("trust.trusted_connections")
+        );
+        assert_eq!(carded_change(&one, &one), None);
     }
 
     #[test]

@@ -238,12 +238,17 @@ pub fn only_to(args: &Value, own: &[String]) -> bool {
 /// mark it read-only. The hint only ever skips the gate for a tool that
 /// claims to read; a missing one gates.
 pub fn classify_connected(tool: &str, changes: bool, connected: &[String]) -> Option<Gated> {
-    let rest = tool.strip_prefix("mcp__")?;
-    let (server, _) = rest.split_once("__")?;
+    let server = connected_server(tool)?;
     (changes && connected.iter().any(|c| c == server)).then(|| Gated {
         kind: Kind::ConnectedWrite,
         command: tool.to_string(),
     })
+}
+
+/// The connected service a tool belongs to: `name` in `mcp__<name>__*`.
+pub fn connected_server(tool: &str) -> Option<&str> {
+    let rest = tool.strip_prefix("mcp__")?;
+    rest.split_once("__").map(|(server, _)| server)
 }
 
 /// M32: a tool that declares it needs approval (`Tool::needs_approval`).

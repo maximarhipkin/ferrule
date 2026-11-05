@@ -1126,6 +1126,82 @@ async fn a_connected_services_write_tool_needs_the_owners_yes() {
     ));
 }
 
+/// `[trust] trusted_connections`: a trusted service's change runs without
+/// asking, before and after outside content, gates on or off; another
+/// connected service's change and a `send_message` still ask.
+#[tokio::test]
+async fn a_trusted_connections_write_runs_after_outside_content_and_the_rest_still_ask() {
+    use ferrule_core::{Guard as _, GuardedCall, Verdict};
+    let args = json!({"chat_id": "-1", "text": "x"});
+    let call = |tool: &'static str| GuardedCall {
+        tool,
+        args: &args,
+        changes_files: tool != "send_message",
+        needs_approval: tool == "send_message",
+    };
+    let cfg = TrustConfig {
+        untrusted_send_gate: true,
+        trusted_connections: vec!["higgsfield".into()],
+        ..caps()
+    };
+    let w = World::new(cfg);
+    w.hub
+        .set_connected(vec!["higgsfield".into(), "notion".into()]);
+    let gates_on = TrustGuard::root(w.hub.clone(), "scheduler__t", unattended());
+    let owner_mode = TrustGuard::root(w.hub.clone(), "scheduler__o", unattended())
+        .gates(false)
+        .untrusted_gate(true);
+    for guard in [&gates_on, &owner_mode] {
+        let guard = guard.clone().guest_input(true);
+        guard.begin();
+        assert!(matches!(
+            guard
+                .before_tool_call(call("mcp__higgsfield__media_upload"))
+                .await,
+            Verdict::Allow
+        ));
+        assert!(
+            matches!(guard.before_tool_call(call("mcp__notion__create_page")).await, Verdict::Refuse(t) if t.contains("change through a connected service")),
+        );
+        assert!(
+            matches!(guard.before_tool_call(call("send_message")).await, Verdict::Refuse(t) if t.contains("nobody can approve it")),
+        );
+    }
+    // Untainted, gates on: trusted runs, the other service still asks.
+    let fresh = TrustGuard::root(w.hub.clone(), "scheduler__f", unattended());
+    fresh.begin();
+    assert!(matches!(
+        fresh
+            .before_tool_call(call("mcp__higgsfield__generate_video"))
+            .await,
+        Verdict::Allow
+    ));
+    assert!(matches!(
+        fresh
+            .before_tool_call(call("mcp__notion__create_page"))
+            .await,
+        Verdict::Refuse(_)
+    ));
+
+    // Not in the list: the same Higgsfield write asks after outside content.
+    let w = World::new(TrustConfig {
+        untrusted_send_gate: true,
+        ..caps()
+    });
+    w.hub.set_connected(vec!["higgsfield".into()]);
+    let guard = TrustGuard::root(w.hub.clone(), "scheduler__u", unattended())
+        .gates(false)
+        .untrusted_gate(true)
+        .guest_input(true);
+    guard.begin();
+    assert!(matches!(
+        guard
+            .before_tool_call(call("mcp__higgsfield__media_upload"))
+            .await,
+        Verdict::Refuse(_)
+    ));
+}
+
 /// M32: a tool that declares every call needs approval (a plugin tool
 /// marked `approval`) is gated whatever it changes; plan mode refuses it.
 #[tokio::test]

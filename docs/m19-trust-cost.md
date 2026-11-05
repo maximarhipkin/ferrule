@@ -40,6 +40,7 @@ approval_timeout_secs = 600
 plan_timeout_secs = 3600        # how long a Telegram plan waits for "yes"
 gates = true
 untrusted_send_gate = true      # M54.5: owner mode's one gate (§6b)
+trusted_connections = []        # connected services whose changes never ask (§6b)
 ```
 
 Since M31 the owner can also be on Discord or Slack: `discord_owner`,
@@ -354,6 +355,20 @@ content; recursive deletes, force pushes and `DELETE`s still follow
 after a restart. `gates` itself stays guarded: only the file on the
 machine. Outside owner mode it does nothing but the HTTP writes: there
 `gates` decides the rest.
+
+`[trust] trusted_connections = ["higgsfield"]` names connected services
+(the `<name>` of `mcp__<name>__…`) whose changes the owner trusts: a
+`ConnectedWrite` through one runs without asking, in every mode, before
+and after outside content (with the gates on, it doesn't ask at all).
+Nothing else moves: `send_message`, another service's change, a
+recursive delete, a force push or branch deletion and an HTTP write to
+a bound host ask exactly as before. It is a list of short names, empty
+by default, set like `untrusted_send_gate`: in the file, on the Config
+page, or with `config_set` (a list or one comma-separated string), from
+the chat only on the owner's card, never by `config_restore`; after a
+restart. The trade: an injected page can make the bot spend that
+service's credits or change what is in it, so name only a service whose
+changes you'd approve anyway.
 
 **Not covered.** Content a command fetches some other way (`python -c`,
 `git clone` of someone's repo), a forwarded message the owner sends, and
