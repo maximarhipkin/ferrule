@@ -3749,7 +3749,7 @@
       const set = (key, value, b) => act("config/set", Object.assign({ key, value }, base), b);
       const row = (f) => {
         let input;
-        const shown = f.value === null || f.value === undefined ? "" : String(f.value);
+        const shown = f.value === null || f.value === undefined ? "" : Array.isArray(f.value) ? f.value.join(", ") : String(f.value);
         if (f.kind === "bool" || f.kind === "choice") {
           const opts = f.kind === "bool" ? ["true", "false"] : f.choices || [];
           const dv = f.default === undefined || f.default === null ? null : f.kind === "bool" ? (f.default ? "on" : "off") : String(f.default);
@@ -3762,8 +3762,8 @@
           };
           return fieldRow(f, input);
         }
-        const text = f.kind === "text" || f.kind === "model";
-        const dflt = f.default === undefined || f.default === null || f.default === "" ? "default" : "default: " + f.default;
+        const text = f.kind === "text" || f.kind === "model" || f.kind === "names";
+        const dflt = f.default === undefined || f.default === null || f.default === "" || (Array.isArray(f.default) && !f.default.length) ? "default" : "default: " + f.default;
         input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: dflt, "aria-label": f.key, dir: text ? "ltr" : null });
         input.value = shown;
         const save = el("button", { text: "Save" });

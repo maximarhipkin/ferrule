@@ -450,6 +450,36 @@ async fn the_send_gate_is_turned_off_from_a_chat_only_on_the_owners_card() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trusted_connections_are_set_from_a_chat_only_on_the_owners_card() {
+    let key = "trust.trusted_connections";
+    // Owner mode too: the card stays.
+    let rig = Rig::owner_mode(long());
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": ["higgsfield"]}));
+    let card = rig.asked().await;
+    assert!(card.contains(key) && card.contains("higgsfield"), "{card}");
+    assert!(!rig.config_text().contains("trusted_connections"));
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap();
+    assert!(out.starts_with("Approved and done:"), "{out}");
+    assert!(
+        rig.config_text()
+            .contains("[trust]\ntrusted_connections = [\"higgsfield\"]"),
+        "{}",
+        rig.config_text()
+    );
+    // A name that isn't one is refused.
+    rig.told.0.lock().unwrap().clear();
+    let call = rig.start(json!({"op": "config_set", "key": key, "value": "higgs field; rm"}));
+    rig.asked().await;
+    rig.reply("yes");
+    let out = call.await.unwrap().unwrap_or_else(|e| e);
+    assert!(out.contains("comma-separated"), "{out}");
+    assert!(rig
+        .config_text()
+        .contains("trusted_connections = [\"higgsfield\"]"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_status_notices_are_turned_off_from_a_chat() {
     // The busy notice and the stuck-turn message: both on a card, the
     // watchdog's seconds kept between 0 (off) and a day.

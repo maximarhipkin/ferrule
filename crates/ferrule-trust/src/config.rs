@@ -75,6 +75,14 @@ pub struct TrustConfig {
     /// gates on it is the only thing this adds). The bot can't turn it
     /// off by itself: from the chat only on the owner's card.
     pub untrusted_send_gate: bool,
+    /// Connected services (the `<name>` of `mcp__<name>__…`, as in
+    /// `[connections]`) whose changes the owner trusts: a call that
+    /// changes something through one runs without asking, also after the
+    /// run read outside content. Every other gate stays as it is: a
+    /// `send_message`, another service's change, a recursive delete, a
+    /// force push and an HTTP write to a bound host still ask. Empty by
+    /// default. From the chat only on the owner's card.
+    pub trusted_connections: Vec<String>,
 }
 
 impl Default for TrustConfig {
@@ -104,11 +112,18 @@ impl Default for TrustConfig {
             plan_timeout_secs: 3600,
             gates: true,
             untrusted_send_gate: true,
+            trusted_connections: Vec::new(),
         }
     }
 }
 
 impl TrustConfig {
+    /// A connected service whose changes run without asking
+    /// (`trusted_connections`).
+    pub fn trusts_connection(&self, server: &str) -> bool {
+        self.trusted_connections.iter().any(|c| c == server)
+    }
+
     /// The owner setting for a channel other than Telegram (whose owner is
     /// a number, `owner_chat`): `discord_owner`, `whatsapp_owner`, ….
     pub fn owner_on(&self, channel: &str) -> Option<&String> {

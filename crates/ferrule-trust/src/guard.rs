@@ -1,8 +1,8 @@
 //! `TrustGuard`: the hub, seen from one agent in a run tree.
 
 use crate::classify::{
-    classify, classify_connected, classify_declared, classify_http_write, grantable_command,
-    only_to, recipients, untrusted_source, Gated, Kind,
+    classify, classify_connected, classify_declared, classify_http_write, connected_server,
+    grantable_command, only_to, recipients, untrusted_source, Gated, Kind,
 };
 use crate::grants::Spec;
 use crate::hub::{Hub, Prompter};
@@ -316,6 +316,15 @@ impl Guard for TrustGuard {
             }
             return Verdict::Allow;
         }
+        // A change through a connected service the owner trusts (`[trust]
+        // trusted_connections`) runs without asking, after outside content
+        // too. Only that: `send_message`, another service's change and
+        // every shell or HTTP gate stay as they are.
+        let trusted = |g: &Gated| {
+            g.kind == Kind::ConnectedWrite
+                && connected_server(call.tool)
+                    .is_some_and(|s| self.hub.config().trusts_connection(s))
+        };
         if !self.gates || !self.hub.config().gates {
             // M54.5: the one gate left. The confused deputy: the proxy
             // swaps in the owner's key for its own host, so an injected
@@ -328,7 +337,7 @@ impl Guard for TrustGuard {
                 return Verdict::Allow;
             };
             return match gated()
-                .filter(|g| g.kind.leaves_the_box())
+                .filter(|g| g.kind.leaves_the_box() && !trusted(g))
                 .or_else(http_write)
             {
                 // Wave A: the owner's own scheduled task (the gates are
@@ -351,7 +360,7 @@ impl Guard for TrustGuard {
             };
         }
         let tainted = before.is_some();
-        match gated() {
+        match gated().filter(|g| !trusted(g)) {
             Some(g) => self.ask(call, g, None, tainted).await,
             // `[trust] untrusted_send_gate = false` lets these through too.
             None => match http_write().filter(|_| self.hub.config().untrusted_send_gate) {
