@@ -30,6 +30,20 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
+  - **v0.14.21** (2026-11-16, PR #83): M69, video craft. `check_video`
+    measures a render into FAIL/WARN findings per kind of video;
+    `send_file` sends a made video only once measured (a FAIL only with
+    `known_issues`); `watch_video {focus}` looks around every cut with
+    burned timecodes and a timed transcript; `render_video` renders an
+    edit list in the background (segments, voice, ducked music,
+    captions, mastered loudness) and wakes the chat; sub-agents watch,
+    check and render; the owner's 👍/👎 on a sent video wakes its
+    session; the video-editing skill is a workflow with a rubric, a
+    guide per kind, a critic and a house style in `media/style/`. Also:
+    the Claude plan's `config_dir = "~/.claude"` works with a Mac's own
+    login, and the update tests find their fake claude under cargo's
+    new build-dir layout. Every crate is at 0.14.21 except
+    `ferrule-plugin-sdk`.
   - **v0.14.17** (2026-11-04, PR #80): M68, your own agents.
     `[agents.custom.<name>]` (what it's for, a role, a model,
     instructions), added and changed on the Agents page's **Your agents**
@@ -11584,3 +11598,20 @@ two-pass loudness to -14 LUFS, faststart, fitted to the send limit), run
 in a chat as a background job that wakes the session, inside the call for
 a sub-agent; the skill's `references/edit-list.md`. A 6 s edit with every
 field rendered on macOS and passed `check_video` at -14.1 LUFS.
+
+**Tested end to end, then released as 0.14.21.** A throwaway gateway on
+this Mac (own data dir and workspace, `claude-code/sonnet` on the owner's
+login, the HTTP API) got a plain request for a 6–8 s Reels promo from a
+5 s clip. It activated the skill, read three references, watched the
+source, wrote an edit list and `render_video`'d it in the background,
+was woken, ran `check_video` (no FAIL, -13.7 LUFS) and `watch_video`
+(overview and cuts), and `send_file` passed the gate. Told it liked the
+captions and found the music too loud, it wrote both rules to
+`media/style/profile.md` with their source and remembered them; asked
+for a quieter version, it saw that mastering undid the lower music
+(v2 -13.7 LUFS), remixed v3 to -21.7 itself and sent it with
+`known_issues` explaining the deliberate warning. Two fixes came of it:
+`CLAUDE_CONFIG_DIR` left unset for `~/.claude` (on macOS it hid the
+Keychain login), and a `loudness` target in the edit list. Not tried:
+the plan-first step and the critic (the job was small), the Telegram
+thumbs wake, Hebrew captions.
