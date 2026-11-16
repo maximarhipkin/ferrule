@@ -1369,6 +1369,13 @@ pub(crate) fn child_builder(
                 session_hidden(false, false, &spec.workspace),
             )));
             agent.register_tool(Arc::new(ferrule_gateway::tools::CheckVideoTool::new(
+                sandbox.clone(),
+                v.ffmpeg.clone(),
+                &spec.id,
+                session_hidden(false, false, &spec.workspace),
+            )));
+            // Phase 3: a child renders inside its call.
+            agent.register_tool(Arc::new(ferrule_gateway::tools::RenderVideoTool::new(
                 sandbox,
                 v.ffmpeg.clone(),
                 &spec.id,
@@ -3255,12 +3262,22 @@ async fn gateway_factory(
                 // M69: measured, not guessed; `send_file` reads the verdict.
                 agent.register_tool(Arc::new(
                     ferrule_gateway::tools::CheckVideoTool::new(
-                        sandbox,
+                        sandbox.clone(),
                         ffmpeg.clone(),
                         session_id,
                         session_hidden(owner, owners, &workspace),
                     )
                     .for_chat(files.clone(), looked.clone()),
+                ));
+                // M69 phase 3: an edit list rendered in the background.
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::RenderVideoTool::new(
+                        sandbox,
+                        ffmpeg.clone(),
+                        session_id,
+                        session_hidden(owner, owners, &workspace),
+                    )
+                    .for_chat(files.clone()),
                 ));
             }
             // M61: screenshots and recordings of the owner's screen, in the

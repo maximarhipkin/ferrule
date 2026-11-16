@@ -2,13 +2,15 @@
 //! well that are code rather than taste: what a render measures, which of
 //! those numbers are broken (FAIL) or doubtful (WARN) for the kind of video
 //! it is, whether its captions can be read, when each line was said, and
-//! timecodes burned onto frames without a font. Nothing here runs a
+//! timecodes burned onto frames without a font, and an edit list compiled
+//! into ffmpeg steps. Nothing here runs a
 //! process; the gateway's tools run ffmpeg in the sandbox with the
 //! arguments built here and pass back what it printed. Kept apart from the
 //! gateway so the same checks can serve other agents later (M69 phase 5).
 
 pub mod check;
 pub mod detect;
+pub mod edl;
 pub mod labels;
 pub mod transcript;
 

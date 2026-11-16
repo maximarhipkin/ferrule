@@ -8,6 +8,7 @@ pub mod check;
 pub mod find_models;
 pub mod look;
 pub mod media;
+pub mod render;
 pub mod send_file;
 pub mod send_message;
 pub mod watch;
@@ -19,6 +20,7 @@ pub use media::{
     GenerateImageTool, GenerateVideoTool, MediaLimits, MediaPoller, MediaShared, MediaSpend,
     SpeakTool,
 };
+pub use render::RenderVideoTool;
 pub use send_file::{FileOut, SendFileTool};
 pub use send_message::SendMessageTool;
 pub use watch::{Ffmpeg, WatchVideoTool};
