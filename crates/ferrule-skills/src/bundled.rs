@@ -42,10 +42,55 @@ const FILES: &[(&str, &str)] = &[
         "weather/references/weather-codes.md",
         include_str!("../bundled/weather/references/weather-codes.md"),
     ),
-    // M65 §2: ffmpeg recipes for the sandboxed shell.
+    // M65 §2, M69: making video well — the workflow, the ffmpeg recipes,
+    // the rubric, a guide per kind, the critic and the owner's taste.
     (
         "video-editing/SKILL.md",
         include_str!("../bundled/video-editing/SKILL.md"),
+    ),
+    (
+        "video-editing/references/recipes.md",
+        include_str!("../bundled/video-editing/references/recipes.md"),
+    ),
+    (
+        "video-editing/references/rubric.md",
+        include_str!("../bundled/video-editing/references/rubric.md"),
+    ),
+    (
+        "video-editing/references/critic-brief.md",
+        include_str!("../bundled/video-editing/references/critic-brief.md"),
+    ),
+    (
+        "video-editing/references/short-clips.md",
+        include_str!("../bundled/video-editing/references/short-clips.md"),
+    ),
+    (
+        "video-editing/references/slides-explainers.md",
+        include_str!("../bundled/video-editing/references/slides-explainers.md"),
+    ),
+    (
+        "video-editing/references/promos.md",
+        include_str!("../bundled/video-editing/references/promos.md"),
+    ),
+    (
+        "video-editing/references/long-edits.md",
+        include_str!("../bundled/video-editing/references/long-edits.md"),
+    ),
+    (
+        "video-editing/references/sound.md",
+        include_str!("../bundled/video-editing/references/sound.md"),
+    ),
+    (
+        "video-editing/references/captions-hebrew.md",
+        include_str!("../bundled/video-editing/references/captions-hebrew.md"),
+    ),
+    (
+        "video-editing/references/taste.md",
+        include_str!("../bundled/video-editing/references/taste.md"),
+    ),
+    (
+        "video-editing/references/good-bad-pairs.md",
+        include_str!("../bundled/video-editing/references/good-bad-pairs.md"),
     ),
 ];
 
