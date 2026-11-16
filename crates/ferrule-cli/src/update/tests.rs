@@ -1283,18 +1283,29 @@ async fn live_the_real_release_list_parses() {
 
 // M36 §5: `claude`, only ever the stand-in (`ferrule-fake-claude`).
 
-/// The stand-in `claude`, next to this test binary's `ferrule` when the
-/// workspace built it, else built now.
+/// The stand-in `claude`, in the profile dir above this test binary when
+/// the workspace built it, else built now. The test binary sits in
+/// `target/<profile>/deps/`, or (newer cargo's build-dir layout) deeper,
+/// in `target/<profile>/build/<crate>/<hash>/out/`: every dir above it is
+/// tried, and the profile is `release` when one of them is.
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
         let exe = std::env::current_exe().unwrap();
-        let profile = exe.parent().and_then(Path::parent).unwrap();
-        let fake = profile.join(format!(
-            "ferrule-fake-claude{}",
-            std::env::consts::EXE_SUFFIX
-        ));
-        if !fake.exists() {
+        let name = format!("ferrule-fake-claude{}", std::env::consts::EXE_SUFFIX);
+        let find = || {
+            exe.ancestors()
+                .skip(1)
+                .map(|d| d.join(&name))
+                .find(|p| p.is_file())
+        };
+        if let Some(fake) = find() {
+            return fake;
+        }
+        let release = exe
+            .ancestors()
+            .any(|d| d.file_name() == Some("release".as_ref()));
+        {
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
             let mut cmd = std::process::Command::new(cargo);
             cmd.args([
@@ -1304,12 +1315,12 @@ fn fake_claude() -> PathBuf {
                 "--bin",
                 "ferrule-fake-claude",
             ]);
-            if profile.file_name() == Some("release".as_ref()) {
+            if release {
                 cmd.arg("--release");
             }
             assert!(cmd.status().unwrap().success(), "building the fake claude");
         }
-        fake
+        find().expect("the fake claude, in a dir above this test binary, after building it")
     })
     .clone()
 }

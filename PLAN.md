@@ -30,6 +30,20 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
+  - **v0.14.21** (2026-11-16, PR #83): M69, video craft. `check_video`
+    measures a render into FAIL/WARN findings per kind of video;
+    `send_file` sends a made video only once measured (a FAIL only with
+    `known_issues`); `watch_video {focus}` looks around every cut with
+    burned timecodes and a timed transcript; `render_video` renders an
+    edit list in the background (segments, voice, ducked music,
+    captions, mastered loudness) and wakes the chat; sub-agents watch,
+    check and render; the owner's 👍/👎 on a sent video wakes its
+    session; the video-editing skill is a workflow with a rubric, a
+    guide per kind, a critic and a house style in `media/style/`. Also:
+    the Claude plan's `config_dir = "~/.claude"` works with a Mac's own
+    login, and the update tests find their fake claude under cargo's
+    new build-dir layout. Every crate is at 0.14.21 except
+    `ferrule-plugin-sdk`.
   - **v0.14.17** (2026-11-04, PR #80): M68, your own agents.
     `[agents.custom.<name>]` (what it's for, a role, a model,
     instructions), added and changed on the Agents page's **Your agents**
@@ -334,7 +348,9 @@ below it is append-only.
   proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
   understanding, editing and checking** (designed on `m65-video`,
   2026-10-22, `docs/m65-video.md`; merged into `autopilot` and built
-  there, §0–§6). **The next free number is M66.** The first claim wins,
+  there, §0–§6). **M66** (dashboard control and learning), **M67** (the
+  bot picks models), **M68** (your own agents) and **M69** (video craft,
+  `m69-video-craft`, 2026-11-16) are claimed. **The next free number is M70.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -11538,3 +11554,64 @@ browser.
 
 **Open.** Not run live. A named agent's model isn't checked at startup:
 a model removed later fails that agent's spawns, with the reason.
+
+### 2026-11-16 — M69: video craft (Claude, Opus 5.5)
+
+Claims **M69** (Current State updated: the next free number is M70), on
+branch `m69-video-craft` from `main` at `83b4c91`.
+
+**Why.** The owner wants the bot to make good videos of four kinds
+(short vertical clips, slides and explainers, promos from generated
+clips, long landscape edits), see its own result, know good from bad,
+and learn their taste from thumbs and example videos. Research for the
+design: models judge edits poorly from frames, so quality comes from
+checks in code, targeted looks, a critic comparing versions, and the
+owner's feedback (`docs/m69-video-craft.md`, "Why").
+
+**What changed.** `docs/m69-video-craft.md`, "What was built".
+- New crate `ferrule-video`: the analysis pass and its parser,
+  profile-aware findings, caption lint, timed transcripts, timecodes drawn
+  without a font.
+- `check_video`; `send_file` gated on its verdict (`known_issues`);
+  `watch_video {focus}` with burned timecodes and a timed transcript;
+  sub-agents get both tools; a thumb on a sent video wakes its session;
+  ffmpeg also in the workspace's `bin/`, `<data>/bin` on the shell's
+  `PATH`, doctor names missing filters and Node.
+- The video-editing skill rewritten as a workflow with ten reference
+  files; M65's recipes kept in `references/recipes.md`.
+
+**Checks.** `make check` (see the PR). The analysis pass and a sheet with
+burned times were run against a 5 s test clip on macOS (Homebrew ffmpeg):
+-21.8 LUFS measured and flagged quieter than -14, no faststart flagged,
+the times legible. No tests added (the owner's choice).
+
+**Open.** Not run live; the owner's server's ffmpeg 7.0.2 output is
+unverified. Phase 3 (`render_video` from an edit list), phase 4
+(`watch_video {listen}` through Gemini, motion graphics) and phase 5 (a
+plugin for other agents) are next. The thumbs wake needs `[learning]
+enabled` and forgets sent videos on a restart.
+
+**Phase 3, same day.** `render_video {edl | status, dry_run?}`: an edit
+list (`ferrule_video::edl`) compiled into ffmpeg steps (segments with
+30 ms fades, concat, voice and ducked music, fades, captions last,
+two-pass loudness to -14 LUFS, faststart, fitted to the send limit), run
+in a chat as a background job that wakes the session, inside the call for
+a sub-agent; the skill's `references/edit-list.md`. A 6 s edit with every
+field rendered on macOS and passed `check_video` at -14.1 LUFS.
+
+**Tested end to end, then released as 0.14.21.** A throwaway gateway on
+this Mac (own data dir and workspace, `claude-code/sonnet` on the owner's
+login, the HTTP API) got a plain request for a 6–8 s Reels promo from a
+5 s clip. It activated the skill, read three references, watched the
+source, wrote an edit list and `render_video`'d it in the background,
+was woken, ran `check_video` (no FAIL, -13.7 LUFS) and `watch_video`
+(overview and cuts), and `send_file` passed the gate. Told it liked the
+captions and found the music too loud, it wrote both rules to
+`media/style/profile.md` with their source and remembered them; asked
+for a quieter version, it saw that mastering undid the lower music
+(v2 -13.7 LUFS), remixed v3 to -21.7 itself and sent it with
+`known_issues` explaining the deliberate warning. Two fixes came of it:
+`CLAUDE_CONFIG_DIR` left unset for `~/.claude` (on macOS it hid the
+Keychain login), and a `loudness` target in the edit list. Not tried:
+the plan-first step and the critic (the job was small), the Telegram
+thumbs wake, Hebrew captions.

@@ -13,6 +13,8 @@ use ferrule_core::error::CoreError;
 use ferrule_core::message::ImageCheck;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_sandbox::Sandbox;
+use ferrule_video::check::Probe;
+use ferrule_video::labels::Sheet;
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -25,6 +27,10 @@ pub const DIR: &str = ".ferrule/watch";
 /// The default number of frames on a sheet, and the most.
 const FRAMES: u64 = 12;
 const MAX_FRAMES: u64 = 16;
+/// M69, `focus: "cuts"`: one row of four frames per cut, four cuts a
+/// sheet, at most three sheets a call (the session keeps four images).
+const CUTS_PER_SHEET: usize = 4;
+const MAX_SHEETS: usize = 3;
 /// The longest side of a sheet, in pixels: well under the 3.5 MB image cap
 /// as a JPEG, and as much as a model's image tiling makes use of.
 const SHEET_SIDE: f64 = 2048.0;
@@ -40,9 +46,10 @@ const SHEET_LIMIT: Duration = Duration::from_secs(120);
 const AUDIO_LIMIT: Duration = Duration::from_secs(180);
 
 /// ffmpeg and ffprobe, found once: on `PATH`, in Homebrew's dirs, or in
-/// ferrule's own `<data>/bin` (where a service whose `PATH` dirs are all
-/// read-only can still have them). They run in the sandbox, like ones the
-/// shell would run.
+/// ferrule's own `<data>/bin` or the workspace's `bin/` (where a service
+/// whose `PATH` dirs are all read-only can still have them; M69: the bot
+/// itself can write only the latter). They run in the sandbox, like ones
+/// the shell would run.
 #[derive(Debug, Clone)]
 pub struct Ffmpeg {
     pub ffmpeg: PathBuf,
@@ -50,19 +57,19 @@ pub struct Ffmpeg {
 }
 
 impl Ffmpeg {
-    /// Both programs, or `None` when either is missing. `bin_dir` is
-    /// `<data>/bin`.
-    pub fn find(bin_dir: Option<&Path>) -> Option<Self> {
+    /// Both programs, or `None` when either is missing. `bin_dirs` are
+    /// `<data>/bin` and `<workspace>/bin`.
+    pub fn find(bin_dirs: &[PathBuf]) -> Option<Self> {
         Some(Self {
-            ffmpeg: program("ffmpeg", bin_dir)?,
-            ffprobe: program("ffprobe", bin_dir)?,
+            ffmpeg: program("ffmpeg", bin_dirs)?,
+            ffprobe: program("ffprobe", bin_dirs)?,
         })
     }
 }
 
-/// `name` on `PATH`, in Homebrew's dirs, or in `bin_dir` (`<data>/bin`),
-/// in that order (`.exe` on Windows).
-pub fn program(name: &str, bin_dir: Option<&Path>) -> Option<PathBuf> {
+/// `name` on `PATH`, in Homebrew's dirs, or in `bin_dirs` (`<data>/bin`,
+/// `<workspace>/bin`), in that order (`.exe` on Windows).
+pub fn program(name: &str, bin_dirs: &[PathBuf]) -> Option<PathBuf> {
     let file = if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -71,13 +78,13 @@ pub fn program(name: &str, bin_dir: Option<&Path>) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
         .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
-        .chain(bin_dir.map(Path::to_path_buf))
+        .chain(bin_dirs.iter().cloned())
         .map(|d| d.join(&file))
         .find(|p| p.is_file())
 }
 
 /// The sentence a video tool says when there's no ffmpeg.
-pub const NO_FFMPEG: &str = "ffmpeg (with ffprobe) isn't installed on the machine ferrule runs on, so videos can't be watched or edited; the owner installs it with `brew install ffmpeg` or `apt install ffmpeg`, or, where the service can't see the system's, puts static `ffmpeg` and `ffprobe` builds in ferrule's data dir under `bin/` and restarts it";
+pub const NO_FFMPEG: &str = "ffmpeg (with ffprobe) isn't installed on the machine ferrule runs on, so videos can't be watched or edited; the owner installs it with `brew install ffmpeg` or `apt install ffmpeg`, or, where the service can't see the system's, puts static `ffmpeg` and `ffprobe` builds in ferrule's data dir under `bin/` or in the workspace's `bin/` and restarts it";
 
 pub struct WatchVideoTool {
     sandbox: Arc<Sandbox>,
@@ -112,6 +119,110 @@ impl WatchVideoTool {
     pub fn with_media(mut self, media: Option<Arc<super::media::MediaShared>>) -> Self {
         self.media = media;
         self
+    }
+
+    /// One contact sheet of `video`'s frames at `times` into `out`, tiles
+    /// `size` in a `grid`, each frame's time burned on it (M69,
+    /// [`ferrule_video::labels`]). `Ok(true)` with the times on it,
+    /// `Ok(false)` when only the sheet could be made.
+    #[allow(clippy::too_many_arguments)]
+    async fn sheet(
+        &self,
+        video: &Path,
+        times: &[f64],
+        grid: (u64, u64),
+        size: (u64, u64),
+        out: &Path,
+        workspace: &Path,
+    ) -> Result<bool, String> {
+        let ((cols, rows), (tw, th)) = (grid, size);
+        let n = times.len();
+        let mut a: Vec<OsString> = vec![
+            os("-hide_banner"),
+            os("-loglevel"),
+            os("error"),
+            os("-nostdin"),
+            os("-y"),
+        ];
+        for t in times {
+            a.extend([
+                os("-protocol_whitelist"),
+                os("file"),
+                os("-ss"),
+                os(format!("{t:.3}")),
+                os("-i"),
+                os(video),
+            ]);
+        }
+        let mut graph = String::new();
+        for i in 0..n {
+            graph.push_str(&format!(
+                "[{i}:v:0]trim=end_frame=1,scale={tw}:{th}:force_original_aspect_ratio=decrease,pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1[f{i}];"
+            ));
+        }
+        for i in 0..n {
+            graph.push_str(&format!("[f{i}]"));
+        }
+        graph.push_str(&format!(
+            "concat=n={n}:v=1:a=0,tile={cols}x{rows}:nb_frames={n}:padding=4:color=black"
+        ));
+        let tail = |label: &str| {
+            vec![
+                os("-map"),
+                os(label),
+                os("-frames:v"),
+                os("1"),
+                os("-q:v"),
+                os("4"),
+                os(out),
+            ]
+        };
+        // The times, drawn here and laid over the sheet.
+        let layout = Sheet {
+            cols: cols as u32,
+            rows: rows as u32,
+            tile_w: tw as u32,
+            tile_h: th as u32,
+            padding: 4,
+        };
+        let labels: Vec<String> = times.iter().map(|t| clock(*t)).collect();
+        let overlay = out.with_extension("pam");
+        if std::fs::write(&overlay, layout.overlay(&labels)).is_ok() {
+            let mut b = a.clone();
+            b.extend([
+                os("-protocol_whitelist"),
+                os("file"),
+                os("-i"),
+                os(&overlay),
+                os("-filter_complex"),
+                os(format!("{graph}[t];[t][{n}:v]overlay=0:0[sheet]")),
+            ]);
+            b.extend(tail("[sheet]"));
+            let labelled = run(
+                &self.sandbox,
+                &self.ffmpeg.ffmpeg,
+                &b,
+                workspace,
+                SHEET_LIMIT,
+            )
+            .await;
+            let _ = std::fs::remove_file(&overlay);
+            if labelled.is_ok() {
+                return Ok(true);
+            }
+            tracing::debug!(?labelled, "the sheet with times failed; making it without");
+        }
+        a.extend([os("-filter_complex"), os(format!("{graph}[sheet]"))]);
+        a.extend(tail("[sheet]"));
+        run(
+            &self.sandbox,
+            &self.ffmpeg.ffmpeg,
+            &a,
+            workspace,
+            SHEET_LIMIT,
+        )
+        .await
+        .map(|_| false)
     }
 
     /// The job that made `path`, if one did: its request and references.
@@ -355,6 +466,19 @@ pub async fn run(
     workspace: &Path,
     limit: Duration,
 ) -> Result<Vec<u8>, String> {
+    run_full(sandbox, program, args, workspace, limit)
+        .await
+        .map(|(out, _)| out)
+}
+
+/// [`run`], keeping stderr too: M69's detectors print what they find there.
+pub async fn run_full(
+    sandbox: &Sandbox,
+    program: &Path,
+    args: &[OsString],
+    workspace: &Path,
+    limit: Duration,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     let cmd = sandbox
         .command(program, args, workspace)
         .map_err(|e| e.to_string())?;
@@ -368,7 +492,7 @@ pub async fn run(
         .map_err(|_| format!("it didn't finish in {} s", limit.as_secs()))?
         .map_err(|e| e.to_string())?;
     if out.status.success() {
-        return Ok(out.stdout);
+        return Ok((out.stdout, out.stderr));
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
     Err(stderr
@@ -388,14 +512,15 @@ impl Tool for WatchVideoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "watch_video".into(),
-            description: "Watch a video file in the workspace (one sent in this chat, or one you made or edited): its length, size and format, one contact sheet of frames spread evenly over it (an image you see, tiles in reading order), and what is said in it. To look closer at a part, call again with `start` and `end`. Watch a video before you answer about it, edit it or send it.".into(),
+            description: "Watch a video file in the workspace (one sent in this chat, or one you made or edited): its length, size and format, contact sheets of frames (images you see, tiles in reading order, each frame's time printed on it), and what is said in it, with times when the transcriber gives them. `focus` picks the frames: overview (spread evenly; the look that counts before sending), cuts (just before and after every cut, where edits break), ends (the first and last two seconds), still (one frame at full size at `start`, to read text on screen). To look closer at a part, call again with `start` and `end`. Watch a video before you answer about it, edit it or send it.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "The video, relative to the workspace (or absolute within it)" },
                     "start": { "type": ["number", "string"], "description": "Where to start, in seconds or m:ss; the beginning when omitted" },
                     "end": { "type": ["number", "string"], "description": "Where to stop, in seconds or m:ss; the end when omitted" },
-                    "frames": { "type": "integer", "description": "Frames on the sheet, 1 to 16; 12 when omitted" }
+                    "frames": { "type": "integer", "description": "Frames on the overview sheet, 1 to 16; 12 when omitted" },
+                    "focus": { "type": "string", "enum": ["overview", "cuts", "ends", "still"], "description": "Which frames: overview when omitted" }
                 },
                 "required": ["path"]
             }),
@@ -497,132 +622,196 @@ impl Tool for WatchVideoTool {
         }
         let span = end - start;
 
-        // The contact sheet.
+        // The contact sheets. M69: `focus` picks which frames: spread over
+        // the window (overview), around every cut, the first and last
+        // seconds, or one frame at full size; each frame's time is burned
+        // on it.
+        let focus = args["focus"]
+            .as_str()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .unwrap_or("overview");
         let mut images = Vec::new();
         if facts.has_video() {
-            let n = args["frames"]
-                .as_u64()
-                .unwrap_or(FRAMES)
-                .clamp(1, MAX_FRAMES);
-            let (cols, rows) = grid(n);
-            let (tw, th) = tile(facts.width, facts.height, cols, rows);
-            let times: Vec<f64> = (0..n)
-                .map(|i| start + span * (i as f64 + 0.5) / n as f64)
-                .collect();
-            let sheet = dir.join(format!("{}-sheet.jpg", stem(&path)));
-            let mut a: Vec<OsString> = vec![
-                os("-hide_banner"),
-                os("-loglevel"),
-                os("error"),
-                os("-nostdin"),
-                os("-y"),
-            ];
-            for t in &times {
-                a.extend([
-                    os("-protocol_whitelist"),
-                    os("file"),
-                    os("-ss"),
-                    os(format!("{t:.3}")),
-                    os("-i"),
-                    os(&path),
-                ]);
-            }
-            let mut graph = String::new();
-            for i in 0..n {
-                graph.push_str(&format!(
-                    "[{i}:v:0]trim=end_frame=1,scale={tw}:{th}:force_original_aspect_ratio=decrease,pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1[f{i}];"
-                ));
-            }
-            for i in 0..n {
-                graph.push_str(&format!("[f{i}]"));
-            }
-            graph.push_str(&format!(
-                "concat=n={n}:v=1:a=0,tile={cols}x{rows}:nb_frames={n}:padding=4:color=black[sheet]"
-            ));
-            a.extend([
-                os("-filter_complex"),
-                os(graph),
-                os("-map"),
-                os("[sheet]"),
-                os("-frames:v"),
-                os("1"),
-                os("-q:v"),
-                os("4"),
-                os(&sheet),
-            ]);
-            match run(
-                &self.sandbox,
-                &self.ffmpeg.ffmpeg,
-                &a,
-                &ctx.workspace,
-                SHEET_LIMIT,
-            )
-            .await
-            {
-                Err(e) => text.push_str(&format!("\nNo contact sheet: ffmpeg failed ({e}).")),
-                Ok(_) => match ferrule_core::vision::image_file(&sheet) {
-                    Some(Ok(mut image)) => {
-                        let order: Vec<String> = times
-                            .iter()
-                            .enumerate()
-                            .map(|(i, t)| format!("{}. {}", i + 1, clock(*t)))
-                            .collect();
-                        let lead = format!(
-                            "a contact sheet of {n} frames from {}–{} of the video, {cols} across and {rows} down, in reading order at {}",
-                            clock(start),
-                            clock(end),
-                            order.join(", ")
-                        );
-                        text.push_str(&format!("\nThe image is {lead}."));
-                        // M65 §0: what the vision helper is asked, for a
-                        // model that can't see the sheet itself; for a
-                        // generated video (M65 §4), against its request and
-                        // the person's reference.
-                        let made = self.made(&ctx.workspace, &path);
-                        let reference = made
-                            .as_ref()
-                            .and_then(|j| j.references.first())
-                            .map(|r| ctx.workspace.join(r).to_string_lossy().into_owned());
-                        let against = match &made {
-                            Some(job) => {
-                                text.push_str(&format!(
-                                    "\nIt was generated for: \"{}\"{}. Compare it with that before you send it.",
-                                    job.prompt,
-                                    if job.references.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(", keeping the person in {}", job.references.join(", "))
-                                    }
-                                ));
-                                format!(
-                                    " It was generated for this request: \"{}\".{} Start with OK or NOT OK against the request{}, then each problem you see.",
-                                    job.prompt,
-                                    if reference.is_some() {
-                                        " The second image is the reference: the person in it must be the same in the video (face, hair, skin tone, build, age)."
-                                    } else {
-                                        ""
-                                    },
-                                    if reference.is_some() { " and the reference" } else { "" }
-                                )
+            let mut plans: Vec<(Vec<f64>, String)> = Vec::new();
+            let mut big = false;
+            match focus {
+                "overview" => {
+                    let n = args["frames"]
+                        .as_u64()
+                        .unwrap_or(FRAMES)
+                        .clamp(1, MAX_FRAMES);
+                    let times = (0..n)
+                        .map(|i| start + span * (i as f64 + 0.5) / n as f64)
+                        .collect();
+                    plans.push((
+                        times,
+                        format!("frames spread evenly over {}–{}", clock(start), clock(end)),
+                    ));
+                }
+                "ends" => {
+                    let d = 2.0f64.min(span / 2.0);
+                    let mut times: Vec<f64> =
+                        (0..4).map(|i| start + d * (i as f64 + 0.5) / 4.0).collect();
+                    times.extend((0..4).map(|i| end - d + d * (i as f64 + 0.5) / 4.0));
+                    plans.push((
+                        times,
+                        format!("the first and last {} s (four frames each)", trim_num(d)),
+                    ));
+                }
+                "still" => {
+                    let t = if args["start"].is_null() {
+                        start + span / 2.0
+                    } else {
+                        start
+                    };
+                    plans.push((
+                        vec![t.min(length - 0.05).max(0.0)],
+                        format!("one frame at {}, full size", clock(t)),
+                    ));
+                    big = true;
+                }
+                "cuts" => {
+                    let probed = Probe::of(&probe);
+                    match super::check::analyse(
+                        &self.sandbox,
+                        &self.ffmpeg,
+                        &path,
+                        &ctx.workspace,
+                        &probed,
+                    )
+                    .await
+                    {
+                        Err(e) => text.push_str(&format!(
+                            "\nThe cuts couldn't be found: ffmpeg failed ({e})."
+                        )),
+                        Ok(a) => {
+                            let cuts: Vec<f64> = a
+                                .cuts
+                                .iter()
+                                .copied()
+                                .filter(|t| *t >= start && *t <= end)
+                                .collect();
+                            if cuts.is_empty() {
+                                text.push_str(&format!("\nNo cuts in {}–{} (no picture change scores above {}). Call with focus overview to see it.", clock(start), clock(end), ferrule_video::detect::SCENE));
                             }
-                            None => String::new(),
-                        };
-                        image.check = Some(ImageCheck {
-                            task: format!(
-                                "This is {lead}.{against} Describe the video from it for an assistant that can't see images: tile by tile, what is on screen and what changes (people and how they look, never guessing who they are; actions; text on screen word for word; the setting), then what the clip as a whole shows, and anything that looks wrong (warped faces or hands, garbled text, glitches, black or frozen frames). Plain sentences, no preamble, at most 400 words."
-                            ),
-                            reference,
-                        });
-                        // M65 §4: looking at the sheet is looking at the
-                        // video, for `send_file`.
-                        image.shows = Some(path.to_string_lossy().into_owned());
-                        images.push(image);
+                            let shown_cuts = &cuts[..cuts.len().min(CUTS_PER_SHEET * MAX_SHEETS)];
+                            for group in shown_cuts.chunks(CUTS_PER_SHEET) {
+                                let times = group
+                                    .iter()
+                                    .flat_map(|c| {
+                                        [-0.5, -0.1, 0.1, 0.5]
+                                            .map(|d| (c + d).clamp(0.0, (length - 0.05).max(0.0)))
+                                    })
+                                    .collect();
+                                let at: Vec<String> = group.iter().map(|c| clock(*c)).collect();
+                                plans.push((times, format!("one row per cut, at {}: 0.5 s and 0.1 s before each cut, then 0.1 s and 0.5 s after", at.join(", "))));
+                            }
+                            if cuts.len() > shown_cuts.len() {
+                                text.push_str(&format!(
+                                    "\n{} more cuts after {}: call again with start {} for them.",
+                                    cuts.len() - shown_cuts.len(),
+                                    clock(shown_cuts[shown_cuts.len() - 1]),
+                                    clock(shown_cuts[shown_cuts.len() - 1] + 0.6)
+                                ));
+                            }
+                        }
                     }
-                    Some(Err(why)) => {
-                        text.push_str(&format!("\nThe contact sheet is too big to show ({why}): call again with fewer frames."))
-                    }
-                    None => text.push_str("\nffmpeg made no contact sheet."),
-                },
+                }
+                other => {
+                    return Err(failed(format!(
+                        "`{other}` isn't a focus: overview, cuts, ends or still"
+                    )))
+                }
+            }
+            let made = self.made(&ctx.workspace, &path);
+            for (k, (times, what)) in plans.iter().enumerate() {
+                let n = times.len() as u64;
+                let (cols, rows) = if focus == "cuts" {
+                    (4, n.div_ceil(4))
+                } else {
+                    grid(n)
+                };
+                let (tw, th) = if big {
+                    let s = (SHEET_SIDE / facts.width.max(facts.height) as f64).min(1.0);
+                    let even = |x: f64| ((x / 2.0).floor() as u64 * 2).max(2);
+                    (even(facts.width as f64 * s), even(facts.height as f64 * s))
+                } else {
+                    tile(facts.width, facts.height, cols, rows)
+                };
+                let sheet = dir.join(format!("{}-sheet{}.jpg", stem(&path), k + 1));
+                let made_sheet = self
+                    .sheet(&path, times, (cols, rows), (tw, th), &sheet, &ctx.workspace)
+                    .await;
+                match made_sheet {
+                    Err(e) => text.push_str(&format!("\nNo contact sheet: ffmpeg failed ({e}).")),
+                    Ok(labelled) => match ferrule_core::vision::image_file(&sheet) {
+                        Some(Ok(mut image)) => {
+                            let order: Vec<String> = times
+                                .iter()
+                                .enumerate()
+                                .map(|(i, t)| format!("{}. {}", i + 1, clock(*t)))
+                                .collect();
+                            let lead = format!(
+                                "a contact sheet of {what}, {cols} across and {rows} down, in reading order at {}{}",
+                                order.join(", "),
+                                if labelled { "; each frame's time is printed at its bottom left" } else { "" }
+                            );
+                            text.push_str(&format!("\nImage {}: {lead}.", k + 1));
+                            // M65 §0: what the vision helper is asked, for a
+                            // model that can't see the sheet itself; for a
+                            // generated video (M65 §4), against its request and
+                            // the person's reference.
+                            let reference = made
+                                .as_ref()
+                                .and_then(|j| j.references.first())
+                                .map(|r| ctx.workspace.join(r).to_string_lossy().into_owned());
+                            let against = match &made {
+                                Some(job) => {
+                                    if k == 0 {
+                                        text.push_str(&format!(
+                                            "\nIt was generated for: \"{}\"{}. Compare it with that before you send it.",
+                                            job.prompt,
+                                            if job.references.is_empty() {
+                                                String::new()
+                                            } else {
+                                                format!(", keeping the person in {}", job.references.join(", "))
+                                            }
+                                        ));
+                                    }
+                                    format!(
+                                        " It was generated for this request: \"{}\".{} Start with OK or NOT OK against the request{}, then each problem you see.",
+                                        job.prompt,
+                                        if reference.is_some() {
+                                            " The second image is the reference: the person in it must be the same in the video (face, hair, skin tone, build, age)."
+                                        } else {
+                                            ""
+                                        },
+                                        if reference.is_some() { " and the reference" } else { "" }
+                                    )
+                                }
+                                None => String::new(),
+                            };
+                            image.check = Some(ImageCheck {
+                                task: format!(
+                                    "This is {lead}.{against} Describe the video from it for an assistant that can't see images: tile by tile, what is on screen and what changes (people and how they look, never guessing who they are; actions; text on screen word for word; the setting), then what the clip as a whole shows, and anything that looks wrong (warped faces or hands, garbled text, glitches, black or frozen frames, a jump or a flash at a cut). Plain sentences, no preamble, at most 400 words."
+                                ),
+                                reference,
+                            });
+                            // M65 §4: looking at the overview is looking at
+                            // the video, for `send_file`; M69: a look at one
+                            // frame or the cuts alone isn't.
+                            if focus == "overview" {
+                                image.shows = Some(path.to_string_lossy().into_owned());
+                            }
+                            images.push(image);
+                        }
+                        Some(Err(why)) => {
+                            text.push_str(&format!("\nThe contact sheet is too big to show ({why}): call again with fewer frames."))
+                        }
+                        None => text.push_str("\nffmpeg made no contact sheet."),
+                    },
+                }
             }
         }
 
@@ -691,6 +880,11 @@ impl Tool for WatchVideoTool {
                         Ok(h) if h.text.trim().is_empty() => {
                             text.push_str(&format!("\nNothing is said in {window}."))
                         }
+                        // M69: with the times, when the transcriber gives them.
+                        Ok(h) if !h.segments.is_empty() => text.push_str(&format!(
+                            "\nWhat is said in {window}, with times in the video:\n{}",
+                            ferrule_video::transcript::lines(&h.segments, start)
+                        )),
                         Ok(h) => {
                             text.push_str(&format!("\nWhat is said in {window}:\n{}", h.text.trim()))
                         }
@@ -725,18 +919,16 @@ mod tests {
     fn a_program_in_the_data_dirs_bin_is_found() {
         let dir = tempfile::tempdir().unwrap();
         let name = "ferrule-test-no-such-ffmpeg";
-        assert_eq!(program(name, Some(dir.path())), None);
-        assert_eq!(program(name, None), None);
+        let dirs = [dir.path().to_path_buf()];
+        assert_eq!(program(name, &dirs), None);
+        assert_eq!(program(name, &[]), None);
         let file = if cfg!(windows) {
             format!("{name}.exe")
         } else {
             name.to_string()
         };
         std::fs::write(dir.path().join(&file), b"").unwrap();
-        assert_eq!(
-            program(name, Some(dir.path())),
-            Some(dir.path().join(&file))
-        );
-        assert_eq!(program(name, None), None);
+        assert_eq!(program(name, &dirs), Some(dir.path().join(&file)));
+        assert_eq!(program(name, &[]), None);
     }
 }

@@ -53,6 +53,20 @@ struct LookedState {
     /// made, the video's then. Opening the sheet later (Claude Code's
     /// `Read`) is looking at the video as it was then.
     sheets: std::collections::HashMap<std::path::PathBuf, Sheet>,
+    /// M69: `check_video`'s verdict on a file as it was then (its
+    /// modification time): the FAIL findings' words.
+    checks: std::collections::HashMap<std::path::PathBuf, Checked>,
+    /// M69: the failing versions counted per folder, each file as it was
+    /// then once.
+    failing: std::collections::HashMap<std::path::PathBuf, Vec<Version>>,
+}
+
+type Version = (std::path::PathBuf, Option<std::time::SystemTime>);
+
+#[derive(Clone, Debug)]
+struct Checked {
+    at: Option<std::time::SystemTime>,
+    fails: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +144,33 @@ impl Looked {
             self.0.lock().unwrap().looks.get(&Self::key(path)),
             Some(Look::Seen(at)) if *at == Self::modified(path)
         )
+    }
+
+    /// M69: `check_video` measured `path` as it is now and found `fails`
+    /// (the FAIL findings, none when it passed). Returns how many failing
+    /// versions its folder has had in this session, this one counted.
+    pub fn checked(&self, path: &Path, fails: Vec<String>) -> u32 {
+        let key = Self::key(path);
+        let at = Self::modified(path);
+        let mut st = self.0.lock().unwrap();
+        let failing = !fails.is_empty();
+        st.checks.insert(key.clone(), Checked { at, fails });
+        let folder = key.parent().map(Path::to_path_buf).unwrap_or_default();
+        let versions = st.failing.entry(folder).or_default();
+        if failing && !versions.iter().any(|(k, t)| *k == key && *t == at) {
+            versions.push((key, at));
+        }
+        versions.len() as u32
+    }
+
+    /// M69: what `check_video` found failing in `path` as it is now:
+    /// `None` when it wasn't checked since it last changed.
+    pub fn check_of(&self, path: &Path) -> Option<Vec<String>> {
+        let st = self.0.lock().unwrap();
+        st.checks
+            .get(&Self::key(path))
+            .filter(|c| c.at == Self::modified(path))
+            .map(|c| c.fails.clone())
     }
 
     /// Whether the last try to look at `path` couldn't be made.

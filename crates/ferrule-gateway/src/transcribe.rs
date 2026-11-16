@@ -17,13 +17,17 @@ use std::time::{Duration, Instant};
 pub const TRANSCRIPTION_CALL_KIND: &str = "transcription";
 
 /// What was heard.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Heard {
     pub text: String,
     /// The audio's length, when the backend or the file says.
     pub seconds: Option<f64>,
     /// The language the backend detected, if it said.
     pub language: Option<String>,
+    /// M69: when each part was said, when the backend says (the OpenAI
+    /// API's `segments`, or a command printing whisper JSON, SRT or
+    /// WebVTT); empty otherwise.
+    pub segments: Vec<ferrule_video::transcript::Segment>,
 }
 
 /// One audio file to transcribe, and whose it is (for the ledger).
@@ -211,6 +215,10 @@ impl OpenAiTranscriber {
                         .as_f64()
                         .or_else(|| v["usage"]["seconds"].as_f64()),
                     language: v["language"].as_str().map(str::to_string),
+                    segments: v
+                        .get("segments")
+                        .and_then(|_| ferrule_video::transcript::parse(&body))
+                        .unwrap_or_default(),
                 },
                 v["usage"]["cost"]
                     .as_f64()
@@ -220,8 +228,7 @@ impl OpenAiTranscriber {
             Err(_) => (
                 Heard {
                     text: body.trim().to_string(),
-                    seconds: None,
-                    language: None,
+                    ..Heard::default()
                 },
                 None,
             ),
@@ -309,10 +316,18 @@ impl CommandTranscriber {
         if text.is_empty() {
             return Err("the transcription command printed nothing".into());
         }
+        // M69: a command that prints whisper JSON, SRT or WebVTT gives the
+        // timings too; the text is then the words alone.
+        let segments = ferrule_video::transcript::parse(&text).unwrap_or_default();
         Ok(Heard {
-            text,
+            text: if segments.is_empty() {
+                text
+            } else {
+                ferrule_video::transcript::text(&segments)
+            },
             seconds: file_seconds(audio.path, audio.mime),
-            language: None,
+            segments,
+            ..Heard::default()
         })
     }
 }
@@ -547,6 +562,7 @@ mod tests {
             text: "בוא נקבע".into(),
             seconds: Some(14.0),
             language: Some("hebrew".into()),
+            ..Heard::default()
         };
         assert_eq!(
             heard_line(&h),

@@ -197,16 +197,28 @@ pub fn command(
         }
     }
     let mut set = vec![
-        (
-            "CLAUDE_CONFIG_DIR".to_string(),
-            config_dir.display().to_string(),
-        ),
         ("DISABLE_AUTOUPDATER".into(), "1".into()),
         (
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
             "1".into(),
         ),
     ];
+    // Claude Code's own `~/.claude` is left unset (it's claude's default):
+    // on macOS claude keeps its login in the Keychain under a name derived
+    // from CLAUDE_CONFIG_DIR when that is set, so setting it even to
+    // `~/.claude` loses the login (`config_dir = "~/.claude"`).
+    let own = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .is_some_and(|h| h.join(".claude") == config_dir);
+    if !own {
+        set.insert(
+            0,
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                config_dir.display().to_string(),
+            ),
+        );
+    }
     if let Some(t) = token {
         set.push((TOKEN_VAR.into(), t.expose().to_string()));
     }

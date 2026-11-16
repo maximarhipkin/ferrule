@@ -78,8 +78,10 @@ voice message. Do it when the person asks for a voice reply, not by default.";
 /// byte-stable.
 pub const CHAT_VIDEO: &str = "## Videos\n\
 A video sent in this chat reaches you as a saved file. Watch it with `watch_video` before you answer about it or \
-edit it: you get its facts, a contact sheet of frames and what is said. Watch a video you made or edited before \
-you send it.";
+edit it: you get its facts, a contact sheet of frames and what is said. Before you send a video you made or \
+edited, measure it with `check_video` and fix every FAIL, look at it with `watch_video` (the overview, and \
+`focus: \"cuts\"` where it was cut), and for anything beyond a simple trim activate the video-editing skill \
+first.";
 
 /// Added to the owner's chat session's system prompt with M61's screen
 /// tools. Constant per session, so the prompt prefix stays byte-stable.

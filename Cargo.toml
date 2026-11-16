@@ -12,6 +12,7 @@ members = [
     "crates/ferrule-memory",
     "crates/ferrule-embed",
     "crates/ferrule-media",
+    "crates/ferrule-video",
     "crates/ferrule-cli",
     "crates/ferrule-agents",
     "crates/ferrule-extensions",

@@ -408,6 +408,32 @@ impl Sandbox {
         self
     }
 
+    /// M69: `dir` appended to the `PATH` commands get, so a program ferrule
+    /// finds there (`<data>/bin`'s static ffmpeg) is one the shell finds
+    /// too. Appended, so the system's own copies still win. Call it after
+    /// [`Sandbox::with_env`], which replaces the list.
+    pub fn with_path_dir(mut self, dir: &Path) -> Self {
+        let current = self
+            .extra_env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| std::ffi::OsString::from(v))
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
+        let mut dirs: Vec<PathBuf> = std::env::split_paths(&current).collect();
+        if dirs.iter().any(|d| d == dir) {
+            return self;
+        }
+        dirs.push(dir.to_path_buf());
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            self.extra_env.retain(|(k, _)| k != "PATH");
+            self.extra_env
+                .push(("PATH".into(), joined.to_string_lossy().into_owned()));
+        }
+        self
+    }
+
     /// The credential proxy for ferrule's own HTTP clients. Set together
     /// with `with_env(broker.child_env())`, so commands and in-process
     /// clients take the same way out.

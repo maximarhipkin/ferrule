@@ -40,6 +40,8 @@ struct Sent {
 }
 
 pub struct Thumbs {
+    /// M69: the videos `send_file` sent; a thumb on one wakes its session.
+    files: std::sync::OnceLock<Arc<ferrule_gateway::tools::FileOut>>,
     dir: LearnDir,
     sessions: PathBuf,
     hub: Arc<Hub>,
@@ -56,6 +58,7 @@ pub struct Thumbs {
 pub fn thumbs(cfg: &Config, hub: Arc<Hub>) -> Result<Option<Arc<Thumbs>>> {
     let data = config::data_dir()?;
     let t = Arc::new(Thumbs {
+        files: std::sync::OnceLock::new(),
         dir: LearnDir::new(&data),
         sessions: data.join("sessions"),
         hub,
@@ -81,6 +84,12 @@ pub fn telegram_started() -> Option<bool> {
 }
 
 impl Thumbs {
+    /// M69: the gateway's sent files, so the owner's thumb on a video it
+    /// sent reaches the session that made it.
+    pub fn watch_files(&self, files: Arc<ferrule_gateway::tools::FileOut>) {
+        let _ = self.files.set(files);
+    }
+
     /// For the router: each reply's end in its transcript.
     pub fn replied_hook(self: &Arc<Self>) -> Replied {
         let me = self.clone();
@@ -181,6 +190,14 @@ impl Thumbs {
             return;
         };
         if self.hub.owner_on(&r.channel).map(|o| o.chat).as_ref() != Some(&r.user_id) {
+            return;
+        }
+        // M69: on a video the bot sent, the session that made it learns.
+        if self
+            .files
+            .get()
+            .is_some_and(|f| f.thumbed(&r.channel, &r.chat_id, &r.message_id, *thumb == thumbs::UP))
+        {
             return;
         }
         let found = self

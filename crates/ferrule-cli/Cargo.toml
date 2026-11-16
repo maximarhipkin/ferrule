@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-cli"
-version = "0.14.20"
+version = "0.14.21"
 edition = "2021"
 description = "ferrule binary: run, chat, memory, config"
 license = "MIT OR Apache-2.0"
@@ -36,6 +36,7 @@ ferrule-memory = { path = "../ferrule-memory" }
 ferrule-embed = { path = "../ferrule-embed", default-features = false }
 ferrule-gateway = { path = "../ferrule-gateway" }
 ferrule-media = { path = "../ferrule-media" }
+ferrule-video = { path = "../ferrule-video" }
 ferrule-agents = { path = "../ferrule-agents" }
 ferrule-extensions = { path = "../ferrule-extensions" }
 ferrule-eval = { path = "../ferrule-eval" }
