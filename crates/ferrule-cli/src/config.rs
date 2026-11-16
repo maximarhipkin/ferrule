@@ -2384,6 +2384,16 @@ pub fn bin_dir() -> Option<PathBuf> {
     data_dir_path().map(|d| d.join("bin"))
 }
 
+/// Where the video tools look for ffmpeg past `PATH` and Homebrew's dirs:
+/// `<data>/bin`, then the workspace's `bin/` — the one a system service's
+/// bot can write itself (M69).
+pub fn bin_dirs(workspace: &Path) -> Vec<PathBuf> {
+    bin_dir()
+        .into_iter()
+        .chain([workspace.join("bin")])
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

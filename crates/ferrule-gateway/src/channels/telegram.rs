@@ -59,7 +59,7 @@ pub const MESSAGE_LIMIT: usize = 4096;
 const CAPTION_LIMIT: usize = 1024;
 /// The Bot API's upload limits: a photo, and any other file.
 const PHOTO_MAX: u64 = 10 * 1024 * 1024;
-const FILE_MAX: u64 = 50 * 1024 * 1024;
+pub(crate) const FILE_MAX: u64 = 50 * 1024 * 1024;
 /// An upload of up to `FILE_MAX`, or a download, gets longer than a send.
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(300);
 

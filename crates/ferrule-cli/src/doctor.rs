@@ -191,7 +191,10 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
             r.warn("voice", line);
         }
     }
-    ffmpeg_check(&mut r);
+    let gateway_workspace = service::installed()
+        .map(|(_, ws)| ws)
+        .unwrap_or_else(|| PathBuf::from(cfg.workspace.as_deref().unwrap_or(".")));
+    ffmpeg_check(&mut r, &gateway_workspace);
     telemetry_check(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
@@ -2962,17 +2965,20 @@ fn binary(r: &mut Report) {
 /// ffmpeg), and burn subtitles (the `subtitles` filter exists only in an
 /// ffmpeg built with libass). M65: `watch_video` needs ffmpeg and ffprobe.
 /// Both are looked for where the gateway looks: on PATH, in Homebrew's
-/// dirs and in `<data>/bin`. Informational only.
-fn ffmpeg_check(r: &mut Report) {
-    let bin = config::bin_dir();
-    let Some(ffmpeg) = ferrule_gateway::tools::watch::program("ffmpeg", bin.as_deref()) else {
+/// dirs, in `<data>/bin` and in the workspace's `bin/`. M69: also which of
+/// the filters the video checks use are missing, and whether Node is there
+/// (HTML-to-video renderers need it). Informational only.
+fn ffmpeg_check(r: &mut Report, workspace: &Path) {
+    let bins = config::bin_dirs(workspace);
+    let Some(ffmpeg) = ferrule_gateway::tools::watch::program("ffmpeg", &bins) else {
         r.note(
             "media",
-            "ffmpeg isn't on your PATH or in ferrule's data dir (bin/): the agent can't watch videos (watch_video) or trim, convert and re-encode audio and video through the shell",
+            "ffmpeg isn't on your PATH, in ferrule's data dir (bin/) or in the workspace's bin/: the agent can't watch or check videos (watch_video, check_video) or trim, convert and re-encode audio and video through the shell",
         );
         r.hint(format!(
-            "brew install ffmpeg, or apt install ffmpeg; where the service can't see those, put static ffmpeg and ffprobe builds in {}",
-            bin.as_deref().map_or_else(|| "<data>/bin".to_string(), tilde)
+            "brew install ffmpeg, or apt install ffmpeg; where the service can't see those, put static ffmpeg and ffprobe builds in {} or {}",
+            bins.first().map_or_else(|| "<data>/bin".to_string(), |b| tilde(b)),
+            tilde(&workspace.join("bin"))
         ));
         return;
     };
@@ -3001,10 +3007,14 @@ fn ffmpeg_check(r: &mut Report) {
         .split_whitespace()
         .nth(2)
         .map_or_else(String::new, |v| format!(" {v}"));
-    let libass = run("-filters").is_some_and(|f| {
-        f.lines()
-            .any(|l| l.split_whitespace().nth(1) == Some("subtitles"))
-    });
+    let filters: Vec<String> = run("-filters")
+        .map(|f| {
+            f.lines()
+                .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let libass = filters.iter().any(|f| f == "subtitles");
     r.note(
         "media",
         if libass {
@@ -3013,12 +3023,35 @@ fn ffmpeg_check(r: &mut Report) {
             format!("ffmpeg{which} without libass: the shell can trim and convert; burning subtitles needs an ffmpeg built with libass")
         },
     );
-    // M65 §1: the gateway looks for both on PATH, in Homebrew's dirs and in
-    // `<data>/bin`.
-    if ferrule_gateway::tools::Ffmpeg::find(bin.as_deref()).is_none() {
+    // M69: what check_video and the edit recipes lean on.
+    if !filters.is_empty() {
+        let missing: Vec<&str> = ferrule_video::detect::FILTERS
+            .iter()
+            .copied()
+            .filter(|want| !filters.iter().any(|f| f == want))
+            .collect();
+        if !missing.is_empty() {
+            r.note(
+                "media",
+                format!(
+                    "this ffmpeg lacks {}: check_video reports what those would measure as not measured",
+                    missing.join(", ")
+                ),
+            );
+        }
+    }
+    if ferrule_gateway::tools::watch::program("node", &bins).is_none() {
         r.note(
             "media",
-            "ffprobe isn't on the gateway's PATH, in Homebrew's dirs or in ferrule's data dir (bin/), so chats aren't offered watch_video",
+            "node isn't on the gateway's PATH: HTML-to-video renderers (HyperFrames, Remotion) can't run",
+        );
+    }
+    // M65 §1: the gateway looks for both on PATH, in Homebrew's dirs, in
+    // `<data>/bin` and in the workspace's `bin/`.
+    if ferrule_gateway::tools::Ffmpeg::find(&bins).is_none() {
+        r.note(
+            "media",
+            "ffprobe isn't on the gateway's PATH, in Homebrew's dirs, in ferrule's data dir (bin/) or in the workspace's bin/, so chats aren't offered watch_video",
         );
     }
 }

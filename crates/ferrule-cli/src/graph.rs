@@ -834,7 +834,7 @@ pub async fn run(file: &Path, opts: RunOpts) -> Result<GraphReport> {
             let mcp_tools =
                 crate::connect_mcp_servers(&servers, sandbox.clone(), &workspace).await?;
             let sink = crate::ledger::build_sink(&cfg);
-            let build = crate::child_builder(opts.max_iterations, mcp_tools, None);
+            let build = crate::child_builder(opts.max_iterations, mcp_tools, None, None);
             let Some(sup) = crate::agents::supervisor(&cfg, opts.model.clone(), sink, build)?
             else {
                 bail!("a graph needs sub-agents: set `[agents] enabled = true`");

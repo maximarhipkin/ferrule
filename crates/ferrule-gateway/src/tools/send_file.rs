@@ -81,6 +81,18 @@ impl FileOut {
         }
     }
 
+    /// M69: the most bytes a video sent to `session_id`'s chat may be, as
+    /// far as ferrule knows: Telegram's and WhatsApp's own upload limits,
+    /// else what `send_file` reads. `None` when it isn't a chat.
+    pub fn send_cap(&self, session_id: &str) -> Option<u64> {
+        let (channel, _) = self.router()?.chat_of(session_id)?;
+        Some(match channel.as_str() {
+            "telegram" => crate::channels::telegram::FILE_MAX,
+            "whatsapp" => crate::channels::whatsapp::AV_MAX,
+            _ => MAX_BYTES,
+        })
+    }
+
     pub(crate) fn router(&self) -> Option<Arc<Router>> {
         self.router.get().and_then(Weak::upgrade)
     }
@@ -111,6 +123,10 @@ struct SendCheck {
     opens_images: bool,
     /// `watch_video` is offered here.
     watches_video: bool,
+    /// M69: `check_video` is offered here, so a made video goes only once
+    /// it was measured as it is, and one with a FAIL only with
+    /// `known_issues`.
+    checks_video: bool,
 }
 
 impl SendFileTool {
@@ -137,7 +153,18 @@ impl SendFileTool {
             sees_images,
             opens_images,
             watches_video,
+            checks_video: false,
         });
+        self
+    }
+
+    /// M69: also refuse a video the agent made that `check_video` hasn't
+    /// measured since it last changed, or that failed it (unless
+    /// `known_issues` says so in the caption).
+    pub fn checking_video_if(mut self, on: bool) -> Self {
+        if let Some(c) = &mut self.check {
+            c.checks_video = on;
+        }
         self
     }
 }
@@ -184,7 +211,8 @@ impl Tool for SendFileTool {
                 "properties": {
                     "path": { "type": "string", "description": "Path relative to the workspace (or absolute within it)" },
                     "caption": { "type": "string", "description": "Optional text sent with the file" },
-                    "unchecked": { "type": "string", "description": "Only for an image or video you made that can't be looked at here (no way to watch videos, or the look failed): why. It goes marked as not checked." }
+                    "unchecked": { "type": "string", "description": "Only for an image or video you made that can't be looked at here (no way to watch videos, or the look failed): why. It goes marked as not checked." },
+                    "known_issues": { "type": "string", "description": "Only for a video you made that check_video still fails after your fixes: what is still wrong, in a sentence. It goes in the caption." }
                 },
                 "required": ["path"]
             }),
@@ -303,6 +331,46 @@ impl Tool for SendFileTool {
             } else {
                 format!("Not checked: {why}.\n{caption}")
             };
+        }
+        // M69: a made video goes measured, and a broken one only said so.
+        if let Some(check) = self
+            .check
+            .as_ref()
+            .filter(|c| c.checks_video && video)
+            .filter(|_| !passes_as_is(&ctx.workspace, &path))
+            .filter(|_| {
+                !self
+                    .out
+                    .unsent_as(&ctx.workspace, &path)
+                    .iter()
+                    .any(|j| j.state == "noted")
+            })
+        {
+            let known = args["known_issues"]
+                .as_str()
+                .map(str::trim)
+                .filter(|w| !w.is_empty());
+            match (check.looked.check_of(&path), known) {
+                (None, _) => {
+                    return Err(failed(format!(
+                        "{name} hasn't been measured since it last changed: run check_video on it, fix any FAIL, then send it"
+                    )))
+                }
+                (Some(fails), None) if !fails.is_empty() => {
+                    return Err(failed(format!(
+                        "{name} fails check_video: {}. Fix that and check again; if it can't be fixed, send it with `known_issues` saying what is still wrong",
+                        fails.join("; ")
+                    )))
+                }
+                (Some(fails), Some(known)) if !fails.is_empty() => {
+                    caption = if caption.trim().is_empty() {
+                        format!("Known issues: {known}")
+                    } else {
+                        format!("Known issues: {known}\n{caption}")
+                    };
+                }
+                _ => {}
+            }
         }
         let msg = OutboundMessage {
             channel: channel_name.clone(),

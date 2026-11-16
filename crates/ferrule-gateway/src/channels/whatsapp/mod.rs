@@ -50,7 +50,7 @@ const CAPTION_LIMIT: usize = 1024;
 const TEMPLATE_PARAM: usize = 200;
 /// Meta's own caps on media, checked before an upload.
 const IMAGE_MAX: u64 = 5 * 1024 * 1024;
-const AV_MAX: u64 = 16 * 1024 * 1024;
+pub(crate) const AV_MAX: u64 = 16 * 1024 * 1024;
 const DOCUMENT_MAX: u64 = 100 * 1024 * 1024;
 
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);

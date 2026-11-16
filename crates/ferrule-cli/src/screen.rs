@@ -314,7 +314,8 @@ fn rel(path: &Path) -> String {
 /// dirs or in `<data>/bin`. It runs in the sandbox, like one the shell
 /// would run.
 fn ffmpeg() -> Option<PathBuf> {
-    ferrule_gateway::tools::watch::program("ffmpeg", crate::config::bin_dir().as_deref())
+    let bin: Vec<PathBuf> = crate::config::bin_dir().into_iter().collect();
+    ferrule_gateway::tools::watch::program("ffmpeg", &bin)
 }
 
 /// `ferrule doctor`'s check: one capture to a temporary file, in the

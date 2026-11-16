@@ -1294,7 +1294,7 @@ async fn build_root(
         None,
         verify,
     )?;
-    let build = child_builder(max_iterations, mcp_tools, None);
+    let build = child_builder(max_iterations, mcp_tools, None, None);
     let Some(sup) = agents::supervisor(&cfg, provider_name, sink, build)? else {
         return Ok((agent, None));
     };
@@ -1302,14 +1302,25 @@ async fn build_root(
     Ok((agent, Some(sup)))
 }
 
+/// M69: what a gateway child needs to watch and check videos.
+#[derive(Clone)]
+pub(crate) struct ChildVideo {
+    pub ffmpeg: ferrule_gateway::tools::Ffmpeg,
+    pub sandbox: Arc<Sandbox>,
+    pub transcriber: Option<Arc<dyn ferrule_gateway::Transcriber>>,
+}
+
 /// How the supervisor builds a child: like any agent, on its spec's
 /// workspace and session, narrowed to its role. M51.3: a `media` child
 /// also gets the media tools, which only the gateway with `[media]` on
 /// has (`media`); elsewhere it can't start, and the spawn says why.
+/// M69: in the gateway, where ffmpeg is (`video`), every child can watch
+/// and check videos, so a critic or an editor sub-agent sees what it judges.
 pub(crate) fn child_builder(
     max_iterations: usize,
     mcp_tools: self_extend::Extensions,
     media: Option<Arc<ferrule_gateway::tools::MediaShared>>,
+    video: Option<ChildVideo>,
 ) -> agents::Build {
     Arc::new(move |scope, spec, tag| {
         // M65 §0: a child whose model can't see gets the vision helper,
@@ -1334,6 +1345,35 @@ pub(crate) fn child_builder(
         )?;
         if let Some(looker) = looker.filter(|_| !agent.sees_images()) {
             agent.set_looker(looker);
+        }
+        // M69: watch_video and check_video, in the sandbox chats' video
+        // tools use (a child's own may be read-only, and the sheets are
+        // written), narrowed for a guest's tree; hidden paths are the
+        // strictest list. No chat: nothing is recorded for `send_file`.
+        if let Some(v) = &video {
+            let (cfg, _) = config::Config::load()?;
+            let owners = owner_mode::owner_tree(&cfg, &*trust::hub(&cfg)?, &spec.tree);
+            let sandbox = if owners {
+                v.sandbox.clone()
+            } else {
+                Arc::new(
+                    v.sandbox
+                        .narrowed(&owner_mode::guest_hidden(&spec.workspace)),
+                )
+            };
+            agent.register_tool(Arc::new(ferrule_gateway::tools::WatchVideoTool::new(
+                sandbox.clone(),
+                v.ffmpeg.clone(),
+                v.transcriber.clone(),
+                &spec.id,
+                session_hidden(false, false, &spec.workspace),
+            )));
+            agent.register_tool(Arc::new(ferrule_gateway::tools::CheckVideoTool::new(
+                sandbox,
+                v.ffmpeg.clone(),
+                &spec.id,
+                session_hidden(false, false, &spec.workspace),
+            )));
         }
         if let Some(media) = media {
             // M65 §3: a person's photo goes into a clip only for a child of
@@ -2170,6 +2210,9 @@ pub(crate) fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
     if let Some(broker) = broker {
         sandbox = proxied(sandbox, broker)?;
     }
+    if let Some(bin) = config::bin_dir() {
+        sandbox = sandbox.with_path_dir(&bin);
+    }
     let sandbox = managed::guard(sandbox);
     Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
 }
@@ -2199,6 +2242,9 @@ pub(crate) fn engine_sandbox(cfg: &config::Config, config_dir: &Path) -> Result<
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     if let Some(broker) = shared_broker(cfg)? {
         sandbox = proxied(sandbox, broker)?;
+    }
+    if let Some(bin) = config::bin_dir() {
+        sandbox = sandbox.with_path_dir(&bin);
     }
     Ok(sandbox)
 }
@@ -3066,7 +3112,7 @@ async fn gateway_factory(
     // M65 §1: `watch_video` where ffmpeg and ffprobe are (on PATH or in
     // `<data>/bin`), in the sandbox the session's commands get, with the
     // gateway's transcription.
-    let video = ferrule_gateway::tools::Ffmpeg::find(config::bin_dir().as_deref());
+    let video = ferrule_gateway::tools::Ffmpeg::find(&config::bin_dirs(&workspace));
     let video_sandbox = sandbox.clone();
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
@@ -3086,7 +3132,16 @@ async fn gateway_factory(
         cfg,
         provider.clone(),
         ledger_sink.clone(),
-        child_builder(max_iterations, mcp_tools.clone(), media.clone()),
+        child_builder(
+            max_iterations,
+            mcp_tools.clone(),
+            media.clone(),
+            video.clone().map(|ffmpeg| ChildVideo {
+                ffmpeg,
+                sandbox: video_sandbox.clone(),
+                transcriber: transcriber.clone(),
+            }),
+        ),
     )?;
     let factory_sup = sup.clone();
     let owner = owner_mode::on(cfg);
@@ -3139,11 +3194,12 @@ async fn gateway_factory(
                     session_hidden(owner, owners, &workspace),
                 )
                 .checking(
-                    looked,
+                    looked.clone(),
                     agent.understands_images(),
                     agent.opens_images(),
                     video.is_some(),
-                ),
+                )
+                .checking_video_if(video.is_some()),
             ));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
@@ -3188,13 +3244,23 @@ async fn gateway_factory(
                 };
                 agent.register_tool(Arc::new(
                     ferrule_gateway::tools::WatchVideoTool::new(
-                        sandbox,
+                        sandbox.clone(),
                         ffmpeg.clone(),
                         transcriber.clone(),
                         session_id,
                         session_hidden(owner, owners, &workspace),
                     )
                     .with_media(media.clone()),
+                ));
+                // M69: measured, not guessed; `send_file` reads the verdict.
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::CheckVideoTool::new(
+                        sandbox,
+                        ffmpeg.clone(),
+                        session_id,
+                        session_hidden(owner, owners, &workspace),
+                    )
+                    .for_chat(files.clone(), looked.clone()),
                 ));
             }
             // M61: screenshots and recordings of the owner's screen, in the
@@ -3572,9 +3638,9 @@ async fn run_gateway(
         media.as_ref().map(|m| m.store.clone()),
         shared_sandbox(&cfg)
             .ok()
-            .zip(ferrule_gateway::tools::Ffmpeg::find(
-                config::bin_dir().as_deref(),
-            )),
+            .zip(ferrule_gateway::tools::Ffmpeg::find(&config::bin_dirs(
+                &workspace,
+            ))),
     ));
     let make_ctx = || dashboard::Ctx {
         live: Some(live.clone()),

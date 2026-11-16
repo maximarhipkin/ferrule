@@ -4,6 +4,7 @@
 //! `watch_video`).
 
 pub mod chat;
+pub mod check;
 pub mod find_models;
 pub mod look;
 pub mod media;
@@ -12,6 +13,7 @@ pub mod send_message;
 pub mod watch;
 
 pub use chat::{chat_tools, AskUserTool, EditMessageTool, Questions, ReactTool};
+pub use check::CheckVideoTool;
 pub use find_models::FindModelsTool;
 pub use media::{
     GenerateImageTool, GenerateVideoTool, MediaLimits, MediaPoller, MediaShared, MediaSpend,
