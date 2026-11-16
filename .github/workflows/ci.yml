@@ -38,7 +38,7 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             Linux) asset=agent-browser-linux-x64 ;;
-            macOS) asset=agent-browser-darwin-arm64 ;;
+            macOS) [ "$RUNNER_ARCH" = ARM64 ] && asset=agent-browser-darwin-arm64 || asset=agent-browser-darwin-x64 ;;
             Windows) asset=agent-browser-win32-x64.exe ;;
           esac
           dir="$RUNNER_TEMP/agent-browser"
