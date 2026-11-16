@@ -334,7 +334,9 @@ below it is append-only.
   proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
   understanding, editing and checking** (designed on `m65-video`,
   2026-10-22, `docs/m65-video.md`; merged into `autopilot` and built
-  there, §0–§6). **The next free number is M66.** The first claim wins,
+  there, §0–§6). **M66** (dashboard control and learning), **M67** (the
+  bot picks models), **M68** (your own agents) and **M69** (video craft,
+  `m69-video-craft`, 2026-11-16) are claimed. **The next free number is M70.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -11538,3 +11540,12 @@ browser.
 
 **Open.** Not run live. A named agent's model isn't checked at startup:
 a model removed later fails that agent's spawns, with the reason.
+
+### 2026-11-16 — M69: video craft (Claude, Opus 5.5)
+
+Claims **M69** (Current State updated: the next free number is M70), on
+branch `m69-video-craft` from `main` at `83b4c91`. Design in
+`docs/m69-video-craft.md`: measured checks that gate sending, targeted
+looks with burned timecodes, a rubric and a critic, and the owner's
+taste learned from thumbs and example videos. Entry completed at the end
+of the session.
