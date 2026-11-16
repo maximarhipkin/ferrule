@@ -359,14 +359,23 @@ async fn steps(sb: &Sandbox, ff: &Ffmpeg, ws: &Path, p: &Plan) -> Result<(u64, S
     step("loudness".into());
     let mastered = p.work.join("mastered.mp4");
     let mut extra = String::new();
-    let measured = watch::run_full(sb, &ff.ffmpeg, &edl::measure(&pre), ws, limit(total * 2.0))
-        .await
-        .ok()
-        .and_then(|(_, err)| edl::measured(&String::from_utf8_lossy(&err)));
+    let measured = watch::run_full(
+        sb,
+        &ff.ffmpeg,
+        &edl::measure(&pre, p.edl.target()),
+        ws,
+        limit(total * 2.0),
+    )
+    .await
+    .ok()
+    .and_then(|(_, err)| edl::measured(&String::from_utf8_lossy(&err)));
     let args = match &measured {
-        Some(m) => edl::master(&pre, m, &mastered),
+        Some(m) => edl::master(&pre, m, p.edl.target(), &mastered),
         None => {
-            extra.push_str(" Its loudness couldn't be measured, so it isn't mastered to -14 LUFS.");
+            extra.push_str(&format!(
+                " Its loudness couldn't be measured, so it isn't mastered to {} LUFS.",
+                p.edl.target()
+            ));
             edl::remux(&pre, &mastered)
         }
     };
@@ -431,7 +440,7 @@ impl Tool for RenderVideoTool {
                 "type": "object",
                 "properties": {
                     "edl": {
-                        "description": "The edit list as a JSON object, or the path of a .json file holding it: {output, size?: [w,h], fps?, segments: [{source, start?, end?, fit?: crop|pad|blur, zoom?, push?, mute?}], captions?, fonts?, voice?: {file, at?, volume?}, music?: {file, volume?, duck?}, source_volume?, fade_in?, fade_out?}",
+                        "description": "The edit list as a JSON object, or the path of a .json file holding it: {output, size?: [w,h], fps?, segments: [{source, start?, end?, fit?: crop|pad|blur, zoom?, push?, mute?}], captions?, fonts?, voice?: {file, at?, volume?}, music?: {file, volume?, duck?}, source_volume?, fade_in?, fade_out?, loudness? (LUFS, -14 default)}",
                         "type": ["object", "string"]
                     },
                     "dry_run": { "type": "boolean", "description": "Check the list and show the steps, don't render" },

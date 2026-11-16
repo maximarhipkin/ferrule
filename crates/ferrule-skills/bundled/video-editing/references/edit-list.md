@@ -28,7 +28,8 @@ done, so long renders don't hit the shell's time limit.
   "music": {"file": "media/music/bed.mp3", "volume": 0.3, "duck": true},
   "source_volume": 1.0,
   "fade_in": 0.0,
-  "fade_out": 0.5
+  "fade_out": 0.5,
+  "loudness": -14
 }
 ```
 
@@ -60,6 +61,11 @@ done, so long renders don't hit the shell's time limit.
   sound when there is no voice).
 - `source_volume`: the clips' own sound (0 for music-only montages).
 - `fade_in`, `fade_out`: from and to black, picture and sound.
+- `loudness`: what the whole mix is mastered to, -14 LUFS when omitted
+  (online video). Mastering undoes a lower `music.volume` on a
+  music-only video; when the owner wants it quieter overall, set this
+  lower (-16 to -18) and say so, since `check_video` will warn that it is
+  under -14.
 
 ## Working with it
 

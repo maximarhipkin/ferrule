@@ -62,6 +62,10 @@ pub struct Edl {
     pub fade_in: f64,
     #[serde(default)]
     pub fade_out: f64,
+    /// The loudness to master to, LUFS: -14 (online video) when omitted;
+    /// lower is quieter overall (-18 for a soft music-only piece).
+    #[serde(default)]
+    pub loudness: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +192,9 @@ impl Edl {
         if self.segments.is_empty() || self.segments.len() > MAX_SEGMENTS {
             bad.push(format!("1 to {MAX_SEGMENTS} segments"));
         }
+        if self.loudness.is_some_and(|l| !(-30.0..=-9.0).contains(&l)) {
+            bad.push("`loudness`: -30 to -9 LUFS (-14 when omitted)".into());
+        }
         if !(0.0..=4.0).contains(&self.source_volume) {
             bad.push("`source_volume`: 0 to 4".into());
         }
@@ -253,6 +260,11 @@ impl Edl {
         } else {
             Err(bad)
         }
+    }
+
+    /// The loudness this edit is mastered to, LUFS.
+    pub fn target(&self) -> f64 {
+        self.loudness.unwrap_or(TARGET_LUFS)
     }
 
     fn encode(&self) -> Vec<OsString> {
@@ -486,8 +498,9 @@ pub fn concat(list: &Path, out: &Path) -> Vec<OsString> {
     a
 }
 
-/// Step 4a: loudness measured (prints JSON on stderr at the info level).
-pub fn measure(input: &Path) -> Vec<OsString> {
+/// Step 4a: loudness measured against `target` LUFS (prints JSON on
+/// stderr at the info level).
+pub fn measure(input: &Path, target: f64) -> Vec<OsString> {
     let mut a = os(&[
         "-hide_banner",
         "-nostats",
@@ -500,7 +513,7 @@ pub fn measure(input: &Path) -> Vec<OsString> {
     ]);
     a.push(input.as_os_str().to_owned());
     a.extend(os(&["-vn", "-af"]));
-    a.push(format!("loudnorm=I={TARGET_LUFS}:TP={MAX_PEAK}:LRA=11:print_format=json").into());
+    a.push(format!("loudnorm=I={target}:TP={MAX_PEAK}:LRA=11:print_format=json").into());
     a.extend(os(&["-f", "null", "-"]));
     a
 }
@@ -534,16 +547,16 @@ pub fn measured(stderr: &str) -> Option<Measured> {
     })
 }
 
-/// Step 4b: mastered to the target with the measurement, picture copied,
-/// faststart.
-pub fn master(input: &Path, m: &Measured, out: &Path) -> Vec<OsString> {
+/// Step 4b: mastered to `target` LUFS with the measurement, picture
+/// copied, faststart.
+pub fn master(input: &Path, m: &Measured, target: f64, out: &Path) -> Vec<OsString> {
     let mut a = head();
     a.extend(os(&["-protocol_whitelist", "file", "-i"]));
     a.push(input.as_os_str().to_owned());
     a.extend(os(&["-map", "0:v", "-map", "0:a", "-c:v", "copy", "-af"]));
     a.push(
         format!(
-            "loudnorm=I={TARGET_LUFS}:TP={MAX_PEAK}:LRA=11:measured_I={}:measured_TP={}:measured_LRA={}:measured_thresh={}:offset={}:linear=true,aresample={RATE}",
+            "loudnorm=I={target}:TP={MAX_PEAK}:LRA=11:measured_I={}:measured_TP={}:measured_LRA={}:measured_thresh={}:offset={}:linear=true,aresample={RATE}",
             m.i, m.tp, m.lra, m.thresh, m.offset
         )
         .into(),
