@@ -1757,15 +1757,16 @@ Current State; numbers are claimed there before anything is built.
   measures a render (loudness and true peak, silence, black and frozen
   picture, cuts, codec, faststart, size against the chat's limit,
   caption timing) into FAIL and WARN findings per kind of video;
+  `render_video` renders an edit list in the background (segments,
+  voice, ducked music, captions, mastered loudness);
   `send_file` sends a made video only once measured, and with a FAIL only
   with `known_issues`; `watch_video {focus}` looks around every cut, at
   the ends or at one full-size frame, with each frame's time burned on it
   and a timed transcript; sub-agents can watch and check (a critic); the
   owner's 👍/👎 on a sent video wakes the session to learn; the
   video-editing skill is a workflow with a rubric, a guide per kind, a
-  critic brief and a house style kept in `media/style/`. Phases 3–5
-  (render from an edit list, hearing the sound, a plugin for other
-  agents) open. Not run live.
+  critic brief and a house style kept in `media/style/`. Phases 4–5
+  (hearing the sound, a plugin for other agents) open. Not run live.
 
 **Still open from earlier tracks.**
 

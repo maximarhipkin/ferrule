@@ -53,6 +53,10 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../bundled/video-editing/references/recipes.md"),
     ),
     (
+        "video-editing/references/edit-list.md",
+        include_str!("../bundled/video-editing/references/edit-list.md"),
+    ),
+    (
         "video-editing/references/rubric.md",
         include_str!("../bundled/video-editing/references/rubric.md"),
     ),

@@ -51,7 +51,10 @@ with `ask_user` and wait for the OK:
   transcriber gives them: cut on those, never inside a word.
 - Never overwrite an input. Work in `media/<job>/`: `v1.mp4`, `v2.mp4`, …
   so the critic can compare versions.
-- Recipes: `references/recipes.md`. Sound: `references/sound.md`.
+- More than one cut: write an edit list and `render_video` it
+  (`references/edit-list.md`); it fades every cut, ducks the music, burns
+  captions last, masters the loudness and runs in the background.
+- Recipes for single changes: `references/recipes.md`. Sound: `references/sound.md`.
   Captions (Hebrew included): `references/captions-hebrew.md`.
 - No `drawtext`: text goes through `subtitles`/`ass` with `fontsdir=`, or
   an image or HTML clip you overlay.

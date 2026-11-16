@@ -11576,3 +11576,11 @@ unverified. Phase 3 (`render_video` from an edit list), phase 4
 (`watch_video {listen}` through Gemini, motion graphics) and phase 5 (a
 plugin for other agents) are next. The thumbs wake needs `[learning]
 enabled` and forgets sent videos on a restart.
+
+**Phase 3, same day.** `render_video {edl | status, dry_run?}`: an edit
+list (`ferrule_video::edl`) compiled into ffmpeg steps (segments with
+30 ms fades, concat, voice and ducked music, fades, captions last,
+two-pass loudness to -14 LUFS, faststart, fitted to the send limit), run
+in a chat as a background job that wakes the session, inside the call for
+a sub-agent; the skill's `references/edit-list.md`. A 6 s edit with every
+field rendered on macOS and passed `check_video` at -14.1 LUFS.

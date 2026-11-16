@@ -4,10 +4,9 @@ The agent makes video, measures it, looks where edits break, has a second
 opinion compare versions, and learns the owner's taste. Builds on M65
 (`docs/m65-video.md`: `watch_video`, the edit recipes, check before send).
 
-**Status.** Phases 1 and 2 built (below). Phase 3 (`render_video` from an
-edit list), phase 4 (hearing the sound through Gemini, motion-graphics
-guidance) and phase 5 (the same checks as a plugin for other agents) are
-open. Not run live.
+**Status.** Phases 1–3 built (below). Phase 4 (hearing the sound through
+Gemini, motion-graphics guidance) and phase 5 (the same checks as a plugin
+for other agents) are open. Not run live.
 
 ## Why
 
@@ -112,6 +111,42 @@ can serve other agents (phase 5).
 - `CHAT_VIDEO` (the chat prompt's video section) says to check before
   sending and to activate the skill for anything beyond a trim.
 
+### Rendering from an edit list (phase 3)
+
+- `ferrule_video::edl`: the model's JSON edit list (`output`, `size`,
+  `fps`, `segments` of videos or images with `start`, `end`, `fit`
+  crop/pad/blur, `zoom`, `push`, `mute`; `captions`, `fonts`, `voice`,
+  `music` with `duck`, `source_volume`, `fade_in`, `fade_out`), checked
+  against the sources (`Edl::lengths`) and compiled into ffmpeg steps:
+  each segment cut and fitted on its own with 30 ms sound fades and
+  silence where it has none (H.264 CRF 20 veryfast, AAC 192 kb/s, 48 kHz
+  stereo); the parts joined with the concat demuxer, no re-encode; voice
+  and music mixed (music looped, faded out over 1.5 s, ducked with
+  `sidechaincompress` keyed on the voice, else on the clips' sound),
+  fades, captions burned last (the picture re-encoded only then);
+  loudness measured and mastered with two-pass `loudnorm` to -14 LUFS,
+  -1 dBTP, faststart; re-encoded to a bit rate that fits the chat's send
+  limit when bigger (`fitting_kbps`: 92% of the limit, less the audio).
+  Paths that enter a filter string must be letters, digits and `._-/`
+  (`filter_safe`); the captions are copied into the work folder first.
+- `render_video {edl | status, dry_run?}`
+  (`crates/ferrule-gateway/src/tools/render.rs`): `edl` is the object or
+  a `.json` file's path. The output must be a new file. One render at a
+  time per process. In a chat it runs as a spawned task that outlives the
+  turn (the Claude engine's own shell can't) and wakes the session with
+  the result through `Router::wake`; a sub-agent's runs inside its call.
+  Each step's time limit is 60 s plus a multiple of the length, at most
+  an hour. Work files under `.ferrule/render/` are removed at the end;
+  after a restart, `status` knows no render.
+- Tried on macOS (Homebrew ffmpeg) with a 6 s edit: four segments (crop,
+  an image with a push, blur with zoom, pad), a voice, ducked music, SRT
+  captions with a font folder, fades. Loudness went from -20.0 to
+  -14.1 LUFS, faststart on, and `check_video` found nothing. Its cut
+  detector found none of the three cuts there: all joined near-identical
+  flat red frames (top scene score 0.12, threshold 0.3).
+- The skill's `references/edit-list.md` documents the fields and the
+  loop (dry run, render, check, next version).
+
 ### The skill
 
 `crates/ferrule-skills/bundled/video-editing/`: `SKILL.md` is the order of
@@ -157,9 +192,10 @@ at the start of every video job.
 - Not run live, and ffmpeg 7.0.2's output on the owner's server is
   unverified; `check_video` and the labelled sheet were run against a
   test clip on macOS (Homebrew ffmpeg) only.
-- Phase 3, `render_video {edl}`: an edit list compiled to ffmpeg and run
-  as a job that outlives the turn. Until then long renders on the Claude
-  engine are limited by its Bash timeout (10 minutes).
+- The edit list has no transitions besides fades to black, no speed
+  changes, picture-in-picture or grading; those are done to a source
+  first with the recipes. Cuts aren't checked against the transcript's
+  word boundaries in code (the skill tells the model to cut in pauses).
 - Phase 4: `watch_video {listen}` through the vision helper (Gemini hears
   the track), and motion-graphics guidance once HyperFrames is verified
   on the server.
