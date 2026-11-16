@@ -3388,6 +3388,9 @@ async fn run_gateway(
     // M53.5: the owner's 👍/👎 on replies, when `[learning]` is on; M64.5:
     // and on the proactive agent's messages, when it's on.
     let thumbs = learn::thumbs(&cfg, trust::hub(&cfg)?)?;
+    if let Some(t) = &thumbs {
+        t.watch_files(files.clone());
+    }
     let reactions = proactive::feedback::sink(
         cfg.proactive
             .enabled

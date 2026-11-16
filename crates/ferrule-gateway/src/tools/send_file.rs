@@ -39,7 +39,22 @@ pub struct FileOut {
     /// M65 §4: the media jobs, so a sent file settles its row and a video
     /// the owner was told about unchecked can go when asked.
     media: OnceLock<Weak<MediaShared>>,
+    /// M69: the videos sent since the gateway started, newest last, so the
+    /// owner's 👍/👎 on one reaches the session that made it.
+    videos: std::sync::Mutex<std::collections::VecDeque<SentVideo>>,
 }
+
+/// M69: one video `send_file` sent, and the message it went in.
+struct SentVideo {
+    channel: String,
+    chat: String,
+    id: String,
+    session: String,
+    path: String,
+}
+
+/// The videos remembered for reactions.
+const VIDEOS_KEPT: usize = 100;
 
 impl FileOut {
     pub fn bind(&self, router: &Arc<Router>) {
@@ -91,6 +106,34 @@ impl FileOut {
             "whatsapp" => crate::channels::whatsapp::AV_MAX,
             _ => MAX_BYTES,
         })
+    }
+
+    /// M69: the owner reacted to message `id` in `chat`. When it carried a
+    /// video `send_file` sent, the session that sent it is woken to learn
+    /// from it: a 👎 asks once what was off, a 👍 notes what worked,
+    /// silently. True when it was such a video and the session was woken.
+    pub fn thumbed(&self, channel: &str, chat: &str, id: &str, up: bool) -> bool {
+        let found = self
+            .videos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .rev()
+            .find(|v| v.channel == channel && v.chat == chat && v.id == id)
+            .map(|v| (v.session.clone(), v.path.clone()));
+        let (Some((session, path)), Some(router)) = (found, self.router()) else {
+            return false;
+        };
+        let text = if up {
+            format!(
+                "[The owner reacted 👍 to the video you sent, {path}.] Note what worked in media/style as the video-editing skill's taste reference says (its measured numbers are a liked example), then end with NO_REPLY: don't answer this."
+            )
+        } else {
+            format!(
+                "[The owner reacted 👎 to the video you sent, {path}.] Ask them once, in one short message, what was off (pace, captions, sound, the look, or something else). When they answer, record it in media/style as the video-editing skill's taste reference says, and offer a fixed version."
+            )
+        };
+        router.wake(&session, text)
     }
 
     pub(crate) fn router(&self) -> Option<Arc<Router>> {
@@ -383,10 +426,31 @@ impl Tool for SendFileTool {
                 name: Some(name.clone()),
             }],
         };
-        channel
-            .send(msg)
+        let id = channel
+            .send_with_id(msg)
             .await
             .map_err(|e| failed(format!("sending {name} failed: {e}")))?;
+        // M69: a video's message, for the owner's 👍/👎 on it.
+        if let (true, Some(id)) = (video, id) {
+            let mut videos = self.out.videos.lock().unwrap_or_else(|e| e.into_inner());
+            if videos.len() >= VIDEOS_KEPT {
+                videos.pop_front();
+            }
+            videos.push_back(SentVideo {
+                channel: channel_name.clone(),
+                chat: router
+                    .chat_of(&self.session_id)
+                    .map(|(_, c)| c)
+                    .unwrap_or_default(),
+                id,
+                session: self.session_id.clone(),
+                path: path
+                    .strip_prefix(&ctx.workspace)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+            });
+        }
         self.out.settle(&ctx.workspace, &path, unseen);
         Ok(ToolOutput::ok(format!(
             "Sent {name} ({}) to this chat.",
