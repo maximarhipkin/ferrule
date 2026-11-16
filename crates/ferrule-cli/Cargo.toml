@@ -36,6 +36,7 @@ ferrule-memory = { path = "../ferrule-memory" }
 ferrule-embed = { path = "../ferrule-embed", default-features = false }
 ferrule-gateway = { path = "../ferrule-gateway" }
 ferrule-media = { path = "../ferrule-media" }
+ferrule-video = { path = "../ferrule-video" }
 ferrule-agents = { path = "../ferrule-agents" }
 ferrule-extensions = { path = "../ferrule-extensions" }
 ferrule-eval = { path = "../ferrule-eval" }

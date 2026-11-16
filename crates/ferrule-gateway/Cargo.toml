@@ -12,6 +12,7 @@ ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-tools = { path = "../ferrule-tools" }
 # M51: generate_image / generate_video and the video poller.
 ferrule-media = { path = "../ferrule-media" }
+ferrule-video = { path = "../ferrule-video" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

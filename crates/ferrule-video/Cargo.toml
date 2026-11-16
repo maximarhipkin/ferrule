@@ -1,0 +1,10 @@
+[package]
+name = "ferrule-video"
+version = "0.14.20"
+edition = "2021"
+description = "Video craft (M69): what a video measures (loudness, silence, black and frozen stretches, cuts), the findings a profile turns those into, caption timing lint, timed transcripts and burned-in timecodes. It runs no process: callers run ffmpeg with the arguments it builds and hand it the output."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

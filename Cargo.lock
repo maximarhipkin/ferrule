@@ -830,6 +830,7 @@ dependencies = [
  "ferrule-ssh",
  "ferrule-tools",
  "ferrule-trust",
+ "ferrule-video",
  "flate2",
  "futures-util",
  "http",
@@ -1008,6 +1009,7 @@ dependencies = [
  "ferrule-proxy",
  "ferrule-sandbox",
  "ferrule-tools",
+ "ferrule-video",
  "futures-util",
  "reqwest",
  "ring",
@@ -1304,6 +1306,14 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "ferrule-video"
+version = "0.14.20"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
