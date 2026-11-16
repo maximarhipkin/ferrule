@@ -25,7 +25,8 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
-          - { target: aarch64-apple-darwin, os: macos-15-intel }
+          # Cross-compiled on the Intel runner, so it can't run there.
+          - { target: aarch64-apple-darwin, os: macos-15-intel, cross: arm64 }
           - { target: x86_64-apple-darwin, os: macos-15-intel }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
@@ -64,7 +65,13 @@ jobs:
           if command -v sha256sum >/dev/null; then sha256sum "$name"; else shasum -a 256 "$name"; fi >"$name.sha256"
           cat "$name.sha256"
           # Unpack to check, outside dist/: everything in dist/ is uploaded.
-          mkdir ../check && tar -xzf "$name" -C ../check ferrule && ../check/ferrule --version
+          mkdir ../check && tar -xzf "$name" -C ../check ferrule
+          # A cross-compiled binary is checked by its architecture instead.
+          if [ -n "${{ matrix.cross }}" ]; then
+            file ../check/ferrule | grep -q "${{ matrix.cross }}" || { file ../check/ferrule; exit 1; }
+          else
+            ../check/ferrule --version
+          fi
 
       - name: Package
         if: runner.os == 'Windows'
