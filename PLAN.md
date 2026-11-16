@@ -11544,8 +11544,35 @@ a model removed later fails that agent's spawns, with the reason.
 ### 2026-11-16 — M69: video craft (Claude, Opus 5.5)
 
 Claims **M69** (Current State updated: the next free number is M70), on
-branch `m69-video-craft` from `main` at `83b4c91`. Design in
-`docs/m69-video-craft.md`: measured checks that gate sending, targeted
-looks with burned timecodes, a rubric and a critic, and the owner's
-taste learned from thumbs and example videos. Entry completed at the end
-of the session.
+branch `m69-video-craft` from `main` at `83b4c91`.
+
+**Why.** The owner wants the bot to make good videos of four kinds
+(short vertical clips, slides and explainers, promos from generated
+clips, long landscape edits), see its own result, know good from bad,
+and learn their taste from thumbs and example videos. Research for the
+design: models judge edits poorly from frames, so quality comes from
+checks in code, targeted looks, a critic comparing versions, and the
+owner's feedback (`docs/m69-video-craft.md`, "Why").
+
+**What changed.** `docs/m69-video-craft.md`, "What was built".
+- New crate `ferrule-video`: the analysis pass and its parser,
+  profile-aware findings, caption lint, timed transcripts, timecodes drawn
+  without a font.
+- `check_video`; `send_file` gated on its verdict (`known_issues`);
+  `watch_video {focus}` with burned timecodes and a timed transcript;
+  sub-agents get both tools; a thumb on a sent video wakes its session;
+  ffmpeg also in the workspace's `bin/`, `<data>/bin` on the shell's
+  `PATH`, doctor names missing filters and Node.
+- The video-editing skill rewritten as a workflow with ten reference
+  files; M65's recipes kept in `references/recipes.md`.
+
+**Checks.** `make check` (see the PR). The analysis pass and a sheet with
+burned times were run against a 5 s test clip on macOS (Homebrew ffmpeg):
+-21.8 LUFS measured and flagged quieter than -14, no faststart flagged,
+the times legible. No tests added (the owner's choice).
+
+**Open.** Not run live; the owner's server's ffmpeg 7.0.2 output is
+unverified. Phase 3 (`render_video` from an edit list), phase 4
+(`watch_video {listen}` through Gemini, motion graphics) and phase 5 (a
+plugin for other agents) are next. The thumbs wake needs `[learning]
+enabled` and forgets sent videos on a restart.

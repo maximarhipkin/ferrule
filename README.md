@@ -697,6 +697,9 @@ and a dated entry for every session.
   [`m67-bot-picks-models.md`](docs/m67-bot-picks-models.md) (one switch:
   the bot picks the OpenRouter model for each sub-agent, image and
   video, with `find_models`) ·
+  [`m69-video-craft.md`](docs/m69-video-craft.md) (video made well:
+  measured before sending, looked at around every cut, a critic, and the
+  owner's taste learned from thumbs and examples) ·
   [`connections.md`](docs/connections.md) (Jira, Gmail, Google, Notion…:
   which way in, step by step) ·
   [`ssh.md`](docs/ssh.md) (workspaces on other machines).
